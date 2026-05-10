@@ -23,9 +23,9 @@ export const api = {
   me: () => request<{ user: any }>('/auth/me'),
 
   // Feed
-  feed: (params?: { mode?: string; limit?: number; offset?: number }) => {
+  feed: (params?: { mode?: string; limit?: number; offset?: number; level?: string; exposure?: string }) => {
     const qs = new URLSearchParams(params as any).toString();
-    return request<{ posts: any[] }>(`/feed?${qs}`);
+    return request<{ posts: any[]; worldItems?: any[]; level?: string }>(`/feed?${qs}`);
   },
 
   // Posts

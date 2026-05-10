@@ -30,7 +30,7 @@ export function initializeDatabase(): void {
       verified_at TEXT,
       verified_by INTEGER,
       profile_visibility TEXT DEFAULT 'public' CHECK(profile_visibility IN ('public','private')),
-      feed_exposure TEXT DEFAULT 'mixed' CHECK(feed_exposure IN ('friends_only','mixed','everyone')),
+      feed_exposure TEXT DEFAULT 'extended' CHECK(feed_exposure IN ('friends_only','mixed','everyone','friends','extended','world')),
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );

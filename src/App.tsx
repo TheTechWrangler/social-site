@@ -64,6 +64,7 @@ export default function App() {
           {user && <Link to="/discover">🔍 Discover</Link>}
           {user && <Link to="/friends">👥 Friends</Link>}
           {user && <Link to="/settings">⚙ Settings</Link>}
+          <Link to="/games">🎮 Games</Link>
           <Link to="/world">🌍 World</Link>
           {user && <Link to={`/profile/${user.username}`}>👤 Profile</Link>}
           <Link to="/groups">👥 Groups</Link>

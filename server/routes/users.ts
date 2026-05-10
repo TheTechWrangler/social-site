@@ -52,7 +52,7 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
 router.put('/profile', requireAuth, (req: AuthRequest, res) => {
   const { displayName, bio, profileVisibility, feedExposure, avatar_url } = req.body;
   const vis = profileVisibility === 'private' ? 'private' : 'public';
-  const fex = ['friends_only', 'mixed', 'everyone'].includes(feedExposure) ? feedExposure : 'mixed';
+  const fex = ['friends_only', 'mixed', 'everyone', 'friends', 'extended', 'world'].includes(feedExposure) ? feedExposure : 'extended';
   const fields: string[] = [];
   const vals: any[] = [];
   if (displayName !== undefined) { fields.push('display_name = ?'); vals.push(displayName); }

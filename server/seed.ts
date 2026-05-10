@@ -50,7 +50,7 @@ for (const u of users) {
 }
 // Set admin role and verify all demo users
 db.prepare("UPDATE users SET role = 'admin' WHERE username = 'admin'").run();
-db.prepare("UPDATE users SET is_verified = 1, profile_visibility = 'public'").run();
+db.prepare("UPDATE users SET is_verified = 1, profile_visibility = 'public', feed_exposure = 'extended'").run();
 
 console.log(`[seed] Created ${users.length} users`);
 
