@@ -9,6 +9,8 @@
     "server": "tsx server/index.ts",
     "build": "tsc --noEmit && vite build",
     "seed": "tsx server/seed.ts",
+    "rss:fetch": "tsx server/rssFetch.ts",
+    "rss:status": "tsx server/rssStatus.ts",
     "preview": "vite preview"
   },
   "dependencies": {
