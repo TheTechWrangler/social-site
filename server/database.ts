@@ -26,6 +26,11 @@ export function initializeDatabase(): void {
       avatar_url TEXT DEFAULT '',
       role TEXT DEFAULT 'user' CHECK(role IN ('user','mod','admin')),
       banned INTEGER DEFAULT 0,
+      is_verified INTEGER DEFAULT 0,
+      verified_at TEXT,
+      verified_by INTEGER,
+      profile_visibility TEXT DEFAULT 'public' CHECK(profile_visibility IN ('public','private')),
+      feed_exposure TEXT DEFAULT 'mixed' CHECK(feed_exposure IN ('friends_only','mixed','everyone')),
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );

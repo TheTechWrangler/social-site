@@ -48,8 +48,9 @@ for (const u of users) {
   const role = u.username === 'admin' ? 'admin' : 'user';
   insertUser.run(u.username, u.display_name, u.email, u.password, role);
 }
-// Set admin role
+// Set admin role and verify all demo users
 db.prepare("UPDATE users SET role = 'admin' WHERE username = 'admin'").run();
+db.prepare("UPDATE users SET is_verified = 1, profile_visibility = 'public'").run();
 
 console.log(`[seed] Created ${users.length} users`);
 

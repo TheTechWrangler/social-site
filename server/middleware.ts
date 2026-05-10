@@ -1,13 +1,14 @@
 import type { Request, Response, NextFunction } from 'express';
 import { verifyToken, getUserById } from './auth.js';
 
-// Augment Express Request to include our user type
 declare global {
   namespace Express {
     interface User {
       id: number;
       username: string;
       role: string;
+      is_verified: number;
+      profile_visibility: string;
     }
   }
 }
@@ -31,7 +32,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     res.status(403).json({ error: 'Account banned or not found.' });
     return;
   }
-  (req as any).user = { id: user.id, username: user.username, role: user.role };
+  (req as any).user = { id: user.id, username: user.username, role: user.role, is_verified: user.is_verified };
   next();
 }
 
@@ -42,7 +43,7 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction): 
     if (payload) {
       const user = getUserById(payload.id);
       if (user && !user.banned) {
-        (req as any).user = { id: user.id, username: user.username, role: user.role };
+        (req as any).user = { id: user.id, username: user.username, role: user.role, is_verified: user.is_verified };
       }
     }
   }
@@ -53,6 +54,17 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   const user = (req as any).user;
   if (!user || user.role !== 'admin') {
     res.status(403).json({ error: 'Admin access required.' });
+    return;
+  }
+  next();
+}
+
+export function requireVerified(req: Request, res: Response, next: NextFunction): void {
+  const user = (req as any).user;
+  if (!user) { res.status(401).json({ error: 'Authentication required.' }); return; }
+  if (user.role === 'admin') { next(); return; }
+  if (!user.is_verified) {
+    res.status(403).json({ error: 'Account verification required before you can interact.' });
     return;
   }
   next();

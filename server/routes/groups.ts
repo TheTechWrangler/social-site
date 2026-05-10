@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, optionalAuth, type AuthRequest } from '../middleware.js';
+import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
 
 const router = Router();
 
 // POST /api/groups
-router.post('/', requireAuth, (req: AuthRequest, res) => {
+router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const { name, description } = req.body;
   if (!name?.trim()) { res.status(400).json({ error: 'Name required.' }); return; }
   const result = getDb().prepare(
@@ -54,14 +54,14 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
 });
 
 // POST /api/groups/:id/join
-router.post('/:id/join', requireAuth, (req: AuthRequest, res) => {
+router.post('/:id/join', requireAuth, requireVerified, (req: AuthRequest, res) => {
   getDb().prepare('INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)')
     .run(Number(req.params.id), req.user!.id);
   res.json({ ok: true });
 });
 
 // POST /api/groups/:id/leave
-router.post('/:id/leave', requireAuth, (req: AuthRequest, res) => {
+router.post('/:id/leave', requireAuth, requireVerified, (req: AuthRequest, res) => {
   getDb().prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ? AND role != ?')
     .run(Number(req.params.id), req.user!.id, 'admin');
   res.json({ ok: true });

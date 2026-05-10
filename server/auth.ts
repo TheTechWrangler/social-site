@@ -12,6 +12,9 @@ export interface AuthUser {
   email: string;
   role: string;
   banned: number;
+  is_verified: number;
+  profile_visibility: string;
+  feed_exposure: string;
 }
 
 export function hashPassword(password: string): string {
@@ -40,7 +43,7 @@ export function verifyToken(token: string): { id: number; username: string; role
 
 export function getUserById(id: number): AuthUser | null {
   const row = getDb().prepare(
-    'SELECT id, username, display_name, email, role, banned FROM users WHERE id = ?'
+    'SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure FROM users WHERE id = ?'
   ).get(id) as AuthUser | undefined;
   return row ?? null;
 }

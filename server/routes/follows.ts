@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, type AuthRequest } from '../middleware.js';
+import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 
 const router = Router();
 
 // POST /api/follows/:userId
-router.post('/:userId', requireAuth, (req: AuthRequest, res) => {
+router.post('/:userId', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const targetId = Number(req.params.userId);
   if (targetId === req.user!.id) { res.status(400).json({ error: 'Cannot follow yourself.' }); return; }
 
@@ -27,7 +27,7 @@ router.post('/:userId', requireAuth, (req: AuthRequest, res) => {
 });
 
 // DELETE /api/follows/:userId
-router.delete('/:userId', requireAuth, (req: AuthRequest, res) => {
+router.delete('/:userId', requireAuth, requireVerified, (req: AuthRequest, res) => {
   getDb().prepare('DELETE FROM follows WHERE follower_id = ? AND following_id = ?')
     .run(req.user!.id, Number(req.params.userId));
   res.json({ ok: true, following: false });

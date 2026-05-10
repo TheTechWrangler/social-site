@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, optionalAuth, type AuthRequest } from '../middleware.js';
+import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 
 const router = Router();
 
@@ -42,7 +42,7 @@ function enrichPost(row: any, userId?: number): any {
 }
 
 // POST /api/posts — create a post
-router.post('/', requireAuth, (req: AuthRequest, res) => {
+router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   try {
     const { content, groupId } = req.body;
     if (!content?.trim()) { res.status(400).json({ error: 'Content required.' }); return; }
@@ -73,7 +73,7 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
 });
 
 // DELETE /api/posts/:id
-router.delete('/:id', requireAuth, (req: AuthRequest, res) => {
+router.delete('/:id', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const post = getDb().prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id) as any;
   if (!post) { res.status(404).json({ error: 'Not found.' }); return; }
   if (post.user_id !== req.user!.id && req.user!.role !== 'admin') {

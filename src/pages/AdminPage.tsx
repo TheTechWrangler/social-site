@@ -86,6 +86,20 @@ export default function AdminPage() {
     } catch (e) { console.error(e); }
   }
 
+  async function verifyUser(id: number) {
+    try {
+      await fetch(`/api/admin/users/${id}/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      setUsers(prev => prev.map(u => u.id === id ? { ...u, is_verified: 1 } : u));
+    } catch (e) { console.error(e); }
+  }
+
+  async function unverifyUser(id: number) {
+    try {
+      await fetch(`/api/admin/users/${id}/unverify`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      setUsers(prev => prev.map(u => u.id === id ? { ...u, is_verified: 0 } : u));
+    } catch (e) { console.error(e); }
+  }
+
   return (
     <div className="admin-page">
       <h2>🛡 Admin Dashboard</h2>
@@ -99,11 +113,19 @@ export default function AdminPage() {
       {/* Users tab */}
       {tab === 'users' && (
         <table className="admin-table">
-          <thead><tr><th>ID</th><th>Username</th><th>Display</th><th>Email</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
+          <thead><tr><th>ID</th><th>Username</th><th>Display</th><th>Email</th><th>Role</th><th>Verified</th><th>Status</th><th>Action</th></tr></thead>
           <tbody>{users.map(u => (
             <tr key={u.id}><td>{u.id}</td><td>@{u.username}</td><td>{u.display_name}</td><td>{u.email}</td><td>{u.role}</td>
+              <td>{u.is_verified ? '✅' : '⚠️'}</td>
               <td>{u.banned ? '🚫 Banned' : '✅ Active'}</td>
-              <td><button className="btn btn-sm" onClick={() => toggleBan(u.id, !!u.banned)}>{u.banned ? 'Unban' : 'Ban'}</button></td></tr>
+              <td>
+                {u.role !== 'admin' && (u.is_verified ? (
+                  <button className="btn btn-sm" onClick={() => unverifyUser(u.id)}>Unverify</button>
+                ) : (
+                  <button className="btn btn-sm" onClick={() => verifyUser(u.id)}>Verify</button>
+                ))}
+                <button className="btn btn-sm" onClick={() => toggleBan(u.id, !!u.banned)}>{u.banned ? 'Unban' : 'Ban'}</button>
+              </td></tr>
           ))}</tbody>
         </table>
       )}

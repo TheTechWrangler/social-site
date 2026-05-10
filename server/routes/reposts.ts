@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, type AuthRequest } from '../middleware.js';
+import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
 
 const router = Router();
 
 // POST /api/reposts/:postId
-router.post('/:postId', requireAuth, (req: AuthRequest, res) => {
+router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const originalId = Number(req.params.postId);
   const original = getDb().prepare('SELECT id FROM posts WHERE id = ? AND parent_id IS NULL').get(originalId) as any;
   if (!original) { res.status(404).json({ error: 'Post not found.' }); return; }

@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getDb } from '../database.js';
-import { requireAuth } from '../middleware.js';
+import { requireAuth, requireVerified } from '../middleware.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, '..', '..', 'uploads');
@@ -52,7 +52,7 @@ function parseYouTubeUrl(input: string): string | null {
 }
 
 // POST /api/uploads/image — upload an image for a post
-router.post('/image', requireAuth, imageUpload.single('file'), (req, res) => {
+router.post('/image', requireAuth, requireVerified, imageUpload.single('file'), (req, res) => {
   try {
     if (!isEnabled('ENABLE_IMAGE_UPLOADS', 'true')) {
       res.status(403).json({ error: 'Image uploads are currently disabled.' }); return;
@@ -85,7 +85,7 @@ router.post('/image', requireAuth, imageUpload.single('file'), (req, res) => {
 });
 
 // POST /api/uploads/video — direct video upload (disabled by default)
-router.post('/video', requireAuth, (req, res) => {
+router.post('/video', requireAuth, requireVerified, (req, res) => {
   if (!isEnabled('ENABLE_VIDEO_UPLOADS', 'false')) {
     res.status(403).json({
       error: 'Direct video uploads are currently disabled. Upload your video to YouTube or another supported platform and paste the link here.',
@@ -98,7 +98,7 @@ router.post('/video', requireAuth, (req, res) => {
 });
 
 // POST /api/uploads/external-video — attach YouTube/external video to a post
-router.post('/external-video', requireAuth, (req, res) => {
+router.post('/external-video', requireAuth, requireVerified, (req, res) => {
   try {
     if (!isEnabled('ENABLE_EXTERNAL_VIDEO_EMBEDS', 'true')) {
       res.status(403).json({ error: 'External video embeds are currently disabled.' }); return;

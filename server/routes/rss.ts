@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requireAdmin, optionalAuth } from '../middleware.js';
+import { requireAuth, requireAdmin, optionalAuth, requireVerified } from '../middleware.js';
 import { getWorldFeed, getSources, getBlockedSourceIds, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
 
 const publicRouter = Router();
@@ -40,7 +40,7 @@ publicRouter.get('/sources', optionalAuth, (req, res) => {
 // ─── User Source Blocking ───
 
 // GET /api/world-feed/blocked-sources
-publicRouter.get('/blocked-sources', requireAuth, (req, res) => {
+publicRouter.get('/blocked-sources', requireAuth, requireVerified, (req, res) => {
   try {
     const user = (req as any).user;
     const blockedIds = getBlockedSourceIds(user.id);
@@ -55,7 +55,7 @@ publicRouter.get('/blocked-sources', requireAuth, (req, res) => {
 });
 
 // POST /api/world-feed/sources/:sourceId/block
-publicRouter.post('/sources/:sourceId/block', requireAuth, (req, res) => {
+publicRouter.post('/sources/:sourceId/block', requireAuth, requireVerified, (req, res) => {
   try {
     const user = (req as any).user;
     blockSource(user.id, Number(req.params.sourceId));
@@ -66,7 +66,7 @@ publicRouter.post('/sources/:sourceId/block', requireAuth, (req, res) => {
 });
 
 // DELETE /api/world-feed/sources/:sourceId/block
-publicRouter.delete('/sources/:sourceId/block', requireAuth, (req, res) => {
+publicRouter.delete('/sources/:sourceId/block', requireAuth, requireVerified, (req, res) => {
   try {
     const user = (req as any).user;
     unblockSource(user.id, Number(req.params.sourceId));

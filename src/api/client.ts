@@ -79,6 +79,32 @@ export const api = {
   getReports: () => request<{ reports: any[] }>('/admin/reports'),
   reportPost: (postId: number, reason: string) =>
     request<{ ok: boolean }>('/admin/reports', { method: 'POST', body: JSON.stringify({ postId, reason }) }),
+
+  // Media
+  uploadImage: async (file: File): Promise<{ media: any }> => {
+    const form = new FormData();
+    form.append('file', file);
+    const token = localStorage.getItem('token');
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch('/api/uploads/image', { method: 'POST', headers, body: form });
+    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error((body as any).error || 'Upload failed'); }
+    return res.json();
+  },
+  uploadAvatar: async (file: File): Promise<{ media: any }> => {
+    const form = new FormData();
+    form.append('file', file);
+    const token = localStorage.getItem('token');
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    const res = await fetch('/api/uploads/image', { method: 'POST', headers, body: form });
+    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error((body as any).error || 'Upload failed'); }
+    return res.json();
+  },
+  attachYouTube: (url: string, postId?: number) =>
+    request<{ media: any }>('/uploads/external-video', { method: 'POST', body: JSON.stringify({ url, postId }) }),
+  getPostMedia: (postId: number) =>
+    request<{ media: any[] }>(`/uploads/post/${postId}`),
 };
 
 export function useAuth() {

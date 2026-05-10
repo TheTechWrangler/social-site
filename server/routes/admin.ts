@@ -61,4 +61,18 @@ router.post('/reports', requireAuth, (req: AuthRequest, res) => {
   res.status(201).json({ ok: true });
 });
 
+// POST /api/admin/users/:id/verify
+router.post('/users/:id/verify', requireAuth, requireAdmin, (req, res) => {
+  getDb().prepare("UPDATE users SET is_verified = 1, verified_at = datetime('now'), verified_by = ? WHERE id = ?")
+    .run((req as any).user.id, req.params.id);
+  res.json({ ok: true });
+});
+
+// POST /api/admin/users/:id/unverify
+router.post('/users/:id/unverify', requireAuth, requireAdmin, (req, res) => {
+  getDb().prepare('UPDATE users SET is_verified = 0, verified_at = NULL, verified_by = NULL WHERE id = ? AND role != ?')
+    .run(req.params.id, 'admin');
+  res.json({ ok: true });
+});
+
 export default router;

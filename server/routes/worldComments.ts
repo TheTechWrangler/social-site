@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, optionalAuth } from '../middleware.js';
+import { requireAuth, optionalAuth, requireVerified } from '../middleware.js';
 
 const router = Router();
 
@@ -36,7 +36,7 @@ router.get('/:itemId/comments', optionalAuth, (req, res) => {
 });
 
 // POST /api/world-feed/:itemId/comments
-router.post('/:itemId/comments', requireAuth, (req, res) => {
+router.post('/:itemId/comments', requireAuth, requireVerified, (req, res) => {
   try {
     const itemId = Number(req.params.itemId);
     const { body } = req.body;
@@ -73,7 +73,7 @@ router.post('/:itemId/comments', requireAuth, (req, res) => {
 });
 
 // DELETE /api/world-feed/comments/:commentId
-router.delete('/comments/:commentId', requireAuth, (req, res) => {
+router.delete('/comments/:commentId', requireAuth, requireVerified, (req, res) => {
   try {
     const commentId = Number(req.params.commentId);
     const comment = getDb().prepare('SELECT * FROM rss_item_comments WHERE id = ?').get(commentId) as any;

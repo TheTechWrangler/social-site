@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, type AuthRequest } from '../middleware.js';
+import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
 
 const router = Router();
 
 // POST /api/comments/:postId
-router.post('/:postId', requireAuth, (req: AuthRequest, res) => {
+router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const parentId = Number(req.params.postId);
   const { content } = req.body;
   if (!content?.trim()) { res.status(400).json({ error: 'Content required.' }); return; }

@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, type AuthRequest } from '../middleware.js';
+import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 
 const router = Router();
 
 // POST /api/likes/:postId
-router.post('/:postId', requireAuth, (req: AuthRequest, res) => {
+router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const postId = Number(req.params.postId);
   const post = getDb().prepare('SELECT id, user_id FROM posts WHERE id = ?').get(postId) as any;
   if (!post) { res.status(404).json({ error: 'Post not found.' }); return; }
@@ -22,7 +22,7 @@ router.post('/:postId', requireAuth, (req: AuthRequest, res) => {
 });
 
 // DELETE /api/likes/:postId
-router.delete('/:postId', requireAuth, (req: AuthRequest, res) => {
+router.delete('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const postId = Number(req.params.postId);
   getDb().prepare('DELETE FROM likes WHERE user_id = ? AND post_id = ?').run(req.user!.id, postId);
 

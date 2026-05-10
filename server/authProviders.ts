@@ -75,7 +75,7 @@ function findOrCreateUser(provider: string, providerId: string, email: string, d
 export function configurePassport(): void {
   // Serialize minimal user info into session
   passport.serializeUser((user: any, done) => {
-    done(null, { id: user.id, username: user.username, role: user.role || 'user' });
+    done(null, { id: user.id, username: user.username, role: user.role || 'user', is_verified: user.is_verified ?? 0, profile_visibility: user.profile_visibility || 'public' });
   });
 
   passport.deserializeUser((obj: any, done) => {
@@ -98,7 +98,7 @@ export function configurePassport(): void {
       const displayName = profile.displayName || profile.name?.givenName || '';
       const avatarUrl = profile.photos?.[0]?.value || '';
       const result = findOrCreateUser('google', profile.id, safeEmail, displayName, avatarUrl);
-      done(null, { id: result.userId, username: result.username, role: 'user' });
+      done(null, { id: result.userId, username: result.username, role: 'user', is_verified: 0, profile_visibility: 'public' });
     } catch (err) {
       done(err as Error);
     }
@@ -118,7 +118,7 @@ export function configurePassport(): void {
       const displayName = profile?.displayName || profile?.personaname || '';
       const avatarUrl = profile?.photos?.[2]?.value || profile?.avatarfull || '';
       const result = findOrCreateUser('steam', profile.id || _identifier, '', displayName, avatarUrl);
-      done(null, { id: result.userId, username: result.username, role: 'user' });
+      done(null, { id: result.userId, username: result.username, role: 'user', is_verified: 0, profile_visibility: 'public' });
     } catch (err) {
       done(err);
     }
@@ -139,7 +139,7 @@ export function handleOAuthCallback(req: any, res: any): void {
     username: user.username,
     display_name: user.username,
     email: '',
-    role: 'user',
+    role: 'user', is_verified: 0, profile_visibility: "public", feed_exposure: "mixed",
     banned: 0,
   });
   // Redirect to frontend with token

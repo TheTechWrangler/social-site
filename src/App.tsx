@@ -10,6 +10,8 @@ import GroupsPage from './pages/GroupsPage';
 import NotificationsPage from './pages/NotificationsPage';
 import AdminPage from './pages/AdminPage';
 import WorldPage from './pages/WorldPage';
+import DiscoverPage from './pages/DiscoverPage';
+import FriendsPage from './pages/FriendsPage';
 import OAuthCallback from './pages/OAuthCallback';
 import LandingPage from './pages/LandingPage';
 
@@ -54,6 +56,8 @@ export default function App() {
         </div>
         <div className="sidebar-links">
           <Link to="/">🏠 Home</Link>
+          {user && <Link to="/discover">🔍 Discover</Link>}
+          {user && <Link to="/friends">👥 Friends</Link>}
           <Link to="/world">🌍 World</Link>
           {user && <Link to={`/profile/${user.username}`}>👤 Profile</Link>}
           <Link to="/groups">👥 Groups</Link>
@@ -86,6 +90,8 @@ export default function App() {
           <Route path="/notifications" element={user ? <NotificationsPage /> : <Navigate to="/login" />} />
           <Route path="/admin" element={user?.role === 'admin' ? <AdminPage /> : <Navigate to="/" />} />
           <Route path="/world" element={<WorldPage />} />
+          <Route path="/discover" element={user ? <DiscoverPage /> : <Navigate to="/login" />} />
+          <Route path="/friends" element={user ? <FriendsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/oauth/callback" element={<OAuthCallback onLogin={setUser} />} />
         </Routes>
       </main>
