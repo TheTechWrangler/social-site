@@ -83,6 +83,22 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
     try { await api.deletePost(post.id); setPost({ ...post, deleted: true }); } catch (e) { console.error(e); }
   }
 
+  async function handleMuteUser() {
+    if (!confirm(`Mute @${post.username}? You will stop seeing their posts.`)) return;
+    try {
+      await fetch(`/api/users/${post.userId}/mute`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      window.location.reload();
+    } catch (e) { console.error(e); }
+  }
+
+  async function handleBlockUser() {
+    if (!confirm(`Block @${post.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
+    try {
+      await fetch(`/api/users/${post.userId}/block`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      window.location.reload();
+    } catch (e) { console.error(e); }
+  }
+
   if ((post as any).deleted) return null;
   const time = post.createdAt ? new Date(post.createdAt + 'Z').toLocaleString() : '';
   const images = media.filter((m: any) => m.media_type === 'image');
@@ -137,6 +153,12 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
         <button className="action-btn" onClick={loadComments}>💬 {post.commentCount || 0}</button>
         <button className="action-btn" onClick={handleRepost}>🔄 {post.repostCount || 0}</button>
         {(currentUser?.id === post.userId || currentUser?.role === 'admin') && <button className="action-btn danger" onClick={handleDelete}>🗑</button>}
+        {currentUser?.id !== post.userId && currentUser && (
+          <>
+            <button className="action-btn" onClick={handleMuteUser} title="Mute">🔇</button>
+            <button className="action-btn" onClick={handleBlockUser} title="Block">🚫</button>
+          </>
+        )}
       </div>
 
       {showComments && (

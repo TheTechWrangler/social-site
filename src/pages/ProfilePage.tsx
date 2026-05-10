@@ -36,6 +36,22 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
     } catch (e) { console.error(e); }
   }
 
+  async function handleMute() {
+    if (!confirm(`Mute @${profile.username}? You will stop seeing their posts.`)) return;
+    try {
+      await fetch(`/api/users/${profile.id}/mute`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      alert('User muted.');
+    } catch (e: any) { alert(e.message || 'Failed'); }
+  }
+
+  async function handleBlock() {
+    if (!confirm(`Block @${profile.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
+    try {
+      await fetch(`/api/users/${profile.id}/block`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      window.location.reload();
+    } catch (e: any) { alert(e.message || 'Failed'); }
+  }
+
   async function handleSaveProfile() {
     try {
       // Update profile fields
@@ -87,9 +103,13 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
             </>
           )}
           {!isOwn && (
-            <button className={`btn ${profile.isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={handleFollow}>
-              {profile.isFollowing ? 'Unfollow' : 'Follow'}
-            </button>
+            <>
+              <button className={`btn ${profile.isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={handleFollow}>
+                {profile.isFollowing ? 'Unfollow' : 'Follow'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={handleMute}>🔇 Mute</button>
+              <button className="btn btn-ghost btn-sm" onClick={handleBlock}>🚫 Block</button>
+            </>
           )}
           {isOwn && !editing && (
             <>

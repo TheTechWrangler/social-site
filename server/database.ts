@@ -259,5 +259,16 @@ export function initializeDatabase(): void {
       updated_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_game_servers_game ON game_servers(game_id);
+
+    CREATE TABLE IF NOT EXISTS user_relationship_blocks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      blocker_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      relationship_type TEXT NOT NULL CHECK(relationship_type IN ('mute','block')),
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(blocker_user_id, blocked_user_id, relationship_type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON user_relationship_blocks(blocker_user_id);
+    CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON user_relationship_blocks(blocked_user_id);
   `);
 }

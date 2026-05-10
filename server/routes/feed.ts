@@ -25,15 +25,16 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
     }
 
     if ((exposure === 'friends_only' || exposure === 'mixed') && req.user) {
-      // Friends/following posts + own posts
+      // Friends/following posts + own posts (exclude blocked/muted)
       const friendLimit = exposure === 'friends_only' ? limit : Math.ceil(limit * 0.75);
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
         WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0
           AND (p.user_id = ? OR p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?))
+          AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
         ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(req.user.id, req.user.id, friendLimit, offset);
+      `).all(req.user.id, req.user.id, req.user.id, friendLimit, offset);
 
       // Mixed: add friends-of-friends / extended circle posts
       if (exposure === 'mixed') {
@@ -45,17 +46,27 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
             WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1
               AND p.user_id != ?
               AND p.user_id NOT IN (SELECT following_id FROM follows WHERE follower_id = ?)
+              AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
               AND p.user_id IN (
                 SELECT following_id FROM follows
                 WHERE follower_id IN (SELECT following_id FROM follows WHERE follower_id = ?)
               )
             ORDER BY p.created_at DESC LIMIT ?
-          `).all(req.user.id, req.user.id, req.user.id, publicLimit);
+          `).all(req.user.id, req.user.id, req.user.id, req.user.id, publicLimit);
           rows = [...rows, ...publicRows].sort((a: any, b: any) => b.created_at.localeCompare(a.created_at));
         }
       }
+    } else if (req.user) {
+      // Everyone: all public verified posts, excluding blocked users
+      rows = db.prepare(`
+        SELECT p.*, u.username, u.display_name, u.avatar_url
+        FROM posts p JOIN users u ON p.user_id = u.id
+        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1
+          AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
+        ORDER BY p.created_at DESC LIMIT ? OFFSET ?
+      `).all(req.user.id, limit, offset);
     } else {
-      // Everyone: all public verified posts (or unauthenticated)
+      // Unauthenticated: all public verified posts
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id

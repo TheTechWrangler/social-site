@@ -78,4 +78,53 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
   res.json({ users: rows });
 });
 
+// ─── Block / Mute ───
+
+router.get('/blocked/list', requireAuth, (req, res) => {
+  const rows = getDb().prepare(`
+    SELECT u.id, u.username, u.display_name, u.avatar_url, r.created_at
+    FROM user_relationship_blocks r JOIN users u ON r.blocked_user_id = u.id
+    WHERE r.blocker_user_id = ? AND r.relationship_type = 'block' ORDER BY r.created_at DESC
+  `).all((req as any).user.id);
+  res.json({ blocked: rows });
+});
+
+router.get('/muted/list', requireAuth, (req, res) => {
+  const rows = getDb().prepare(`
+    SELECT u.id, u.username, u.display_name, u.avatar_url, r.created_at
+    FROM user_relationship_blocks r JOIN users u ON r.blocked_user_id = u.id
+    WHERE r.blocker_user_id = ? AND r.relationship_type = 'mute' ORDER BY r.created_at DESC
+  `).all((req as any).user.id);
+  res.json({ muted: rows });
+});
+
+router.post('/:userId/block', requireAuth, (req, res) => {
+  const blockerId = (req as any).user.id;
+  const blockedId = Number(req.params.userId);
+  if (blockerId === blockedId) { res.status(400).json({ error: 'Cannot block yourself.' }); return; }
+  const db = getDb();
+  db.prepare("DELETE FROM user_relationship_blocks WHERE blocker_user_id = ? AND blocked_user_id = ? AND relationship_type = 'mute'").run(blockerId, blockedId);
+  db.prepare('DELETE FROM follows WHERE (follower_id = ? AND following_id = ?) OR (follower_id = ? AND following_id = ?)').run(blockerId, blockedId, blockedId, blockerId);
+  db.prepare("INSERT OR IGNORE INTO user_relationship_blocks (blocker_user_id, blocked_user_id, relationship_type) VALUES (?, ?, 'block')").run(blockerId, blockedId);
+  res.json({ ok: true, blocked: true });
+});
+
+router.delete('/:userId/block', requireAuth, (req, res) => {
+  getDb().prepare("DELETE FROM user_relationship_blocks WHERE blocker_user_id = ? AND blocked_user_id = ? AND relationship_type = 'block'").run((req as any).user.id, req.params.userId);
+  res.json({ ok: true, blocked: false });
+});
+
+router.post('/:userId/mute', requireAuth, (req, res) => {
+  const blockerId = (req as any).user.id;
+  const mutedId = Number(req.params.userId);
+  if (blockerId === mutedId) { res.status(400).json({ error: 'Cannot mute yourself.' }); return; }
+  getDb().prepare("INSERT OR IGNORE INTO user_relationship_blocks (blocker_user_id, blocked_user_id, relationship_type) VALUES (?, ?, 'mute')").run(blockerId, mutedId);
+  res.json({ ok: true, muted: true });
+});
+
+router.delete('/:userId/mute', requireAuth, (req, res) => {
+  getDb().prepare("DELETE FROM user_relationship_blocks WHERE blocker_user_id = ? AND blocked_user_id = ? AND relationship_type = 'mute'").run((req as any).user.id, req.params.userId);
+  res.json({ ok: true, muted: false });
+});
+
 export default router;
