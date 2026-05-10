@@ -35,17 +35,22 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
         ORDER BY p.created_at DESC LIMIT ? OFFSET ?
       `).all(req.user.id, req.user.id, friendLimit, offset);
 
-      // Mixed: add some public non-friend posts
+      // Mixed: add friends-of-friends / extended circle posts
       if (exposure === 'mixed') {
         const publicLimit = limit - rows.length;
         if (publicLimit > 0) {
           const publicRows = db.prepare(`
-            SELECT p.*, u.username, u.display_name, u.avatar_url
+            SELECT DISTINCT p.*, u.username, u.display_name, u.avatar_url
             FROM posts p JOIN users u ON p.user_id = u.id
             WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1
-              AND p.user_id != ? AND p.user_id NOT IN (SELECT following_id FROM follows WHERE follower_id = ?)
+              AND p.user_id != ?
+              AND p.user_id NOT IN (SELECT following_id FROM follows WHERE follower_id = ?)
+              AND p.user_id IN (
+                SELECT following_id FROM follows
+                WHERE follower_id IN (SELECT following_id FROM follows WHERE follower_id = ?)
+              )
             ORDER BY p.created_at DESC LIMIT ?
-          `).all(req.user.id, req.user.id, publicLimit);
+          `).all(req.user.id, req.user.id, req.user.id, publicLimit);
           rows = [...rows, ...publicRows].sort((a: any, b: any) => b.created_at.localeCompare(a.created_at));
         }
       }

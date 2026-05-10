@@ -110,6 +110,7 @@ export default function HomePage({ user }: { user: any }) {
             </button>
           ))}
         </div>
+        <p className="muted" style={{ fontSize: '0.78rem', marginTop: 4 }}>Chronological only. No ranking. Mixed mode uses your extended circle.</p>
       </div>
       {!isVerified && (
         <div className="verify-banner">
