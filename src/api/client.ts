@@ -46,7 +46,7 @@ export const api = {
 
   // Likes
   like: (postId: number) => request<{ liked: boolean; likeCount: number }>(`/likes/${postId}`, { method: 'POST' }),
-  unlike: (postId: number) => request<{ liked: boolean; likeCount: number }>(`/likes/${postId}`, { method: 'DELETE' }),
+  unlike: (postId: number) => request<{ liked: boolean; likeCount: number; counts?: any }>(`/likes/${postId}`, { method: 'DELETE' }),
 
   // Comments
   addComment: (postId: number, content: string) =>

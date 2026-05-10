@@ -56,8 +56,9 @@ export function initializeDatabase(): void {
     CREATE TABLE IF NOT EXISTS likes (
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+      reaction_type TEXT NOT NULL DEFAULT 'like' CHECK(reaction_type IN ('like','love','laugh','wow','support','thoughtful')),
       created_at TEXT DEFAULT (datetime('now')),
-      PRIMARY KEY (user_id, post_id)
+      PRIMARY KEY (user_id, post_id, reaction_type)
     );
 
     CREATE TABLE IF NOT EXISTS groups_table (
@@ -184,5 +185,79 @@ export function initializeDatabase(): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_post_media_post ON post_media(post_id);
+
+    CREATE TABLE IF NOT EXISTS games (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      slug TEXT NOT NULL UNIQUE,
+      cover_image_url TEXT DEFAULT '',
+      description TEXT DEFAULT '',
+      platforms TEXT DEFAULT '',
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS user_game_preferences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+      platform TEXT DEFAULT '',
+      play_style TEXT DEFAULT '',
+      skill_level TEXT DEFAULT '',
+      mic_preference TEXT DEFAULT '',
+      usual_play_times TEXT DEFAULT '',
+      region_or_timezone TEXT DEFAULT '',
+      looking_for_group INTEGER DEFAULT 0,
+      notes TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(user_id, game_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS game_lfg_posts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      body TEXT DEFAULT '',
+      platform TEXT DEFAULT '',
+      play_style TEXT DEFAULT '',
+      desired_group_size INTEGER,
+      mic_required INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_lfg_game ON game_lfg_posts(game_id);
+    CREATE INDEX IF NOT EXISTS idx_lfg_active ON game_lfg_posts(is_active, created_at);
+    CREATE INDEX IF NOT EXISTS idx_ugp_game ON user_game_preferences(game_id);
+
+    CREATE TABLE IF NOT EXISTS game_servers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      host_label TEXT DEFAULT '',
+      connection_host TEXT DEFAULT '',
+      connection_port INTEGER,
+      query_port INTEGER,
+      platform TEXT DEFAULT '',
+      region_or_timezone TEXT DEFAULT '',
+      server_type TEXT DEFAULT '',
+      play_style TEXT DEFAULT '',
+      max_players INTEGER,
+      current_players INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'unknown' CHECK(status IN ('online','offline','maintenance','unknown')),
+      is_featured INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      join_instructions TEXT DEFAULT '',
+      rules_summary TEXT DEFAULT '',
+      discord_url TEXT DEFAULT '',
+      website_url TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_game_servers_game ON game_servers(game_id);
   `);
 }

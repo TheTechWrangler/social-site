@@ -5,12 +5,23 @@ import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '..
 const router = Router();
 
 function enrichPost(row: any, userId?: number): any {
-  const likes = getDb().prepare('SELECT COUNT(*) as c FROM likes WHERE post_id = ?').get(row.id) as any;
   const comments = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE parent_id = ?').get(row.id) as any;
   const reposts = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE repost_of = ?').get(row.id) as any;
-  const liked = userId
-    ? (getDb().prepare('SELECT 1 FROM likes WHERE user_id = ? AND post_id = ?').get(userId, row.id) ? true : false)
-    : false;
+
+  // Get reaction counts grouped by type
+  const reactionRows = getDb().prepare(
+    'SELECT reaction_type, COUNT(*) as c FROM likes WHERE post_id = ? GROUP BY reaction_type'
+  ).all(row.id) as any[];
+  const reactions: Record<string, number> = { like: 0, love: 0, laugh: 0, wow: 0, support: 0, thoughtful: 0 };
+  for (const r of reactionRows) { reactions[r.reaction_type] = r.c; }
+
+  // Get current user's reaction
+  let userReaction: string | null = null;
+  let liked = false;
+  if (userId) {
+    const ur = getDb().prepare('SELECT reaction_type FROM likes WHERE user_id = ? AND post_id = ?').get(userId, row.id) as any;
+    if (ur) { userReaction = ur.reaction_type; liked = true; }
+  }
 
   let repostedPost = null;
   if (row.repost_of) {
@@ -33,9 +44,11 @@ function enrichPost(row: any, userId?: number): any {
     repostedPost,
     groupId: row.group_id ?? null,
     hidden: !!row.hidden,
-    likeCount: likes?.c ?? 0,
+    likeCount: reactions.like + reactions.love + reactions.laugh + reactions.wow + reactions.support + reactions.thoughtful,
     commentCount: comments?.c ?? 0,
     repostCount: reposts?.c ?? 0,
+    reactions,
+    userReaction,
     liked: liked,
     createdAt: row.created_at,
   };

@@ -173,6 +173,35 @@ for (const s of rssSources) {
   }
 }
 
+// ─── Games ───
+const seedGames = [
+  { name: '7 Days to Die', slug: '7-days-to-die', platforms: 'PC, Xbox, PS5', description: 'Open-world zombie survival crafting game.' },
+  { name: 'Ark: Survival Ascended', slug: 'ark-survival-ascended', platforms: 'PC, Xbox, PS5', description: 'Unreal Engine 5 remake of the dinosaur survival game.' },
+  { name: 'Valheim', slug: 'valheim', platforms: 'PC, Xbox', description: 'Viking survival and exploration in a procedurally generated world.' },
+  { name: 'Minecraft', slug: 'minecraft', platforms: 'PC, Xbox, PS5, Switch, Mobile', description: 'The sandbox building game with infinite possibilities.' },
+  { name: 'Fortnite', slug: 'fortnite', platforms: 'PC, Xbox, PS5, Switch, Mobile', description: 'Battle royale, creative mode, and live events.' },
+  { name: 'Call of Duty', slug: 'call-of-duty', platforms: 'PC, Xbox, PS5', description: 'Fast-paced military shooter franchise with multiplayer and Warzone.' },
+  { name: 'Helldivers 2', slug: 'helldivers-2', platforms: 'PC, PS5', description: 'Cooperative third-person shooter for intergalactic democracy.' },
+  { name: 'Tabletop / D&D', slug: 'tabletop-dnd', platforms: 'Any', description: 'Dungeons & Dragons and tabletop roleplaying games.' },
+  { name: 'Project Zomboid', slug: 'project-zomboid', platforms: 'PC', description: 'Hardcore isometric zombie survival RPG.' },
+  { name: 'Palworld', slug: 'palworld', platforms: 'PC, Xbox', description: 'Open-world creature collection and survival with guns.' },
+];
+const insertGame = db.prepare('INSERT OR IGNORE INTO games (name, slug, platforms, description) VALUES (?, ?, ?, ?)');
+for (const g of seedGames) { insertGame.run(g.name, g.slug, g.platforms, g.description); }
+console.log(`[seed] Added ${seedGames.length} games`);
+
+// ─── Demo Game Servers ───
+const seedServers = [
+  { game: '7-days-to-die', name: 'Refuge Gaming PvE', description: 'Community PvE server. Friendly survivors welcome!', connection_host: 'refuge-gaming.example.com', connection_port: 26900, platform: 'PC', status: 'online', max_players: 16, current_players: 8, is_featured: 1, join_instructions: 'Search for "Refuge Gaming PvE" in the server browser or connect directly.', rules_summary: 'No griefing. Be respectful. Have fun.' },
+  { game: 'valheim', name: 'Refuge Valheim', description: 'Dedicated Valheim server. Fresh world, all biomes.', connection_host: 'refuge-gaming.example.com', connection_port: 2456, platform: 'PC', status: 'online', max_players: 10, current_players: 4, join_instructions: 'Join via Steam server browser or direct connect.', rules_summary: 'Respect builds. No spawn camping.' },
+  { game: 'minecraft', name: 'Craft Refuge', description: 'Vanilla+ Minecraft community server. Java Edition.', connection_host: 'refuge-gaming.example.com', connection_port: 25565, platform: 'PC (Java)', status: 'online', max_players: 30, current_players: 12, is_featured: 1, join_instructions: 'Add server in Multiplayer menu.', rules_summary: 'No griefing. Claim your land. Community builds welcome!' },
+];
+const insertServer = db.prepare(`INSERT OR IGNORE INTO game_servers (game_id, name, description, connection_host, connection_port, platform, status, max_players, current_players, is_featured, join_instructions, rules_summary)
+  VALUES ((SELECT id FROM games WHERE slug = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+for (const s of seedServers) {
+  try { insertServer.run(s.game, s.name, s.description, s.connection_host, s.connection_port, s.platform, s.status, s.max_players, s.current_players, s.is_featured || 0, s.join_instructions, s.rules_summary); console.log(`[seed] Added server: ${s.name}`); } catch (e: any) { console.log(`[seed] Server ${s.name}: ${e.message}`); }
+}
+
 console.log('\n[seed] Done! Demo accounts:');
 console.log('  alice / demo1234');
 console.log('  bob   / demo1234');

@@ -22,6 +22,7 @@ import adminRoutes from './routes/admin.js';
 import { publicRouter as rssPublicRouter, adminRouter as rssAdminRouter } from './routes/rss.js';
 import worldCommentsRoutes from './routes/worldComments.js';
 import uploadRoutes from './routes/uploads.js';
+import gamesRoutes from './routes/games.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3003;
@@ -70,6 +71,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/world-feed', rssPublicRouter);
 app.use('/api/world-feed', worldCommentsRoutes);  // Comments on RSS items
 app.use('/api/uploads', uploadRoutes);               // Media uploads
+app.use('/api/games', gamesRoutes);                   // Games & LFG
 app.use('/api/admin/rss', rssAdminRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'social-site' }));

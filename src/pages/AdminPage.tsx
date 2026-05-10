@@ -5,7 +5,7 @@ export default function AdminPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
   const [reports, setReports] = useState<any[]>([]);
-  const [tab, setTab] = useState<'users' | 'posts' | 'reports' | 'rss'>('users');
+  const [tab, setTab] = useState<'users' | 'posts' | 'reports' | 'rss' | 'servers'>('users');
 
   // RSS state
   const [rssSources, setRssSources] = useState<any[]>([]);
@@ -15,6 +15,11 @@ export default function AdminPage() {
   const [rssCategory, setRssCategory] = useState('general');
   const [rssFetchResult, setRssFetchResult] = useState<any>(null);
   const [rssCatFilter, setRssCatFilter] = useState('');
+  const [userSearch, setUserSearch] = useState('');
+  const [userRoleFilter, setUserRoleFilter] = useState('');
+  const [roleMsg, setRoleMsg] = useState('');
+  const [serverList, setServerList] = useState<any[]>([]);
+  const [srvForm, setSrvForm] = useState({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
 
   useEffect(() => { if (tab === 'rss') loadRss(); else loadData(); }, [tab]);
 
@@ -72,6 +77,49 @@ export default function AdminPage() {
     } catch (e) { console.error(e); }
   }
 
+  async function loadServers() {
+    try {
+      const r = await api.get<any>('/admin/game-servers');
+      setServerList(r.servers);
+    } catch (e) { console.error(e); }
+  }
+
+  async function addServer(e: React.FormEvent) {
+    e.preventDefault();
+    if (!srvForm.gameId || !srvForm.name) return;
+    try {
+      await fetch('/api/admin/game-servers', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(srvForm) });
+      setSrvForm({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
+      loadServers();
+    } catch (e) { console.error(e); }
+  }
+
+  async function toggleServerActive(id: number, active: boolean) {
+    await fetch(`/api/admin/game-servers/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ is_active: active ? 0 : 1 }) });
+    loadServers();
+  }
+
+  async function deleteServer(id: number) {
+    if (!confirm('Delete this server?')) return;
+    await fetch(`/api/admin/game-servers/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+    loadServers();
+  }
+
+  async function changeRole(id: number, role: string) {
+    setRoleMsg('');
+    try {
+      const r = await fetch(`/api/admin/users/${id}/role`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({ role }),
+      });
+      const data = await r.json();
+      if (!r.ok) { setRoleMsg(data.error || 'Failed'); return; }
+      setUsers(prev => prev.map(u => u.id === id ? { ...u, role: data.role } : u));
+      setRoleMsg(`Role updated to ${role}`);
+    } catch (e) { console.error(e); }
+  }
+
   async function toggleBan(id: number, banned: boolean) {
     try {
       await (banned ? api.unbanUser(id) : api.banUser(id));
@@ -108,49 +156,89 @@ export default function AdminPage() {
         <button className={`btn ${tab === 'posts' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('posts'); setRssFetchResult(null); }}>Posts</button>
         <button className={`btn ${tab === 'reports' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('reports'); setRssFetchResult(null); }}>Reports</button>
         <button className={`btn ${tab === 'rss' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('rss')}>RSS Sources</button>
+        <button className={`btn ${tab === 'servers' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('servers'); loadServers(); }}>Game Servers</button>
       </div>
 
       {/* Users tab */}
       {tab === 'users' && (
-        <table className="admin-table">
-          <thead><tr><th>ID</th><th>Username</th><th>Display</th><th>Email</th><th>Role</th><th>Verified</th><th>Status</th><th>Action</th></tr></thead>
-          <tbody>{users.map(u => (
-            <tr key={u.id}><td>{u.id}</td><td>@{u.username}</td><td>{u.display_name}</td><td>{u.email}</td><td>{u.role}</td>
-              <td>{u.is_verified ? '✅' : '⚠️'}</td>
-              <td>{u.banned ? '🚫 Banned' : '✅ Active'}</td>
-              <td>
-                {u.role !== 'admin' && (u.is_verified ? (
-                  <button className="btn btn-sm" onClick={() => unverifyUser(u.id)}>Unverify</button>
-                ) : (
-                  <button className="btn btn-sm" onClick={() => verifyUser(u.id)}>Verify</button>
-                ))}
-                <button className="btn btn-sm" onClick={() => toggleBan(u.id, !!u.banned)}>{u.banned ? 'Unban' : 'Ban'}</button>
-              </td></tr>
-          ))}</tbody>
-        </table>
+        <div>
+          <div className="admin-user-filters" style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+            <input className="input" placeholder="Search users..." value={userSearch}
+              onChange={e => setUserSearch(e.target.value)} style={{ maxWidth: 220 }} />
+            <select className="input" value={userRoleFilter} onChange={e => setUserRoleFilter(e.target.value)} style={{ width: 'auto' }}>
+              <option value="">All roles</option>
+              <option value="admin">Admin</option>
+              <option value="mod">Mod</option>
+              <option value="user">User</option>
+            </select>
+          </div>
+          {roleMsg && <p className="muted" style={{ marginBottom: 8, color: 'var(--green)' }}>{roleMsg}</p>}
+          <div className="admin-users-list">
+            {users
+              .filter(u => {
+                if (userSearch) {
+                  const q = userSearch.toLowerCase();
+                  if (!u.username?.toLowerCase().includes(q) && !u.display_name?.toLowerCase().includes(q) && !u.email?.toLowerCase().includes(q)) return false;
+                }
+                if (userRoleFilter && u.role !== userRoleFilter) return false;
+                return true;
+              })
+              .map(u => (
+                <div key={u.id} className="admin-user-card">
+                  <div className="admin-user-info">
+                    <div className="avatar-placeholder" style={{ width: 36, height: 36, fontSize: '1rem' }}>{u.display_name?.[0] || '?'}</div>
+                    <div>
+                      <strong>{u.display_name}</strong> <span className="muted">@{u.username}</span>
+                      <div className="muted" style={{ fontSize: '0.8rem' }}>{u.email}</div>
+                    </div>
+                  </div>
+                  <div className="admin-user-badges">
+                    <span className={`admin-badge badge-${u.role}`}>{u.role}</span>
+                    <span className={`admin-badge ${u.is_verified ? 'badge-verified' : 'badge-unverified'}`}>{u.is_verified ? '✅ Verified' : '⚠ Unverified'}</span>
+                    <span className={`admin-badge ${u.banned ? 'badge-banned' : 'badge-active'}`}>{u.banned ? '🚫 Banned' : 'Active'}</span>
+                    <span className="admin-badge badge-vis">{u.profile_visibility || 'public'}</span>
+                  </div>
+                  <div className="admin-user-actions">
+                    <select className="input" value={u.role} onChange={e => changeRole(u.id, e.target.value)}
+                      style={{ width: 90, padding: '4px 8px', fontSize: '0.8rem' }} disabled={u.id === 1}>
+                      <option value="user">User</option>
+                      <option value="mod">Mod</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                    {u.role !== 'admin' && (u.is_verified ? (
+                      <button className="btn btn-sm" onClick={() => unverifyUser(u.id)}>Unverify</button>
+                    ) : (
+                      <button className="btn btn-sm" onClick={() => verifyUser(u.id)}>Verify</button>
+                    ))}
+                    <button className="btn btn-sm" onClick={() => toggleBan(u.id, !!u.banned)}>{u.banned ? 'Unban' : 'Ban'}</button>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
       )}
 
       {/* Posts tab */}
       {tab === 'posts' && (
-        <table className="admin-table">
+        <div className="admin-table-wrap"><table className="admin-table">
           <thead><tr><th>ID</th><th>User</th><th>Content</th><th>Hidden</th><th>Action</th></tr></thead>
           <tbody>{posts.map(p => (
             <tr key={p.id}><td>{p.id}</td><td>@{p.username}</td><td>{p.content?.slice(0, 80)}</td>
               <td>{p.hidden ? '🙈 Hidden' : '👁 Visible'}</td>
               <td><button className="btn btn-sm" onClick={() => toggleHide(p.id, !!p.hidden)}>{p.hidden ? 'Show' : 'Hide'}</button></td></tr>
           ))}</tbody>
-        </table>
+        </table></div>
       )}
 
       {/* Reports tab */}
       {tab === 'reports' && (
-        <table className="admin-table">
+        <div className="admin-table-wrap"><table className="admin-table">
           <thead><tr><th>ID</th><th>Reporter</th><th>Post</th><th>Reason</th><th>Status</th></tr></thead>
           <tbody>{reports.map(r => (
             <tr key={r.id}><td>{r.id}</td><td>@{r.reporter_name}</td><td>{r.post_content?.slice(0, 60) || '—'}</td>
               <td>{r.reason}</td><td>{r.status}</td></tr>
           ))}</tbody>
-        </table>
+        </table></div>
       )}
 
       {/* RSS Sources tab */}
@@ -197,7 +285,7 @@ export default function AdminPage() {
               </div>
             );
           })()}
-          <table className="admin-table">
+          <div className="admin-table-wrap"><table className="admin-table">
             <thead><tr><th>Name</th><th>URL</th><th>Category</th><th>Active</th><th>Last Fetched</th><th>Actions</th></tr></thead>
             <tbody>{rssSources.filter(s => !rssCatFilter || s.category === rssCatFilter).map(s => (
               <tr key={s.id}>
@@ -212,7 +300,41 @@ export default function AdminPage() {
                 </td>
               </tr>
             ))}</tbody>
-          </table>
+          </table></div>
+        </div>
+      )}
+
+      {/* Game Servers tab */}
+      {tab === 'servers' && (
+        <div>
+          <h3>Add Server</h3>
+          <form className="rss-add-form" onSubmit={addServer}>
+            <input className="input" placeholder="Game ID" value={srvForm.gameId} onChange={e => setSrvForm({ ...srvForm, gameId: e.target.value })} required />
+            <input className="input" placeholder="Server Name" value={srvForm.name} onChange={e => setSrvForm({ ...srvForm, name: e.target.value })} required />
+            <input className="input" placeholder="Host/IP" value={srvForm.connection_host} onChange={e => setSrvForm({ ...srvForm, connection_host: e.target.value })} />
+            <input className="input" placeholder="Port" value={srvForm.connection_port} onChange={e => setSrvForm({ ...srvForm, connection_port: e.target.value })} style={{ width: 100 }} />
+            <input className="input" placeholder="Platform" value={srvForm.platform} onChange={e => setSrvForm({ ...srvForm, platform: e.target.value })} style={{ width: 120 }} />
+            <button className="btn btn-primary">Add Server</button>
+          </form>
+
+          <h3 style={{ marginTop: 20 }}>Servers ({serverList.length})</h3>
+          <div className="admin-table-wrap"><table className="admin-table">
+            <thead><tr><th>Game</th><th>Name</th><th>Host</th><th>Status</th><th>Players</th><th>Active</th><th>Actions</th></tr></thead>
+            <tbody>{serverList.map((s: any) => (
+              <tr key={s.id}>
+                <td>{s.game_name}</td>
+                <td><strong>{s.name}</strong></td>
+                <td className="muted">{s.connection_host}{s.connection_port ? `:${s.connection_port}` : ''}</td>
+                <td>{s.status}</td>
+                <td>{s.current_players}/{s.max_players || '?'}</td>
+                <td>{s.is_active ? '✅' : '❌'}</td>
+                <td>
+                  <button className="btn btn-sm" onClick={() => toggleServerActive(s.id, !!s.is_active)}>{s.is_active ? 'Deactivate' : 'Activate'}</button>
+                  <button className="btn btn-sm" onClick={() => deleteServer(s.id)}>Delete</button>
+                </td>
+              </tr>
+            ))}</tbody>
+          </table></div>
         </div>
       )}
     </div>

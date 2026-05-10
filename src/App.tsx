@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, Link, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { api } from './api/client';
 import HomePage from './pages/HomePage';
@@ -12,6 +12,8 @@ import AdminPage from './pages/AdminPage';
 import WorldPage from './pages/WorldPage';
 import DiscoverPage from './pages/DiscoverPage';
 import FriendsPage from './pages/FriendsPage';
+import GamesPage from './pages/GamesPage';
+import GameDetailPage from './pages/GameDetailPage';
 import OAuthCallback from './pages/OAuthCallback';
 import LandingPage from './pages/LandingPage';
 
@@ -19,6 +21,8 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [unread, setUnread] = useState(0);
   const navigate = useNavigate();
+  const location = useLocation();
+  const isAdminPage = location.pathname === '/admin';
   const token = localStorage.getItem('token');
 
   useEffect(() => {
@@ -58,6 +62,7 @@ export default function App() {
           <Link to="/">🏠 Home</Link>
           {user && <Link to="/discover">🔍 Discover</Link>}
           {user && <Link to="/friends">👥 Friends</Link>}
+          <Link to="/games">🎮 Games</Link>
           <Link to="/world">🌍 World</Link>
           {user && <Link to={`/profile/${user.username}`}>👤 Profile</Link>}
           <Link to="/groups">👥 Groups</Link>
@@ -92,11 +97,14 @@ export default function App() {
           <Route path="/world" element={<WorldPage />} />
           <Route path="/discover" element={user ? <DiscoverPage /> : <Navigate to="/login" />} />
           <Route path="/friends" element={user ? <FriendsPage user={user} /> : <Navigate to="/login" />} />
+          <Route path="/games" element={<GamesPage />} />
+          <Route path="/games/:slug" element={<GameDetailPage />} />
           <Route path="/oauth/callback" element={<OAuthCallback onLogin={setUser} />} />
         </Routes>
       </main>
 
-      <aside className="sidebar-right">
+      {!isAdminPage && (
+        <aside className="sidebar-right">
         <div className="sidebar-section">
           <h4>About</h4>
           <p className="muted">No ads. No algorithms. Just people.</p>
@@ -107,7 +115,8 @@ export default function App() {
             <Link to="/groups" className="sidebar-link-sm">Browse Groups</Link>
           </div>
         )}
-      </aside>
+        </aside>
+      )}
     </div>
   );
 }
