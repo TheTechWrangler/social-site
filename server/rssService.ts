@@ -84,8 +84,8 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
     itemsFound = feed.items?.length || 0;
 
     const insert = db.prepare(`
-      INSERT OR IGNORE INTO rss_items (source_id, external_guid, title, summary, content_snippet, link_url, author, image_url, published_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO rss_items (source_id, external_guid, title, summary, content_snippet, link_url, author, image_url, published_at, item_type, enclosure_url, enclosure_type, duration_text, episode_image_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const item of feed.items || []) {
@@ -99,7 +99,17 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
       const imageUrl = item.enclosure?.url || '';
       const publishedAt = item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString();
 
-      const r = insert.run(source.id, guid, title, summary, contentSnippet, item.link || '', author, imageUrl, publishedAt);
+      // Podcast detection: enclosure with audio MIME, or iTunes duration
+      const encUrl = (item.enclosure?.url as string) || '';
+      const encType = (item.enclosure?.type as string) || '';
+      const itunesDuration = (item as any).itunes?.duration || '';
+      const itunesImage = (item as any).itunes?.image || '';
+      const isPodcast = encType.startsWith('audio/') || !!itunesDuration || (source.category || '').toLowerCase().includes('podcast');
+      const itemType = isPodcast ? 'podcast' : 'article';
+      const podcastImage = itunesImage || (feed as any).itunes?.image || '';
+
+      const r = insert.run(source.id, guid, title, summary, contentSnippet, item.link || '', author, imageUrl, publishedAt,
+        itemType, encUrl, encType, itunesDuration, podcastImage);
       if (r.changes > 0) inserted++; else dupes++;
     }
 
@@ -122,7 +132,7 @@ export async function fetchAllSources(): Promise<FetchResult[]> {
 
 // ─── World Feed Query ───
 
-export function getWorldFeed(params: { sourceId?: number; category?: string; limit?: number; offset?: number; userId?: number }) {
+export function getWorldFeed(params: { sourceId?: number; category?: string; itemType?: string; limit?: number; offset?: number; userId?: number }) {
   const limit = Math.min(params.limit || 50, 100);
   const offset = params.offset || 0;
   let sql = `
@@ -134,6 +144,7 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; lim
 
   if (params.sourceId) { sql += ' AND ri.source_id = ?'; vals.push(params.sourceId); }
   if (params.category) { sql += ' AND rs.category = ?'; vals.push(params.category); }
+  if (params.itemType && (params.itemType === 'podcast' || params.itemType === 'article')) { sql += ' AND ri.item_type = ?'; vals.push(params.itemType); }
 
   // Exclude blocked sources for authenticated users
   if (params.userId) {
@@ -151,6 +162,11 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; lim
     sourceName: i.source_name,
     sourceUrl: i.source_url,
     sourceCategory: i.source_category,
+    itemType: i.item_type || 'article',
+    enclosureUrl: i.enclosure_url || '',
+    enclosureType: i.enclosure_type || '',
+    durationText: i.duration_text || '',
+    episodeImageUrl: i.episode_image_url || '',
     title: i.title,
     summary: i.summary,
     contentSnippet: i.content_snippet,

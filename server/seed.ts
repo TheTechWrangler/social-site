@@ -161,6 +161,11 @@ const rssSources = [
   // Gaming — Industry & Culture
   { name: 'Eurogamer', url: 'https://www.eurogamer.net/feed', homepage_url: 'https://www.eurogamer.net', category: 'Gaming' },
   { name: 'GamesIndustry.biz', url: 'https://www.gamesindustry.biz/feed', homepage_url: 'https://www.gamesindustry.biz', category: 'Gaming / Industry' },
+
+  // Podcasts
+  { name: 'The Changelog', url: 'https://changelog.com/podcast/feed', homepage_url: 'https://changelog.com', category: 'Podcasts / Tech' },
+  { name: 'Software Engineering Daily', url: 'https://softwareengineeringdaily.com/feed/podcast/', homepage_url: 'https://softwareengineeringdaily.com', category: 'Podcasts / Tech' },
+  { name: 'Linux Unplugged', url: 'https://feeds.fireside.fm/linuxunplugged/rss', homepage_url: 'https://www.jupiterbroadcasting.com/show/linux-unplugged/', category: 'Podcasts / Tech' },
 ];
 
 const insertRss = db.prepare('INSERT OR IGNORE INTO rss_sources (name, url, homepage_url, category) VALUES (?, ?, ?, ?)');

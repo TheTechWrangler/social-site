@@ -8,6 +8,7 @@ export default function WorldPage() {
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedSource, setSelectedSource] = useState('');
+  const [selectedItemType, setSelectedItemType] = useState('');
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [blockedSources, setBlockedSources] = useState<any[]>([]);
@@ -25,12 +26,13 @@ export default function WorldPage() {
     try { const r = await api.get<any>('/world-feed/sources'); setSources(r.sources); setCategories(r.categories); } catch (e) {}
   }
 
-  async function loadFeed(cat?: string, srcId?: string, p = 0) {
+  async function loadFeed(cat?: string, srcId?: string, p = 0, itemType?: string) {
     setLoading(true);
     try {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(p * PAGE_SIZE) });
       if (cat) params.set('category', cat);
       if (srcId) params.set('sourceId', srcId);
+      if (itemType) params.set('itemType', itemType);
       const r = await api.get<any>(`/world-feed?${params}`);
       if (p === 0) setItems(r.items); else setItems(prev => [...prev, ...r.items]);
     } catch (e) {}
@@ -41,8 +43,8 @@ export default function WorldPage() {
     try { const r = await api.get<any>('/world-feed/blocked-sources'); setBlockedSources(r.blocked); } catch (e) {}
   }
 
-  function handleFilter(cat: string, srcId = '') { setSelectedCategory(cat); setSelectedSource(srcId); setPage(0); loadFeed(cat, srcId, 0); }
-  function loadMore() { const next = page + 1; setPage(next); loadFeed(selectedCategory, selectedSource, next); }
+  function handleFilter(cat: string, srcId = '', itemType = '') { setSelectedCategory(cat); setSelectedSource(srcId); setSelectedItemType(itemType); setPage(0); loadFeed(cat, srcId, 0, itemType || undefined); }
+  function loadMore() { const next = page + 1; setPage(next); loadFeed(selectedCategory, selectedSource, next, selectedItemType || undefined); }
 
   async function handleBlock(sourceId: number, sourceName: string) {
     if (!confirm(`Block "${sourceName}"? You will no longer see World Feed items or discussions from this source.`)) return;
@@ -103,7 +105,8 @@ export default function WorldPage() {
 
       {categories.length > 0 && (
         <div className="filter-bar">
-          <button className={`btn ${!selectedCategory && !selectedSource ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleFilter('', '')}>All</button>
+          <button className={`btn ${!selectedCategory && !selectedSource && !selectedItemType ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleFilter('', '')}>All</button>
+          <button className={`btn ${selectedItemType === 'podcast' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleFilter('', '', 'podcast')}>🎙 Podcasts</button>
           {categories.map(c => (
             <button key={c} className={`btn ${selectedCategory === c ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleFilter(c)}>{c}</button>
           ))}
@@ -120,11 +123,18 @@ export default function WorldPage() {
               <article key={item.id} className="world-card">
                 <div className="world-card-source">
                   <span className="world-source-badge">🌐 {item.sourceName}</span>
+                  {item.itemType === 'podcast' && <span className="world-source-badge" style={{ background: 'rgba(139,92,246,0.15)', color: 'var(--purple-soft)', border: '1px solid rgba(139,92,246,0.25)' }}>🎙 Podcast</span>}
                   {item.sourceCategory && <span className="world-category">{item.sourceCategory}</span>}
                   {item.author && <span className="world-author">by {item.author}</span>}
                 </div>
                 <h3 className="world-card-title"><a href={item.linkUrl} target="_blank" rel="noopener noreferrer">{item.title}</a></h3>
                 {item.summary && <p className="world-card-summary">{item.summary.slice(0, 280)}{item.summary.length > 280 ? '...' : ''}</p>}
+                {item.enclosureUrl && item.enclosureType?.startsWith('audio/') && (
+                  <audio controls className="world-audio-player" preload="none">
+                    <source src={item.enclosureUrl} type={item.enclosureType} />
+                  </audio>
+                )}
+                {item.episodeImageUrl && <img src={item.episodeImageUrl} alt="" className="world-episode-img" loading="lazy" />}
                 <div className="world-card-footer">
                   <div className="world-card-actions">
                     <time>{new Date(item.publishedAt).toLocaleDateString()}</time>

@@ -13,7 +13,7 @@ const latest = db.prepare('SELECT published_at, title FROM rss_items ORDER BY pu
 const nullFetch = sources.filter(s => !s.last_fetched_at);
 
 console.log(`  RSS sources:     ${sources.length} (${active.length} active)`);
-console.log(`  RSS items:       ${itemCount}`);
+const podcastCount = (db.prepare("SELECT COUNT(*) as c FROM rss_items WHERE item_type = 'podcast'").get() as any).c; const articleCount = (db.prepare("SELECT COUNT(*) as c FROM rss_items WHERE item_type = 'article'").get() as any).c; console.log(`  RSS items:       ${itemCount} (${articleCount} articles, ${podcastCount} podcasts)`);
 console.log(`  Latest item:     ${latest ? latest.published_at + ' — ' + (latest.title || '').slice(0, 60) : 'none'}`);
 console.log(`  Never fetched:   ${nullFetch.length} sources`);
 if (nullFetch.length > 0) nullFetch.forEach(s => console.log(`    - ${s.name}`));

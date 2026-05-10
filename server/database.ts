@@ -142,6 +142,11 @@ export function initializeDatabase(): void {
       image_url TEXT DEFAULT '',
       published_at TEXT,
       fetched_at TEXT DEFAULT (datetime('now')),
+      item_type TEXT DEFAULT 'article',
+      enclosure_url TEXT DEFAULT '',
+      enclosure_type TEXT DEFAULT '',
+      duration_text TEXT DEFAULT '',
+      episode_image_url TEXT DEFAULT '',
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_rss_items_source ON rss_items(source_id);
