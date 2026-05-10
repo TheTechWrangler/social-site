@@ -13,6 +13,7 @@ import WorldPage from './pages/WorldPage';
 import DiscoverPage from './pages/DiscoverPage';
 import FriendsPage from './pages/FriendsPage';
 import GamesPage from './pages/GamesPage';
+import SettingsPage from './pages/SettingsPage';
 import GameDetailPage from './pages/GameDetailPage';
 import OAuthCallback from './pages/OAuthCallback';
 import LandingPage from './pages/LandingPage';
@@ -62,7 +63,7 @@ export default function App() {
           <Link to="/">🏠 Home</Link>
           {user && <Link to="/discover">🔍 Discover</Link>}
           {user && <Link to="/friends">👥 Friends</Link>}
-          <Link to="/games">🎮 Games</Link>
+          {user && <Link to="/settings">⚙ Settings</Link>}
           <Link to="/world">🌍 World</Link>
           {user && <Link to={`/profile/${user.username}`}>👤 Profile</Link>}
           <Link to="/groups">👥 Groups</Link>
@@ -99,6 +100,7 @@ export default function App() {
           <Route path="/friends" element={user ? <FriendsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage />} />
+          <Route path="/settings" element={user ? <SettingsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/oauth/callback" element={<OAuthCallback onLogin={setUser} />} />
         </Routes>
       </main>
