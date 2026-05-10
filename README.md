@@ -1,0 +1,335 @@
+# Social Site
+
+A full-service social media platform. No ads. No algorithms. Just people.
+
+## Philosophy
+
+- Chronological feeds by default
+- User-controlled feed filters
+- No algorithmic ranking
+- No ads
+- No dark patterns
+- Modular architecture
+
+## Tech Stack
+
+- **Backend:** Node.js + Express + TypeScript + SQLite (better-sqlite3)
+- **Frontend:** React 18 + TypeScript + Vite
+- **Auth:** JWT tokens (7-day expiry)
+- **Database:** SQLite with WAL mode, foreign keys enabled
+
+## Quick Start
+
+```bash
+npm install
+npm run dev
+```
+
+Opens:
+- Frontend: http://localhost:5174
+- API: http://localhost:3003 (proxied through Vite)
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start both API server + Vite dev server |
+| `npm run server` | Start API server only |
+| `npm run client` | Start Vite dev server only |
+| `npm run build` | TypeScript check + Vite production build |
+| `npm run preview` | Preview production build |
+
+## API Endpoints
+
+### Auth
+- `POST /api/auth/register` — Create account
+- `POST /api/auth/login` — Log in
+- `GET /api/auth/me` — Current user
+- `GET /api/auth/providers` — Which social providers are configured
+- `GET /api/auth/google` — Start Google OAuth login
+- `GET /api/auth/google/callback` — Google OAuth callback
+- `GET /api/auth/steam` — Start Steam OpenID login
+- `GET /api/auth/steam/callback` — Steam OpenID callback
+
+### Feed
+- `GET /api/feed?mode=following` — Chronological feed
+
+### Posts
+- `POST /api/posts` — Create post
+- `GET /api/posts/:id` — Get post
+- `DELETE /api/posts/:id` — Delete post
+
+### Users
+- `GET /api/users/:username` — User profile
+- `PUT /api/users/profile` — Update own profile
+- `GET /api/users?q=` — Search users
+
+### Follows
+- `POST /api/follows/:userId` — Follow
+- `DELETE /api/follows/:userId` — Unfollow
+
+### Likes
+- `POST /api/likes/:postId` — Like
+- `DELETE /api/likes/:postId` — Unlike
+
+### Comments
+- `POST /api/comments/:postId` — Add comment
+- `GET /api/comments/:postId` — Get comments
+
+### Reposts
+- `POST /api/reposts/:postId` — Repost
+
+### Groups
+- `POST /api/groups` — Create group
+- `GET /api/groups` — List groups
+- `GET /api/groups/:id` — Group detail + feed
+- `POST /api/groups/:id/join` — Join
+- `POST /api/groups/:id/leave` — Leave
+
+### Notifications
+- `GET /api/notifications` — List notifications
+- `GET /api/notifications/unread-count` — Unread count
+- `POST /api/notifications/read-all` — Mark all read
+
+### Admin
+- `GET /api/admin/users` — List users
+- `POST /api/admin/users/:id/ban` — Ban user
+- `POST /api/admin/users/:id/unban` — Unban user
+- `GET /api/admin/posts` — List posts
+- `POST /api/admin/posts/:id/hide` — Hide post
+- `POST /api/admin/posts/:id/unhide` — Unhide post
+- `GET /api/admin/reports` — List reports
+- `POST /api/admin/reports` — Report a post
+
+## Database
+
+SQLite database stored in `data/social.db`. Tables:
+- users, posts, follows, likes, groups_table, group_members, notifications, reports, user_auth_providers
+
+## Environment
+
+Copy `.env.example` to `.env` and fill in values.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3003` | API server port |
+| `JWT_SECRET` | dev secret | JWT signing secret |
+| `SESSION_SECRET` | dev secret | Express session secret for OAuth |
+| `APP_BASE_URL` | `http://localhost:3003` | Backend base URL |
+| `WEB_BASE_URL` | `http://localhost:5174` | Frontend base URL |
+| `GOOGLE_CLIENT_ID` | — | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret |
+| `GOOGLE_CALLBACK_URL` | — | Google redirect URI |
+| `STEAM_API_KEY` | — | Steam Web API key |
+| `STEAM_RETURN_URL` | — | Steam OpenID return URL |
+
+## Google OAuth Setup
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a project → OAuth consent screen (External, add test users)
+3. Create OAuth 2.0 Client ID (Web application)
+4. Add authorized redirect URI:
+   - `http://localhost:3003/api/auth/google/callback`
+   - (or your APP_BASE_URL + /api/auth/google/callback)
+5. Copy Client ID and Client Secret to `.env`
+
+## Steam OpenID Setup
+
+1. Get a Steam Web API key at [https://steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey)
+2. Set `STEAM_API_KEY` in `.env`
+3. Set `STEAM_RETURN_URL` to `http://localhost:3003/api/auth/steam/callback`
+4. No redirect URI registration needed — Steam uses OpenID return URL
+
+## LAN Testing
+
+For testing from another machine on the LAN, update `.env`:
+```
+APP_BASE_URL=http://192.168.254.181:3003
+WEB_BASE_URL=http://192.168.254.181:5174
+GOOGLE_CALLBACK_URL=http://192.168.254.181:3003/api/auth/google/callback
+STEAM_RETURN_URL=http://192.168.254.181:3003/api/auth/steam/callback
+```
+The server listens on `0.0.0.0` by default, so it's reachable from LAN.
+
+**Production note:** Set `cookie.secure = true` in `server/index.ts` and use HTTPS.
+
+## Local LAN OAuth Setup
+
+### Google Cloud Console
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a project → Configure OAuth consent screen
+   - User Type: External
+   - Add test users (your email)
+3. Create OAuth 2.0 Client ID:
+   - Application type: **Web application**
+   - Authorized JavaScript origins:
+     - `http://192.168.254.181:5174`
+     - `http://192.168.254.181:3003`
+   - Authorized redirect URI:
+     - `http://192.168.254.181:3003/api/auth/google/callback`
+4. Copy Client ID and Client Secret into `.env`:
+   ```
+   GOOGLE_CLIENT_ID=123456789-xxxxx.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-xxxxx
+   ```
+
+### Steam
+
+1. Get a Steam Web API key at https://steamcommunity.com/dev/apikey
+   - Domain: `192.168.254.181` (or your LAN IP)
+2. Add to `.env`:
+   ```
+   STEAM_API_KEY=YOUR_STEAM_KEY
+   ```
+3. The `STEAM_RETURN_URL` should already be set in `.env` to:
+   `http://192.168.254.181:3003/api/auth/steam/callback`
+
+### Verify Setup
+
+```bash
+curl http://localhost:3003/api/auth/providers
+# {"google":true,"steam":true}  ← both should be true when configured
+```
+
+When not configured, clicking Google or Steam buttons will show:
+- "Google login is not configured yet" (in the UI)
+- Redirect to login page with error message (from backend)
+
+## World Feed (RSS)
+
+The World Feed pulls content from external RSS sources into a chronological feed of excerpts. Every RSS item is clearly labeled with its source name and includes an "Open original" link pointing to the publisher's website.
+
+**Philosophy:** External content is never presented as native/local content. No ads, no tracking, no algorithmic ranking. Pure chronological order by published date.
+
+### How It Works
+
+1. Admins add RSS sources via the Admin Dashboard → RSS Sources tab
+2. Admins manually fetch sources ("Fetch" or "Fetch All Active")
+3. RSS items are parsed, sanitized (scripts/stripped), and stored as excerpts
+4. Duplicate items are automatically skipped (matched by source + GUID)
+5. The World Feed displays items chronologically at `/world`
+
+### Public Access
+
+The World Feed at `/world` is **publicly accessible** without an account. Unauthenticated visitors can:
+- Browse all RSS items chronologically
+- Filter by category and source
+- Read existing local discussions/comments
+- Click "Open original" links
+
+Unauthenticated visitors **cannot**:
+- Post comments (login required)
+- Block/unblock RSS sources (login required)
+- Access any account-required features
+
+A "Log in to join the discussion or customize your sources" prompt appears near interaction areas for logged-out visitors.
+
+### API Routes
+
+| Endpoint | Access | Description |
+|----------|--------|-------------|
+| `GET /api/world-feed` | Public | World Feed items (supports `?sourceId=&category=&limit=&offset=`) |
+| `GET /api/world-feed/sources` | Public | Active sources and categories |
+| `GET /api/admin/rss/sources` | Admin | List all RSS sources |
+| `POST /api/admin/rss/sources` | Admin | Add a new RSS source |
+| `PATCH /api/admin/rss/sources/:id` | Admin | Update source (name, URL, active status, etc.) |
+| `POST /api/admin/rss/sources/:id/fetch` | Admin | Fetch a single source now |
+| `POST /api/admin/rss/fetch-all` | Admin | Fetch all active sources now |
+
+## Seed Data
+
+```bash
+npm run seed          # Seeds demo data (safe — skips if users already exist)
+npm run seed -- --reset  # Wipes and reseeds fresh demo data
+```
+
+Demo accounts created by seed:
+- `alice` / `demo1234`
+- `bob` / `demo1234`
+- `admin` / `admin1234`
+
+Seed also creates follows, posts, likes, comments, groups, notifications, and optional RSS sources (Ars Technica, NASA).
+
+## Gaming Source Bundle
+
+The seed script includes 6 gaming RSS sources covering PC gaming, console news, industry updates, and platform blogs. All gaming feeds are external RSS items — they are never presented as native/local content.
+
+**Included gaming sources (all verified working):**
+
+| Source | Category | Coverage |
+|--------|----------|----------|
+| PC Gamer | Gaming / PC | PC gaming news, reviews, hardware |
+| Rock Paper Shotgun | Gaming / PC | PC gaming culture, reviews, opinion |
+| Eurogamer | Gaming | Multi-platform gaming news, reviews |
+| Nintendo Life | Gaming / Console | Nintendo news, reviews, eShop |
+| GamesIndustry.biz | Gaming / Industry | Game industry business, development |
+| Steam Blog | Gaming / Platform | Official Steam platform updates |
+
+**U.S.-sourced Gaming sources:**
+
+| Source | Category |
+|--------|----------|
+| IGN | Gaming |
+| GameSpot | Gaming |
+| Polygon | Gaming |
+| Kotaku | Gaming |
+| Destructoid | Gaming |
+| Ars Technica Gaming | Gaming |
+| Xbox Wire | Gaming / Platform |
+| PlayStation Blog | Gaming / Platform |
+
+**Tech / AI / Hardware sources:**
+
+| Source | Category |
+|--------|----------|
+| Ars Technica | Tech |
+| The Verge | Tech |
+| Hacker News | Tech |
+| GitHub Blog | Tech |
+| Mozilla Blog | Tech |
+| NVIDIA Blog | Tech / AI |
+| Raspberry Pi | Tech / Hardware |
+
+**Skipped sources (no working RSS found):**
+- NVIDIA Newsroom (XML parse error)
+- AMD Blog (XML parse error)
+- Intel Newsroom (404)
+- Game Informer (no RSS feed)
+- Giant Bomb (no RSS feed)
+
+**Important notes:**
+- All items show source name badge, category, and "Open original →" link
+- Admins can deactivate or remove any source from the Admin RSS panel
+- Feed URLs may change — admins can edit URLs in the admin panel
+- Only excerpts/snippets are stored (max 2000 chars), with attribution
+
+## Media Uploads
+
+**Enabled now:**
+- Image uploads (PNG, JPEG, GIF, WebP, SVG) — max 5MB
+- YouTube/external video embeds — normal URLs, shorts, youtu.be links
+
+**Intentionally disabled:**
+- Direct video uploads (`ENABLE_VIDEO_UPLOADS=false`)
+- Can be enabled later with `ENABLE_VIDEO_UPLOADS=true`
+- Future video hosting requires serious storage/bandwidth planning
+
+**Feature flags (.env):**
+
+| Variable | Default |
+|----------|---------|
+| `ENABLE_IMAGE_UPLOADS` | `true` |
+| `ENABLE_EXTERNAL_VIDEO_EMBEDS` | `true` |
+| `ENABLE_VIDEO_UPLOADS` | `false` |
+| `MAX_IMAGE_UPLOAD_MB` | `5` |
+| `MAX_AVATAR_UPLOAD_MB` | `2` |
+| `MAX_VIDEO_UPLOAD_MB` | `250` |
+
+**Future video support:** The `post_media` table already supports `media_type='video'` with columns for `duration_seconds`, `thumbnail_url`, `processing_status`. When video uploads are enabled, no schema changes needed.
+
+**Production notes:**
+- Media files stored in `uploads/` directory (gitignored)
+- Production should use object storage (S3, R2) or CDN
+- `uploads/` directory must be backed up
+- No autoplay on embedded videos
