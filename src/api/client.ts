@@ -63,10 +63,12 @@ export const api = {
   // Groups
   createGroup: (name: string, description: string) =>
     request<{ group: any }>('/groups', { method: 'POST', body: JSON.stringify({ name, description }) }),
-  getGroups: () => request<{ groups: any[] }>('/groups'),
+  getGroups: (q?: string) => request<{ groups: any[] }>(`/groups${q ? `?q=${encodeURIComponent(q)}` : ''}`),
   getGroup: (id: number) => request<{ group: any; members: any[]; posts: any[] }>(`/groups/${id}`),
   joinGroup: (id: number) => request<{ ok: boolean }>(`/groups/${id}/join`, { method: 'POST' }),
   leaveGroup: (id: number) => request<{ ok: boolean }>(`/groups/${id}/leave`, { method: 'POST' }),
+  removeGroupMember: (groupId: number, userId: number) =>
+    request<{ ok: boolean }>(`/groups/${groupId}/members/${userId}`, { method: 'DELETE' }),
 
   // Notifications
   getNotifications: () => request<{ notifications: any[] }>('/notifications'),

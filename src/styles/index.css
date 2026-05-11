@@ -635,11 +635,50 @@ p { margin: 0 0 8px; }
 .profile-stats { display: flex; gap: 16px; margin: 10px 0; }
 .edit-profile { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; background: var(--panel); padding: 18px; border-radius: var(--radius); border: 1px solid var(--border); }
 
-/* ─── Groups ─── */
-.groups-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-.group-card { background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; color: var(--text); backdrop-filter: blur(8px); }
+/* ─── Groups List ─── */
+.groups-page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.groups-page-header h2 { margin: 0; }
+.groups-create-form { margin-bottom: 16px; }
+.groups-search { display: block; width: 100%; max-width: 360px; margin-bottom: 14px; }
+.groups-empty { margin-top: 24px; }
+.groups-list { display: flex; flex-direction: column; gap: 8px; }
+.group-card { display: flex; flex-direction: column; gap: 6px; background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; color: var(--text); backdrop-filter: blur(8px); transition: border-color 0.15s; }
 .group-card:hover { border-color: var(--accent); text-decoration: none; background: var(--bg-hover); }
-.group-header { margin-bottom: 16px; }
+.group-card-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.group-card-name { margin: 0; font-size: 1rem; }
+.group-card-desc { margin: 0; color: var(--text-muted); font-size: 0.88rem; line-height: 1.45; }
+.group-card-meta { display: flex; gap: 14px; font-size: 0.8rem; color: var(--text-dim); flex-wrap: wrap; }
+.group-card-owner { color: var(--text-dim); }
+.group-member-badge { padding: 1px 9px; background: rgba(20,241,149,0.12); color: var(--green); border: 1px solid rgba(20,241,149,0.25); border-radius: 10px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
+
+/* ─── Group Detail ─── */
+.group-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 14px 0 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.group-detail-info { flex: 1; min-width: 0; }
+.group-detail-name { margin: 0 0 6px; font-size: 1.3rem; }
+.group-detail-desc { margin: 0 0 10px; color: var(--text-muted); line-height: 1.5; }
+.group-detail-meta { display: flex; gap: 14px; font-size: 0.82rem; color: var(--text-dim); flex-wrap: wrap; align-items: center; }
+.group-detail-owner { color: var(--text-dim); }
+.group-detail-actions { display: flex; align-items: flex-start; padding-top: 2px; }
+.group-owner-label { font-size: 0.8rem; color: var(--text-dim); font-style: italic; }
+
+/* ─── Group Members ─── */
+.group-members-section { margin: 14px 0; }
+.group-members-toggle { cursor: pointer; font-size: 0.85rem; color: var(--text-dim); padding: 4px 0; background: none; border: none; display: flex; align-items: center; gap: 6px; }
+.group-members-toggle:hover { color: var(--text); }
+.group-members-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; padding-left: 4px; }
+.group-member-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; border-radius: var(--radius-sm); transition: background 0.15s; }
+.group-member-row:hover { background: var(--bg-hover); }
+.group-member-info { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; overflow: hidden; flex-wrap: wrap; }
+.group-member-name { font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-role-badge { padding: 1px 8px; border-radius: 8px; font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
+.role-owner { background: rgba(255,178,26,0.15); color: var(--amber); border: 1px solid rgba(255,178,26,0.30); }
+.role-admin { background: rgba(139,92,246,0.15); color: var(--purple-soft); border: 1px solid rgba(139,92,246,0.28); }
+.role-mod   { background: rgba(94,235,255,0.10); color: var(--accent-text); border: 1px solid rgba(94,235,255,0.22); }
+.group-remove-btn { flex-shrink: 0; font-size: 0.78rem; }
+
+/* ─── Group Posts ─── */
+.group-posts-section { margin-top: 8px; }
+.group-posts-heading { font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin: 0 0 10px; }
 
 /* ─── Notifications ─── */
 .notifications-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
