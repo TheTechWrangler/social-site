@@ -290,28 +290,31 @@ export default function AdminPage() {
           {reportActionError && <p className="error-msg">{reportActionError}</p>}
           {reports.length === 0 ? <p className="muted">No {reportFilter} reports.</p> : (
             reports.map(r => (
-              <div key={r.id} className="report-card">
+              <div key={r.id} className={`report-card ${r.status !== 'open' ? 'report-card--resolved' : ''}`}>
                 <div className="report-card-header">
                   <strong className="report-title">Report #{r.id}</strong>
-                  <span className={`admin-badge ${r.status === 'open' ? 'badge-unverified' : r.status === 'resolved' ? 'badge-banned' : 'badge-verified'}`}>Status: {REPORT_STATUS_LABELS[r.status] || 'Open'}</span>
+                  <span className={`admin-badge ${r.status === 'open' ? 'badge-unverified' : r.status === 'resolved' ? 'badge-banned' : 'badge-verified'}`}>
+                    {REPORT_STATUS_LABELS[r.status] || 'Open'}
+                  </span>
                 </div>
 
-                <div className="report-meta-grid">
-                  <div><strong>Type:</strong> {r.post_parent_id ? 'Comment' : 'Post'}</div>
-                  <div><strong>Reporter:</strong> @{r.reporter_name}</div>
-                  <div><strong>Reported author:</strong> {r.post_author_name ? `@${r.post_author_name}` : 'Unknown'}</div>
-                  <div><strong>Reason:</strong> {r.reason || 'Unknown'}</div>
-                  <div><strong>Created:</strong> {r.created_at ? new Date(`${r.created_at}Z`).toLocaleString() : 'Unknown'}</div>
+                <div className="report-meta-list">
+                  <div className="report-meta-row"><span className="report-meta-key">Type</span><span>{r.post_parent_id ? 'Comment' : 'Post'}</span></div>
+                  <div className="report-meta-row"><span className="report-meta-key">Reporter</span><span>@{r.reporter_name}</span></div>
+                  <div className="report-meta-row"><span className="report-meta-key">Author</span><span>{r.post_author_name ? `@${r.post_author_name}` : <em className="muted">Unknown</em>}</span></div>
+                  <div className="report-meta-row"><span className="report-meta-key">Reason</span><span>{r.reason || 'Unknown'}</span></div>
+                  <div className="report-meta-row"><span className="report-meta-key">Submitted</span><span>{r.created_at ? new Date(`${r.created_at}Z`).toLocaleString() : 'Unknown'}</span></div>
                 </div>
 
                 <div className="report-section">
-                  <div className="report-section-label">Explanation:</div>
+                  <div className="report-section-label">Explanation</div>
                   <p>{r.report_details || 'No explanation provided.'}</p>
                 </div>
 
                 <div className="report-section">
-                  <div className="report-section-label">Content:</div>
-                  <p className="report-content-text">"{r.post_content ? r.post_content.slice(0, 180) : 'Reported content is unavailable.'}"</p>
+                  <div className="report-section-label">Reported content</div>
+                  <p className="report-content-text">{r.post_content ? `"${r.post_content.slice(0, 240)}${r.post_content.length > 240 ? '…' : ''}"` : <em>Content unavailable.</em>}</p>
+                  {r.post_hidden ? <span className="report-hidden-badge">Hidden</span> : null}
                 </div>
 
                 {r.status === 'open' ? (
@@ -327,19 +330,17 @@ export default function AdminPage() {
                   </label>
                 ) : r.admin_note ? (
                   <div className="report-section">
-                    <div className="report-section-label">Admin note:</div>
+                    <div className="report-section-label">Admin note</div>
                     <p>{r.admin_note}</p>
                   </div>
                 ) : null}
 
-                <div className="report-card-actions">
-                  {r.status === 'open' && (
-                    <>
-                      <button className="btn btn-sm" onClick={() => reviewReport(r, 'dismissed')}>Approve</button>
-                      <button className="btn btn-sm" onClick={() => reviewReport(r, 'resolved')}>Delete</button>
-                    </>
-                  )}
-                </div>
+                {r.status === 'open' && (
+                  <div className="report-card-actions">
+                    <button className="btn btn-sm report-btn-approve" onClick={() => reviewReport(r, 'dismissed')}>Approve</button>
+                    <button className="btn btn-sm report-btn-delete" onClick={() => reviewReport(r, 'resolved')}>Delete</button>
+                  </div>
+                )}
               </div>
             ))
           )}

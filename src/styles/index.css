@@ -716,74 +716,132 @@ p { margin: 0 0 8px; }
 .admin-stat-card.alert .admin-stat-num { color: var(--magenta); }
 .admin-stat-card span:last-child { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
 
-/* Report filter tabs */
-.report-filters { display: flex; gap: 6px; margin-bottom: 12px; }
+/* ─── Admin Reports ─── */
+.report-filters { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+
 .report-card {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  margin-bottom: 12px;
+  gap: 0;
+  margin-bottom: 14px;
   background: var(--card-gradient);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
   border-radius: var(--radius);
   backdrop-filter: blur(8px);
+  overflow: hidden;
 }
+.report-card--resolved {
+  border-left-color: var(--border);
+  opacity: 0.82;
+}
+
+/* Header row */
 .report-card-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 16px 10px;
+}
+.report-title { color: var(--text-heading); font-size: 0.95rem; font-weight: 700; }
+
+/* Meta list — single column, key/value rows */
+.report-meta-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 16px 12px;
+  font-size: 0.83rem;
+}
+.report-meta-row {
+  display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  align-items: baseline;
+  line-height: 1.45;
 }
-.report-title { color: var(--text-heading); font-size: 1rem; }
-.report-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 6px 14px;
-  font-size: 0.85rem;
-  color: var(--text-muted);
+.report-meta-key {
+  flex-shrink: 0;
+  width: 76px;
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
+
+/* Section blocks (Explanation, Content, Note) */
 .report-section {
-  width: 100%;
-  padding-top: 10px;
+  padding: 11px 16px;
   border-top: 1px solid var(--border);
 }
 .report-section-label {
   margin-bottom: 5px;
-  color: var(--text-heading);
+  color: var(--text-dim);
   font-weight: 700;
-  font-size: 0.9rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .report-section p {
   margin: 0;
   color: var(--text);
-  line-height: 1.5;
+  font-size: 0.9rem;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.report-content-text { color: var(--text-muted); }
+.report-content-text {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.report-hidden-badge {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 8px;
+  background: rgba(255,90,46,0.12);
+  color: var(--orange);
+  border: 1px solid rgba(255,90,46,0.25);
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* Admin note input (open) */
 .report-admin-note-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding-top: 10px;
+  padding: 11px 16px;
   border-top: 1px solid var(--border);
-  color: var(--text-heading);
+  color: var(--text-dim);
   font-weight: 700;
-  font-size: 0.9rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .report-admin-note-field textarea {
   font-weight: 400;
+  font-size: 0.9rem;
   color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
   resize: vertical;
 }
+
+/* Action row */
 .report-card-actions {
   display: flex;
   gap: 8px;
   align-items: center;
-  flex-wrap: wrap;
-  padding-top: 2px;
+  padding: 10px 16px 13px;
+  border-top: 1px solid var(--border);
+  background: rgba(0,0,0,0.12);
 }
+.report-btn-approve { border-color: rgba(20,241,149,0.35); color: var(--green); }
+.report-btn-approve:hover { background: rgba(20,241,149,0.10); }
+.report-btn-delete  { border-color: rgba(255,90,46,0.35);  color: var(--orange); }
+.report-btn-delete:hover  { background: rgba(255,90,46,0.10); }
 
 /* ─── World Feed ─── */
 .world-page h2 { margin-bottom: 4px; }
