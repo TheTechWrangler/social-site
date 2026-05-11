@@ -4,16 +4,27 @@ import { requireAuth, requireVerified, optionalAuth } from '../middleware.js';
 
 const router = Router();
 
-// ─── Games Directory ───
-
-router.get('/', (_req, res) => {
-  const games = getDb().prepare(`
-    SELECT g.*, 
-      (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1) as lfg_count,
-      (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
-      (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
-    FROM games g WHERE g.is_active = 1 ORDER BY g.name
-  `).all();
+// GET /api/games — with optional search
+router.get('/', (req, res) => {
+  const q = (req.query.q as string || '').trim();
+  let games;
+  if (q) {
+    games = getDb().prepare(`
+      SELECT g.*, 
+        (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1) as lfg_count,
+        (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
+        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
+      FROM games g WHERE g.is_active = 1 AND g.name LIKE ? ORDER BY g.name LIMIT 20
+    `).all(`%${q}%`);
+  } else {
+    games = getDb().prepare(`
+      SELECT g.*, 
+        (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1) as lfg_count,
+        (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
+        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
+      FROM games g WHERE g.is_active = 1 ORDER BY g.name
+    `).all();
+  }
   res.json({ games });
 });
 
@@ -32,7 +43,8 @@ router.get('/:slug', optionalAuth, (req, res) => {
   const players = getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url, u.is_verified, u.profile_visibility
     FROM user_game_preferences p JOIN users u ON p.user_id = u.id
-    WHERE p.game_id = ? ORDER BY p.updated_at DESC LIMIT 30
+    WHERE p.game_id = ? AND u.game_discovery_enabled = 1 AND u.banned = 0
+    ORDER BY p.updated_at DESC LIMIT 30
   `).all(game.id);
 
   const servers = getDb().prepare(
@@ -112,16 +124,16 @@ router.get('/:slug/profile', requireAuth, (req, res) => {
 router.post('/:slug/profile', requireAuth, requireVerified, (req, res) => {
   const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
   if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
-  const { platform, playStyle, skillLevel, micPreference, usualPlayTimes, regionOrTimezone, lookingForGroup, notes } = req.body;
+  const { platform, playStyle, skillLevel, micPreference, usualPlayTimes, regionOrTimezone, lookingForGroup, notes, isFavorite, displayOnProfile } = req.body;
   getDb().prepare(`
-    INSERT INTO user_game_preferences (user_id, game_id, platform, play_style, skill_level, mic_preference, usual_play_times, region_or_timezone, looking_for_group, notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO user_game_preferences (user_id, game_id, platform, play_style, skill_level, mic_preference, usual_play_times, region_or_timezone, looking_for_group, notes, is_favorite, display_on_profile)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(user_id, game_id) DO UPDATE SET platform=excluded.platform, play_style=excluded.play_style,
     skill_level=excluded.skill_level, mic_preference=excluded.mic_preference, usual_play_times=excluded.usual_play_times,
     region_or_timezone=excluded.region_or_timezone, looking_for_group=excluded.looking_for_group, notes=excluded.notes,
-    updated_at=datetime('now')
+    is_favorite=excluded.is_favorite, display_on_profile=excluded.display_on_profile, updated_at=datetime('now')
   `).run((req as any).user.id, game.id, platform || '', playStyle || '', skillLevel || '', micPreference || '',
-    usualPlayTimes || '', regionOrTimezone || '', lookingForGroup ? 1 : 0, notes || '');
+    usualPlayTimes || '', regionOrTimezone || '', lookingForGroup ? 1 : 0, notes || '', isFavorite ? 1 : 0, displayOnProfile !== false ? 1 : 0);
   const prefs = getDb().prepare('SELECT * FROM user_game_preferences WHERE user_id = ? AND game_id = ?')
     .get((req as any).user.id, game.id);
   res.status(201).json({ profile: prefs });

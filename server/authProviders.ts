@@ -139,7 +139,7 @@ export function handleOAuthCallback(req: any, res: any): void {
     username: user.username,
     display_name: user.username,
     email: '',
-    role: 'user', is_verified: 0, profile_visibility: "public", feed_exposure: "extended",
+    role: 'user', is_verified: 0, profile_visibility: "public", feed_exposure: "extended", game_discovery_enabled: 0,
     banned: 0,
   });
   // Redirect to frontend with token

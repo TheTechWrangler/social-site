@@ -502,6 +502,25 @@ p { margin: 0 0 8px; }
 .settings-list { display: flex; flex-direction: column; gap: 6px; }
 .settings-row-card { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .settings-row-info { flex: 1; line-height: 1.3; }
+
+/* Profile Games */
+.profile-games { margin-bottom: 20px; }
+.profile-games h3 { font-size: 1rem; margin-bottom: 8px; }
+.profile-game-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.profile-game-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  background: var(--card-gradient);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 0.85rem;
+  color: var(--text-soft);
+  text-decoration: none;
+  transition: all 0.2s;
+}
+.profile-game-chip:hover { border-color: var(--accent); background: var(--bg-hover); color: var(--accent-text); }
 .empty-state { text-align: center; padding: 48px; color: var(--text-dim); }
 
 /* ─── Profile ─── */

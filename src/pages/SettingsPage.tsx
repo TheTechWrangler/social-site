@@ -5,6 +5,7 @@ export default function SettingsPage({ user }: { user: any }) {
   const [blocked, setBlocked] = useState<any[]>([]);
   const [muted, setMuted] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [gameDiscovery, setGameDiscovery] = useState(user?.game_discovery_enabled === 1);
 
   useEffect(() => { loadData(); }, []);
 
@@ -34,6 +35,14 @@ export default function SettingsPage({ user }: { user: any }) {
     } catch (e) { console.error(e); }
   }
 
+  async function toggleGameDiscovery() {
+    const newVal = !gameDiscovery;
+    setGameDiscovery(newVal);
+    try {
+      await fetch('/api/users/profile', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ gameDiscoveryEnabled: newVal }) });
+    } catch (e) { console.error(e); }
+  }
+
   if (loading) return <div className="loading">Loading...</div>;
 
   return (
@@ -47,6 +56,19 @@ export default function SettingsPage({ user }: { user: any }) {
           <div className="settings-row"><span>Display Name</span><strong>{user.display_name}</strong></div>
           <div className="settings-row"><span>Role</span><span className={`admin-badge badge-${user.role}`}>{user.role}</span></div>
           <div className="settings-row"><span>Verification</span><span className={`admin-badge ${user.is_verified ? 'badge-verified' : 'badge-unverified'}`}>{user.is_verified ? '✅ Verified' : '⚠ Unverified'}</span></div>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3>Game Discovery</h3>
+        <div className="settings-card">
+          <div className="settings-row">
+            <span>Let people who play the same games find me</span>
+            <button className={`btn btn-sm ${gameDiscovery ? 'btn-primary' : 'btn-ghost'}`} onClick={toggleGameDiscovery}>
+              {gameDiscovery ? 'ON' : 'OFF'}
+            </button>
+          </div>
+          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>When enabled, players who share your listed games can find your profile through the Games section. You can turn this off anytime.</p>
         </div>
       </div>
 

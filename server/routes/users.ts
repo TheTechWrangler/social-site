@@ -23,6 +23,13 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
   const following = getDb().prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id = ?').get(row.id) as any;
   const postCount = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL').get(row.id) as any;
 
+  // Get visible game preferences
+  const gamePrefs = getDb().prepare(`
+    SELECT p.*, g.name as game_name, g.slug as game_slug
+    FROM user_game_preferences p JOIN games g ON p.game_id = g.id
+    WHERE p.user_id = ? AND p.display_on_profile = 1 ORDER BY p.is_favorite DESC, g.name
+  `).all(row.id);
+
   if (!canViewFull) {
     // Limited profile view for private profiles
     return res.json({
@@ -44,13 +51,14 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
       profileVisibility: row.profile_visibility, isPrivate: isPrivate,
       followerCount: followers?.c ?? 0, followingCount: following?.c ?? 0,
       postCount: postCount?.c ?? 0, isFollowing,
+      gamePrefs,
     }
   });
 });
 
 // PUT /api/users/profile
 router.put('/profile', requireAuth, (req: AuthRequest, res) => {
-  const { displayName, bio, profileVisibility, feedExposure, avatar_url } = req.body;
+  const { displayName, bio, profileVisibility, feedExposure, gameDiscoveryEnabled, avatar_url } = req.body;
   const vis = profileVisibility === 'private' ? 'private' : 'public';
   const fex = ['friends_only', 'mixed', 'everyone', 'friends', 'extended', 'world'].includes(feedExposure) ? feedExposure : 'extended';
   const fields: string[] = [];
@@ -59,7 +67,7 @@ router.put('/profile', requireAuth, (req: AuthRequest, res) => {
   if (bio !== undefined) { fields.push('bio = ?'); vals.push(bio); }
   if (avatar_url !== undefined) { fields.push('avatar_url = ?'); vals.push(avatar_url); }
   fields.push('profile_visibility = ?'); vals.push(vis);
-  fields.push('feed_exposure = ?'); vals.push(fex);
+  if (gameDiscoveryEnabled !== undefined) { fields.push('game_discovery_enabled = ?'); vals.push(gameDiscoveryEnabled ? 1 : 0); }
   fields.push("updated_at = datetime('now')");
   vals.push(req.user!.id);
   getDb().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...vals);

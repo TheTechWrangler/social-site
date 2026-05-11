@@ -13,6 +13,13 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   const [profileVis, setProfileVis] = useState('public');
   const [avatarUploading, setAvatarUploading] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const [showGamePicker, setShowGamePicker] = useState(false);
+  const [gameSearch, setGameSearch] = useState('');
+  const [gameResults, setGameResults] = useState<any[]>([]);
+  const [gamePlatform, setGamePlatform] = useState('PC');
+  const [gamePlayStyle, setGamePlayStyle] = useState('');
+  const [gameLookingForGroup, setGameLookingForGroup] = useState(false);
+  const [gameFavorite, setGameFavorite] = useState(false);
 
   useEffect(() => { loadProfile(); }, [username]);
 
@@ -72,6 +79,30 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
       setProfile({ ...profile, avatarUrl: r.media.url });
     } catch (e: any) { alert(e.message || 'Avatar upload failed'); }
     setAvatarUploading(false);
+  }
+
+  async function searchGames(q: string) {
+    if (q.length < 1) { setGameResults([]); return; }
+    try { const r = await api.get<any>(`/games?q=${encodeURIComponent(q)}`); setGameResults(r.games || []); } catch (e) {}
+  }
+
+  async function addGame(gameId: number, slug: string) {
+    try {
+      await fetch(`/api/games/${slug}/profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({ platform: gamePlatform, playStyle: gamePlayStyle, lookingForGroup: gameLookingForGroup, isFavorite: gameFavorite, displayOnProfile: true }),
+      });
+      setShowGamePicker(false); setGameSearch(''); setGameResults([]);
+      loadProfile();
+    } catch (e) { console.error(e); }
+  }
+
+  async function removeGame(gameId: number, slug: string) {
+    try {
+      await fetch(`/api/games/${slug}/profile`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      loadProfile();
+    } catch (e) { console.error(e); }
   }
 
   if (!profile) return <div className="loading">Loading...</div>;
@@ -140,6 +171,20 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
         </div>
       )}
 
+      {!isLimited && profile.gamePrefs && profile.gamePrefs.length > 0 && (
+        <div className="profile-games">
+          <h3>🎮 Games I Play</h3>
+          <div className="profile-game-chips">
+            {profile.gamePrefs.map((g: any) => (
+              <a key={g.game_id} href={`/games/${g.game_slug}`} className="profile-game-chip">
+                {g.is_favorite ? '⭐' : ''} {g.game_name}
+                {g.platform && <span className="muted" style={{ fontSize: '0.75rem' }}> ({g.platform})</span>}
+                {g.looking_for_group ? ' 🔍' : ''}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
       {!isLimited && <h3>Posts</h3>}
       {!isLimited && (posts.length === 0 ? <p className="muted">No posts yet.</p> : posts.map(p => <PostCard key={p.id} post={p} currentUser={currentUser} />))}
     </div>

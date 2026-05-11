@@ -31,6 +31,7 @@ export function initializeDatabase(): void {
       verified_by INTEGER,
       profile_visibility TEXT DEFAULT 'public' CHECK(profile_visibility IN ('public','private')),
       feed_exposure TEXT DEFAULT 'extended' CHECK(feed_exposure IN ('friends_only','mixed','everyone','friends','extended','world')),
+      game_discovery_enabled INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
@@ -214,6 +215,8 @@ export function initializeDatabase(): void {
       usual_play_times TEXT DEFAULT '',
       region_or_timezone TEXT DEFAULT '',
       looking_for_group INTEGER DEFAULT 0,
+      is_favorite INTEGER DEFAULT 0,
+      display_on_profile INTEGER DEFAULT 1,
       notes TEXT DEFAULT '',
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
