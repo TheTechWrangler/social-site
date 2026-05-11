@@ -6,11 +6,16 @@ import { canInteractWithPost, canViewPost } from '../visibility.js';
 
 const router = Router();
 
+const COMMENT_MAX_LENGTH = 5000;
+
 // POST /api/comments/:postId
 router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const parentId = Number(req.params.postId);
   const { content } = req.body;
   if (!content?.trim()) { res.status(400).json({ error: 'Content required.' }); return; }
+  if (content.trim().length > COMMENT_MAX_LENGTH) {
+    res.status(400).json({ error: `Comment must be ${COMMENT_MAX_LENGTH} characters or fewer.` }); return;
+  }
 
   const parent = getDb().prepare('SELECT * FROM posts WHERE id = ?').get(parentId) as any;
   if (!parent) { res.status(404).json({ error: 'Post not found.' }); return; }

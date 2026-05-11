@@ -5,17 +5,22 @@ import { enrichPost } from './posts.js';
 
 const router = Router();
 
+const GROUP_NAME_MAX = 80;
+const GROUP_DESC_MAX = 400;
+
 // POST /api/groups
 router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const { name, description } = req.body;
   if (!name?.trim()) { res.status(400).json({ error: 'Name required.' }); return; }
+  const trimmedName = name.trim().slice(0, GROUP_NAME_MAX);
+  const trimmedDesc = (description || '').trim().slice(0, GROUP_DESC_MAX);
   const result = getDb().prepare(
     'INSERT INTO groups_table (name, description, owner_id) VALUES (?, ?, ?)'
-  ).run(name.trim(), description || '', req.user!.id);
+  ).run(trimmedName, trimmedDesc, req.user!.id);
   const groupId = result.lastInsertRowid as number;
   getDb().prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)')
     .run(groupId, req.user!.id, 'admin');
-  res.status(201).json({ group: { id: groupId, name: name.trim(), description: description || '', ownerId: req.user!.id } });
+  res.status(201).json({ group: { id: groupId, name: trimmedName, description: trimmedDesc, ownerId: req.user!.id } });
 });
 
 // GET /api/groups — with optional ?q= search and is_member flag

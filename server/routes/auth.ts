@@ -5,6 +5,9 @@ import { requireAuth, type AuthRequest } from '../middleware.js';
 
 const router = Router();
 
+const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
 // POST /api/auth/register
 router.post('/register', (req, res) => {
   try {
@@ -12,8 +15,14 @@ router.post('/register', (req, res) => {
     if (!username || !displayName || !email || !password) {
       res.status(400).json({ error: 'All fields required.' }); return;
     }
-    if (password.length < 6) {
-      res.status(400).json({ error: 'Password must be at least 6 characters.' }); return;
+    if (!USERNAME_RE.test(username.trim())) {
+      res.status(400).json({ error: 'Username must be 3–30 characters and contain only letters, numbers, or underscores.' }); return;
+    }
+    if (!EMAIL_RE.test(email.trim())) {
+      res.status(400).json({ error: 'A valid email address is required.' }); return;
+    }
+    if (password.length < 8) {
+      res.status(400).json({ error: 'Password must be at least 8 characters.' }); return;
     }
     const user = registerUser(username.trim(), displayName.trim(), email.trim().toLowerCase(), password);
     const token = generateToken(user);

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import cors from 'cors';
 import session from 'express-session';
@@ -27,9 +28,61 @@ import gamesRoutes from './routes/games.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3003;
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// ─── Production secret guards ───
+// Refuse startup in production if required secrets are missing.
+if (IS_PROD) {
+  if (!process.env.JWT_SECRET) {
+    console.error('[startup] FATAL: JWT_SECRET environment variable is required in production.');
+    process.exit(1);
+  }
+  if (!process.env.SESSION_SECRET) {
+    console.error('[startup] FATAL: SESSION_SECRET environment variable is required in production.');
+    process.exit(1);
+  }
+} else {
+  if (!process.env.JWT_SECRET) {
+    console.warn('[startup] WARNING: JWT_SECRET not set — using insecure dev fallback. Set it before deploying.');
+  }
+  if (!process.env.SESSION_SECRET) {
+    console.warn('[startup] WARNING: SESSION_SECRET not set — using insecure dev fallback. Set it before deploying.');
+  }
+}
+
 const SESSION_SECRET = process.env.SESSION_SECRET || 'social-site-session-dev-secret';
 
 const app = express();
+
+// ─── Trust proxy (required for correct rate-limit IPs behind Nginx Proxy Manager) ───
+// Set TRUST_PROXY=1 in production when behind a single reverse proxy.
+const trustProxy = process.env.TRUST_PROXY === '1' ? 1 : false;
+if (trustProxy) app.set('trust proxy', trustProxy);
+
+// ─── Security headers (Helmet) ───
+// CSP intentionally permits:
+//   - YouTube embeds (frame-src)
+//   - External RSS/article images (img-src https:)
+//   - External podcast/audio URLs (media-src https:)
+//   - Protected /uploads files (served same-origin)
+//   - Inline styles (React renders style={} as style attributes — requires unsafe-inline)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      mediaSrc: ["'self'", 'https:'],
+      frameSrc: ['https://www.youtube.com', 'https://www.youtube-nocookie.com'],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
 
 // Session (required for OAuth)
 app.use(session({
@@ -37,7 +90,8 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: false, // set true in production with HTTPS
+    // Requires HTTPS in production. Behind Nginx Proxy Manager, also set TRUST_PROXY=1.
+    secure: IS_PROD,
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
     sameSite: 'lax',

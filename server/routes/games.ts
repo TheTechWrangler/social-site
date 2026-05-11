@@ -98,15 +98,24 @@ router.get('/:slug/lfg', (req, res) => {
   res.json({ posts });
 });
 
+const LFG_TITLE_MAX = 120;
+const LFG_BODY_MAX = 1000;
+const SHORT_FIELD_MAX = 80;
+const NOTES_MAX = 500;
+
 router.post('/:slug/lfg', requireAuth, requireVerified, (req, res) => {
   const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
   if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
   const { title, body, platform, playStyle, desiredGroupSize, micRequired, durationHours } = req.body;
   if (!title?.trim()) { res.status(400).json({ error: 'Title required.' }); return; }
+  const cleanTitle = title.trim().slice(0, LFG_TITLE_MAX);
+  const cleanBody = (body || '').trim().slice(0, LFG_BODY_MAX);
+  const cleanPlatform = (platform || '').trim().slice(0, SHORT_FIELD_MAX);
+  const cleanPlayStyle = (playStyle || '').trim().slice(0, SHORT_FIELD_MAX);
   const hours = Math.min(Math.max(Number(durationHours) || 6, 1), 24);
   const r = getDb().prepare(
     'INSERT INTO game_lfg_posts (user_id, game_id, title, body, platform, play_style, desired_group_size, mic_required, expires_at) VALUES (?,?,?,?,?,?,?,?, datetime(\'now\', ?))'
-  ).run((req as any).user.id, game.id, title.trim(), body || '', platform || '', playStyle || '', desiredGroupSize || null, micRequired ? 1 : 0, `+${hours} hours`);
+  ).run((req as any).user.id, game.id, cleanTitle, cleanBody, cleanPlatform, cleanPlayStyle, desiredGroupSize || null, micRequired ? 1 : 0, `+${hours} hours`);
   const post = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ?').get(r.lastInsertRowid);
   res.status(201).json({ post });
 });
@@ -183,6 +192,7 @@ router.post('/:slug/profile', requireAuth, requireVerified, (req, res) => {
   const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
   if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
   const { platform, playStyle, skillLevel, micPreference, usualPlayTimes, regionOrTimezone, lookingForGroup, notes, isFavorite, displayOnProfile } = req.body;
+  const s = (v: any) => (v || '').toString().trim().slice(0, SHORT_FIELD_MAX);
   getDb().prepare(`
     INSERT INTO user_game_preferences (user_id, game_id, platform, play_style, skill_level, mic_preference, usual_play_times, region_or_timezone, looking_for_group, notes, is_favorite, display_on_profile)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
@@ -190,14 +200,13 @@ router.post('/:slug/profile', requireAuth, requireVerified, (req, res) => {
     skill_level=excluded.skill_level, mic_preference=excluded.mic_preference, usual_play_times=excluded.usual_play_times,
     region_or_timezone=excluded.region_or_timezone, looking_for_group=excluded.looking_for_group, notes=excluded.notes,
     is_favorite=excluded.is_favorite, display_on_profile=excluded.display_on_profile, updated_at=datetime('now')
-  `).run((req as any).user.id, game.id, platform || '', playStyle || '', skillLevel || '', micPreference || '',
-    usualPlayTimes || '', regionOrTimezone || '', lookingForGroup ? 1 : 0, notes || '', isFavorite ? 1 : 0, displayOnProfile !== false ? 1 : 0);
+  `).run((req as any).user.id, game.id, s(platform), s(playStyle), s(skillLevel), s(micPreference),
+    s(usualPlayTimes), s(regionOrTimezone), lookingForGroup ? 1 : 0, (notes || '').toString().trim().slice(0, NOTES_MAX),
+    isFavorite ? 1 : 0, displayOnProfile !== false ? 1 : 0);
   const prefs = getDb().prepare('SELECT * FROM user_game_preferences WHERE user_id = ? AND game_id = ?')
     .get((req as any).user.id, game.id);
   res.status(201).json({ profile: prefs });
 });
-
-export default router;
 
 // DELETE /api/games/:slug/profile
 router.delete('/:slug/profile', requireAuth, (req, res) => {
@@ -206,3 +215,5 @@ router.delete('/:slug/profile', requireAuth, (req, res) => {
   getDb().prepare('DELETE FROM user_game_preferences WHERE user_id = ? AND game_id = ?').run((req as any).user.id, game.id);
   res.json({ ok: true });
 });
+
+export default router;

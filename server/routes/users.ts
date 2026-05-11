@@ -175,8 +175,8 @@ router.put('/profile', requireAuth, (req: AuthRequest, res) => {
   const whi = ['world_home_off', 'world_home_few', 'world_home_balanced'].includes(worldHomeInjection) ? worldHomeInjection : undefined;
   const fields: string[] = [];
   const vals: any[] = [];
-  if (displayName !== undefined) { fields.push('display_name = ?'); vals.push(displayName); }
-  if (bio !== undefined) { fields.push('bio = ?'); vals.push(bio); }
+  if (displayName !== undefined) { fields.push('display_name = ?'); vals.push(String(displayName).trim().slice(0, 80)); }
+  if (bio !== undefined) { fields.push('bio = ?'); vals.push(String(bio).trim().slice(0, 500)); }
   if (avatar_url !== undefined) { fields.push('avatar_url = ?'); vals.push(avatar_url); }
   if (profileVisibility !== undefined) { fields.push('profile_visibility = ?'); vals.push(vis); }
   if (feedExposure !== undefined) { fields.push('feed_exposure = ?'); vals.push(fex); }

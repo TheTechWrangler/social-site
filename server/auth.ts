@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { getDb } from './database.js';
 
+// Production startup check is in server/index.ts. This fallback is dev-only.
 const JWT_SECRET = process.env.JWT_SECRET || 'social-site-dev-secret-change-in-production';
 const TOKEN_EXPIRY = '7d';
 

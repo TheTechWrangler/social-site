@@ -149,6 +149,56 @@ Copy `.env.example` to `.env` and fill in values.
 3. Set `STEAM_RETURN_URL` to `http://localhost:3003/api/auth/steam/callback`
 4. No redirect URI registration needed — Steam uses OpenID return URL
 
+## Staging / Production Requirements
+
+Before pointing a real domain at this app, complete all of the following.
+
+### Required — will fail to start without these in production
+
+| Step | What to do |
+|------|------------|
+| `JWT_SECRET` | Set to a random 48+ byte hex string. Generate: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+| `SESSION_SECRET` | Same as above, use a different value |
+| `NODE_ENV=production` | The server **refuses to start** if either secret is missing when `NODE_ENV=production` |
+
+### Required — for secure HTTPS operation
+
+| Step | What to do |
+|------|------------|
+| Use HTTPS | The session cookie uses `secure: true` in production — HTTP will break OAuth sessions |
+| `TRUST_PROXY=1` | Set this when running behind Nginx Proxy Manager. Required for rate limiting to see real client IPs |
+| Update `WEB_BASE_URL` | Set to your real frontend domain (e.g. `https://yourdomain.com`) |
+| Update `APP_BASE_URL` | Set to your real API domain (e.g. `https://yourdomain.com` or `https://api.yourdomain.com`) |
+
+### Parked — not yet enabled
+
+| Feature | Status |
+|---------|--------|
+| Direct video uploads | Disabled (`ENABLE_VIDEO_UPLOADS=false`). Requires storage/bandwidth planning before enabling. |
+| Email verification / password reset | Not implemented. Parked until real domain + email provider are configured. |
+| OAuth (Google / Steam) | Works but requires real callback URLs registered with each provider. |
+
+### Never do these
+
+- Do not commit `.env` to version control
+- Do not share `JWT_SECRET` or `SESSION_SECRET`
+- Do not run with the dev fallback secrets in production (`JWT_SECRET` empty = server refuses to start)
+
+### Quick production checklist
+
+```bash
+# 1. Copy and fill in secrets
+cp .env.example .env
+# Edit .env: set JWT_SECRET, SESSION_SECRET, NODE_ENV=production, TRUST_PROXY=1,
+#            WEB_BASE_URL, APP_BASE_URL
+
+# 2. Build
+npm run build
+
+# 3. Start (production)
+NODE_ENV=production node dist/server/index.js
+```
+
 ## LAN Testing
 
 For testing from another machine on the LAN, update `.env`:
@@ -160,7 +210,7 @@ STEAM_RETURN_URL=http://192.168.254.181:3003/api/auth/steam/callback
 ```
 The server listens on `0.0.0.0` by default, so it's reachable from LAN.
 
-**Production note:** Set `cookie.secure = true` in `server/index.ts` and use HTTPS.
+**Production note:** Set `NODE_ENV=production` and `TRUST_PROXY=1` in `.env`. The server auto-enables `cookie.secure` and enforces required secrets. See the Staging / Production Requirements section.
 
 ## Local LAN OAuth Setup
 

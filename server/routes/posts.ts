@@ -55,15 +55,29 @@ function enrichPost(row: any, userId?: number): any {
   };
 }
 
+const POST_MAX_LENGTH = 5000;
+
 // POST /api/posts — create a post
 router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   try {
     const { content, groupId } = req.body;
     if (!content?.trim()) { res.status(400).json({ error: 'Content required.' }); return; }
+    if (content.trim().length > POST_MAX_LENGTH) {
+      res.status(400).json({ error: `Post content must be ${POST_MAX_LENGTH} characters or fewer.` }); return;
+    }
+
+    if (groupId) {
+      const group = getDb().prepare('SELECT id FROM groups_table WHERE id = ?').get(Number(groupId));
+      if (!group) { res.status(404).json({ error: 'Group not found.' }); return; }
+      const isMember = getDb().prepare('SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?').get(Number(groupId), req.user!.id);
+      if (!isMember && req.user!.role !== 'admin') {
+        res.status(403).json({ error: 'You must be a member of this group to post.' }); return;
+      }
+    }
 
     const result = getDb().prepare(
       'INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)'
-    ).run(req.user!.id, content.trim(), groupId || null);
+    ).run(req.user!.id, content.trim(), groupId ? Number(groupId) : null);
 
     const row = getDb().prepare(`
       SELECT p.*, u.username, u.display_name, u.avatar_url
