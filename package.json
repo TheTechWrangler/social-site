@@ -9,6 +9,7 @@
     "server": "tsx server/index.ts",
     "build": "tsc --noEmit && vite build",
     "seed": "tsx server/seed.ts",
+    "cleanup:test-data": "tsx server/cleanupTestData.ts",
     "seed:with-rss": "tsx server/seed.ts && tsx server/rssFetch.ts",
     "rss:fetch": "tsx server/rssFetch.ts",
     "rss:status": "tsx server/rssStatus.ts",
