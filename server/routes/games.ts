@@ -140,3 +140,11 @@ router.post('/:slug/profile', requireAuth, requireVerified, (req, res) => {
 });
 
 export default router;
+
+// DELETE /api/games/:slug/profile
+router.delete('/:slug/profile', requireAuth, (req, res) => {
+  const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
+  if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
+  getDb().prepare('DELETE FROM user_game_preferences WHERE user_id = ? AND game_id = ?').run((req as any).user.id, game.id);
+  res.json({ ok: true });
+});

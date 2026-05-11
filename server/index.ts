@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import cors from 'cors';
 import session from 'express-session';
 import passport from 'passport';
@@ -53,6 +54,45 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
+
+// ─── Rate Limiting ───
+if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
+  const authLimiter = rateLimit({
+    windowMs: (parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MINUTES || '15', 10)) * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_AUTH_MAX || '10', 10),
+    message: { error: 'Too many attempts. Please try again later.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
+  const writeLimiter = rateLimit({
+    windowMs: (parseInt(process.env.RATE_LIMIT_WRITE_WINDOW_MINUTES || '15', 10)) * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_WRITE_MAX || '60', 10),
+    message: { error: 'Too many requests. Please slow down.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
+  const uploadLimiter = rateLimit({
+    windowMs: (parseInt(process.env.RATE_LIMIT_WRITE_WINDOW_MINUTES || '15', 10)) * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_UPLOAD_MAX || '20', 10),
+    message: { error: 'Too many uploads. Please slow down.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
+
+  // Auth endpoints
+  app.use('/api/auth/login', authLimiter);
+  app.use('/api/auth/register', authLimiter);
+  // Upload endpoints
+  app.use('/api/uploads/image', uploadLimiter);
+  app.use('/api/uploads/video', uploadLimiter);
+  app.use('/api/uploads/external-video', uploadLimiter);
+  // Write endpoints
+  app.use('/api/posts', writeLimiter);
+  app.use('/api/comments', writeLimiter);
+  app.use('/api/likes', writeLimiter);
+  app.use('/api/reposts', writeLimiter);
+  app.use('/api/world-feed', writeLimiter);
+  app.use('/api/games', writeLimiter);
+  app.use('/api/follows', writeLimiter);
+}
+
 app.use('/uploads', express.static(path.resolve(__dirname, '..', 'uploads')));
 
 // API routes
