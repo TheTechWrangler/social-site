@@ -17,6 +17,7 @@ import SettingsPage from './pages/SettingsPage';
 import GameDetailPage from './pages/GameDetailPage';
 import OAuthCallback from './pages/OAuthCallback';
 import LandingPage from './pages/LandingPage';
+import PostDetailPage from './pages/PostDetailPage';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -126,6 +127,7 @@ export default function App() {
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage />} />
           <Route path="/settings" element={user ? <SettingsPage user={user} /> : <Navigate to="/login" />} />
+          <Route path="/posts/:id" element={user ? <PostDetailPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/oauth/callback" element={<OAuthCallback onLogin={setUser} />} />
         </Routes>
       </main>

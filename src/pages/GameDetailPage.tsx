@@ -20,6 +20,9 @@ export default function GameDetailPage() {
   const [lfgPlatform, setLfgPlatform] = useState('');
   const [lfgPlayStyle, setLfgPlayStyle] = useState('');
   const [lfgDuration, setLfgDuration] = useState(6);
+  const [myLfgPosts, setMyLfgPosts] = useState<any[]>([]);
+  const [extendDurations, setExtendDurations] = useState<Record<number, number>>({});
+  const [extendingId, setExtendingId] = useState<number | null>(null);
 
   const user = JSON.parse(localStorage.getItem('user') || 'null');
   const isVerified = user?.is_verified === 1 || user?.isVerified === true;
@@ -45,6 +48,12 @@ export default function GameDetailPage() {
       setGame(r.game); setLfgPosts(r.lfgPosts); setPlayers(r.players); setServers(r.servers || []);
       setViewerDiscoveryEnabled(!!r.viewerDiscoveryEnabled);
     } catch (e) { console.error(e); }
+    if (user) {
+      try {
+        const r = await api.get<any>(`/games/${slug}/lfg/mine`);
+        setMyLfgPosts(r.posts);
+      } catch (e) { /* not logged in or no posts */ }
+    }
   }
 
   async function createLfg(e: React.FormEvent) {
@@ -59,6 +68,24 @@ export default function GameDetailPage() {
 
   async function deleteLfg(id: number) {
     try { await fetch(`/api/games/lfg/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }); loadData(); } catch (e) {}
+  }
+
+  async function extendLfg(id: number) {
+    const hours = extendDurations[id] ?? 6;
+    setExtendingId(id);
+    try {
+      await fetch(`/api/games/lfg/${id}/extend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({ durationHours: hours }),
+      });
+      await loadData();
+    } catch (e: any) { alert(e.message || 'Could not extend post.'); }
+    finally { setExtendingId(null); }
+  }
+
+  function setExtendDuration(id: number, hours: number) {
+    setExtendDurations(prev => ({ ...prev, [id]: hours }));
   }
 
   async function followPlayer(player: any) {
@@ -145,34 +172,86 @@ export default function GameDetailPage() {
               <button className="btn btn-primary">Post</button>
             </form>
           )}
-          {lfgPosts.length === 0 ? <p className="muted">No LFG posts yet.</p> : (
-            lfgPosts.map(p => (
-              <div key={p.id} className="post-card">
-                <div className="post-header">
-                  <Link to={`/profile/${p.username}`} className="post-user">
-                    <span className="avatar-placeholder">{p.display_name?.[0] || '?'}</span>
-                    <div><strong>{p.display_name}</strong><span className="muted">@{p.username}</span></div>
-                  </Link>
-                  <span className="post-time">{new Date(p.created_at + 'Z').toLocaleDateString()}</span>
-                  {p.expires_at && (
-                    <span className={`lfg-expires ${new Date(p.expires_at + 'Z') < new Date() ? 'expired' : ''}`}>
-                      {new Date(p.expires_at + 'Z') < new Date() ? 'Expired' : `Expires ${timeUntil(p.expires_at)}`}
-                    </span>
+
+          {/* My LFG Posts management — only shown when logged in and has any posts */}
+          {user && myLfgPosts.length > 0 && (
+            <div className="my-lfg-section">
+              <h4 className="my-lfg-heading">My LFG Posts</h4>
+              {myLfgPosts.map(p => {
+                const isExpired = new Date(p.expires_at + 'Z') <= new Date();
+                const extHours = extendDurations[p.id] ?? 6;
+                const isWorking = extendingId === p.id;
+                return (
+                  <div key={p.id} className={`post-card my-lfg-card ${isExpired ? 'lfg-card-expired' : ''}`}>
+                    <div className="post-header">
+                      <strong>{p.title}</strong>
+                      <span className={`lfg-expires ${isExpired ? 'expired' : ''}`}>
+                        {isExpired ? 'Expired' : `Expires ${timeUntil(p.expires_at)}`}
+                      </span>
+                    </div>
+                    {p.body && <p className="muted" style={{ fontSize: '0.85rem', margin: '4px 0' }}>{p.body}</p>}
+                    <div className="lfg-tags">
+                      {p.platform && <span className="lfg-tag">🎮 {p.platform}</span>}
+                      {p.play_style && <span className="lfg-tag">⚡ {p.play_style}</span>}
+                      {p.mic_required ? <span className="lfg-tag">🎙 Mic required</span> : null}
+                    </div>
+                    <div className="lfg-manage-row">
+                      <select
+                        className="input"
+                        style={{ width: 'auto' }}
+                        value={extHours}
+                        onChange={e => setExtendDuration(p.id, Number(e.target.value))}
+                        disabled={isWorking}
+                      >
+                        {[1,3,6,12,24].map(h => <option key={h} value={h}>{h}h</option>)}
+                      </select>
+                      <button
+                        className="btn btn-sm btn-primary"
+                        onClick={() => extendLfg(p.id)}
+                        disabled={isWorking}
+                      >
+                        {isWorking ? '…' : isExpired ? 'Reactivate' : 'Extend'}
+                      </button>
+                      <button className="btn btn-sm btn-ghost" onClick={() => deleteLfg(p.id)} disabled={isWorking}>Delete</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Active public LFG list */}
+          <div className="lfg-public-list">
+            {myLfgPosts.length > 0 && <h4 className="my-lfg-heading">Active LFG</h4>}
+            {lfgPosts.length === 0 ? <p className="muted">No LFG posts yet.</p> : (
+              lfgPosts.map(p => (
+                <div key={p.id} className="post-card">
+                  <div className="post-header">
+                    <Link to={`/profile/${p.username}`} className="post-user">
+                      <span className="avatar-placeholder">{p.display_name?.[0] || '?'}</span>
+                      <div><strong>{p.display_name}</strong><span className="muted">@{p.username}</span></div>
+                    </Link>
+                    <span className="post-time">{new Date(p.created_at + 'Z').toLocaleDateString()}</span>
+                    {p.expires_at && (
+                      <span className="lfg-expires">
+                        Expires {timeUntil(p.expires_at)}
+                      </span>
+                    )}
+                  </div>
+                  <h4>{p.title}</h4>
+                  {p.body && <p className="muted">{p.body}</p>}
+                  <div className="lfg-tags">
+                    {p.platform && <span className="lfg-tag">🎮 {p.platform}</span>}
+                    {p.play_style && <span className="lfg-tag">⚡ {p.play_style}</span>}
+                    {p.mic_required ? <span className="lfg-tag">🎙 Mic required</span> : null}
+                  </div>
+                  {user?.role === 'admin' && user?.id !== p.user_id && (
+                    <button className="btn btn-sm btn-ghost" onClick={() => deleteLfg(p.id)} style={{ marginTop: 8 }}>Delete</button>
                   )}
                 </div>
-                <h4>{p.title}</h4>
-                {p.body && <p className="muted">{p.body}</p>}
-                <div className="lfg-tags">
-                  {p.platform && <span className="lfg-tag">🎮 {p.platform}</span>}
-                  {p.play_style && <span className="lfg-tag">⚡ {p.play_style}</span>}
-                  {p.mic_required ? <span className="lfg-tag">🎙 Mic required</span> : null}
-                </div>
-                {(user?.id === p.user_id || user?.role === 'admin') && (
-                  <button className="btn btn-sm btn-ghost" onClick={() => deleteLfg(p.id)} style={{ marginTop: 8 }}>Delete</button>
-                )}
-              </div>
-            ))
-          )}
+              ))
+            )}
+          </div>
         </div>
       )}
 

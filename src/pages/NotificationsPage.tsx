@@ -2,20 +2,57 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 
-const TYPE_LABELS: Record<string, string> = {
-  follow: 'followed you',
-  like: 'liked your post',
-  comment: 'commented on your post',
-  repost: 'reposted your post',
-  group_invite: 'invited you to a group',
-};
+interface Notif {
+  id: number;
+  type: string;
+  read: number;
+  post_id: number | null;
+  post_parent_id: number | null;
+  group_id: number | null;
+  actor_username: string;
+  actor_name: string;
+  post_snippet: string | null;
+  created_at: string;
+}
 
 interface Props {
   onMarkAllRead: () => void;
 }
 
+function notifLabel(n: Notif): string {
+  switch (n.type) {
+    case 'follow':      return `@${n.actor_username} followed you`;
+    case 'like':        return `@${n.actor_username} reacted to your post`;
+    case 'comment':     return `@${n.actor_username} commented on your post`;
+    case 'repost':      return `@${n.actor_username} reposted your post`;
+    case 'group_invite':return `@${n.actor_username} invited you to a group`;
+    default:            return `@${n.actor_username} — ${n.type}`;
+  }
+}
+
+function notifDest(n: Notif): string {
+  switch (n.type) {
+    case 'follow':
+      return `/profile/${n.actor_username}`;
+    case 'like':
+    case 'repost':
+      return n.post_id ? `/posts/${n.post_id}` : `/profile/${n.actor_username}`;
+    case 'comment':
+      // post_id is the comment row; post_parent_id is the post being commented on
+      return n.post_parent_id
+        ? `/posts/${n.post_parent_id}`
+        : n.post_id
+          ? `/posts/${n.post_id}`
+          : `/profile/${n.actor_username}`;
+    case 'group_invite':
+      return n.group_id ? `/groups/${n.group_id}` : '/';
+    default:
+      return '/';
+  }
+}
+
 export default function NotificationsPage({ onMarkAllRead }: Props) {
-  const [notifs, setNotifs] = useState<any[]>([]);
+  const [notifs, setNotifs] = useState<Notif[]>([]);
   const [marking, setMarking] = useState(false);
 
   useEffect(() => {
@@ -31,9 +68,16 @@ export default function NotificationsPage({ onMarkAllRead }: Props) {
       setNotifs(prev => prev.map(n => ({ ...n, read: 1 })));
       onMarkAllRead();
     } catch {
-      // silent — badge will self-correct on next poll
+      // badge self-corrects on next poll
     } finally {
       setMarking(false);
+    }
+  }
+
+  function handleNotifClick(n: Notif) {
+    if (!n.read) {
+      api.markNotificationRead(n.id).catch(() => {});
+      setNotifs(prev => prev.map(x => x.id === n.id ? { ...x, read: 1 } : x));
     }
   }
 
@@ -51,11 +95,16 @@ export default function NotificationsPage({ onMarkAllRead }: Props) {
         <p className="muted">No notifications yet.</p>
       ) : (
         notifs.map(n => (
-          <div key={n.id} className={`notification ${n.read ? '' : 'unread'}`}>
-            <Link to={`/profile/${n.actor_username}`}><strong>{n.actor_name}</strong></Link>
-            {' '}{TYPE_LABELS[n.type] || n.type}
+          <Link
+            key={n.id}
+            to={notifDest(n)}
+            className={`notification notification-link ${n.read ? '' : 'unread'}`}
+            onClick={() => handleNotifClick(n)}
+          >
+            <span className="notif-text">{notifLabel(n)}</span>
+            {n.post_snippet && <span className="notif-snippet">"{n.post_snippet.slice(0, 80)}{n.post_snippet.length > 80 ? '…' : ''}"</span>}
             <span className="muted time">{new Date(n.created_at + 'Z').toLocaleString()}</span>
-          </div>
+          </Link>
         ))
       )}
     </div>

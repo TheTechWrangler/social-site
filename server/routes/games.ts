@@ -133,6 +133,42 @@ router.delete('/lfg/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+const ALLOWED_EXTEND_HOURS = new Set([1, 3, 6, 12, 24]);
+
+// POST /api/games/lfg/:id/extend — extend or reactivate an LFG post
+router.post('/lfg/:id/extend', requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const post = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ?').get(req.params.id) as any;
+  if (!post) { res.status(404).json({ error: 'Not found.' }); return; }
+  if (post.user_id !== user.id && user.role !== 'admin') { res.status(403).json({ error: 'Not authorized.' }); return; }
+  const hours = Number(req.body.durationHours);
+  if (!ALLOWED_EXTEND_HOURS.has(hours)) {
+    res.status(400).json({ error: 'durationHours must be 1, 3, 6, 12, or 24.' }); return;
+  }
+  // Extend from current expiry (or from now if already expired), then reactivate.
+  getDb().prepare(`
+    UPDATE game_lfg_posts
+    SET expires_at = datetime(max(expires_at, datetime('now')), ?),
+        is_active = 1,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(`+${hours} hours`, post.id);
+  const updated = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ?').get(post.id);
+  res.json({ post: updated });
+});
+
+// GET /api/games/:slug/lfg/mine — viewer's own LFG posts for this game (active + expired)
+router.get('/:slug/lfg/mine', requireAuth, (req, res) => {
+  const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
+  if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
+  const posts = getDb().prepare(`
+    SELECT * FROM game_lfg_posts
+    WHERE game_id = ? AND user_id = ?
+    ORDER BY created_at DESC LIMIT 20
+  `).all(game.id, (req as any).user.id);
+  res.json({ posts });
+});
+
 // ─── Player Preferences ───
 
 router.get('/:slug/profile', requireAuth, (req, res) => {

@@ -454,6 +454,12 @@ p { margin: 0 0 8px; }
 .lfg-expires { font-size: 0.8rem; color: var(--text-dim); }
 .lfg-expires.expired { color: var(--danger); }
 .lfg-section .post-card h4 { margin-bottom: 6px; }
+.my-lfg-section { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.my-lfg-heading { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin: 0 0 10px; }
+.my-lfg-card { border-left: 2px solid var(--accent); }
+.lfg-card-expired { opacity: 0.75; border-left-color: var(--danger) !important; }
+.lfg-manage-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.lfg-public-list { margin-top: 4px; }
 
 /* Servers */
 .servers-section { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
@@ -639,8 +645,18 @@ p { margin: 0 0 8px; }
 .notifications-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .notifications-header h2 { margin: 0; }
 .notification { padding: 14px; border-bottom: 1px solid var(--border); transition: background 0.2s; }
+.notification-link { display: flex; flex-direction: column; gap: 4px; color: var(--text); text-decoration: none; }
+.notification-link:hover { background: var(--bg-hover); }
 .notification.unread { background: rgba(94,235,255,0.06); border-left: 2px solid var(--accent); }
-.notification .time { font-size: 0.8rem; margin-left: 12px; }
+.notification.unread .notif-text { font-weight: 600; }
+.notif-snippet { font-size: 0.82rem; color: var(--text-dim); font-style: italic; padding-left: 2px; }
+.notification .time { font-size: 0.8rem; color: var(--text-dim); }
+
+/* ─── Post Detail ─── */
+.post-detail-page { max-width: 680px; }
+.post-detail-page .back-link { display: inline-block; margin-bottom: 16px; }
+.post-detail-comments { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+.comments-heading { margin: 12px 0 8px; font-size: 0.9rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
 
 /* ─── Admin ─── */
 .admin-tabs { display: flex; gap: 8px; margin-bottom: 22px; flex-wrap: wrap; }

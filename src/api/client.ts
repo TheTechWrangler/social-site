@@ -72,6 +72,7 @@ export const api = {
   getNotifications: () => request<{ notifications: any[] }>('/notifications'),
   unreadCount: () => request<{ count: number }>('/notifications/unread-count'),
   readAll: () => request<{ ok: boolean }>('/notifications/read-all', { method: 'POST' }),
+  markNotificationRead: (id: number) => request<{ ok: boolean }>(`/notifications/${id}/read`, { method: 'PATCH' }),
 
   // Admin
   getUsers: () => request<{ users: any[] }>('/admin/users'),
