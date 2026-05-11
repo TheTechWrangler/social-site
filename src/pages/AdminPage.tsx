@@ -25,6 +25,7 @@ export default function AdminPage() {
   const [adminStats, setAdminStats] = useState<any>({});
   const [reportFilter, setReportFilter] = useState<ReportFilter>('open');
   const [reportActionError, setReportActionError] = useState('');
+  const [reportNotes, setReportNotes] = useState<Record<number, string>>({});
   const [serverList, setServerList] = useState<any[]>([]);
   const [srvForm, setSrvForm] = useState({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
 
@@ -121,11 +122,11 @@ export default function AdminPage() {
     loadServers();
   }
 
-  async function updateReportStatus(id: number, status: 'dismissed' | 'resolved') {
+  async function updateReportStatus(id: number, status: 'dismissed' | 'resolved', adminNote: string) {
     const res = await fetch(`/api/admin/reports/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, adminNote }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -133,22 +134,10 @@ export default function AdminPage() {
     }
   }
 
-  async function hideReportedContent(postId: number) {
-    const res = await fetch(`/api/admin/posts/${postId}/hide`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || 'Could not hide reported content.');
-    }
-  }
-
   async function reviewReport(report: any, status: 'dismissed' | 'resolved') {
     setReportActionError('');
     try {
-      if (status === 'resolved') {
-        if (!report.post_id) throw new Error('Reported content is missing.');
-        await hideReportedContent(report.post_id);
-      }
-      await updateReportStatus(report.id, status);
+      await updateReportStatus(report.id, status, reportNotes[report.id] || '');
       await loadReports(reportFilter);
       loadStats();
     } catch (e: any) { console.error(e); setReportActionError(e.message || 'Could not update report.'); }
@@ -305,7 +294,6 @@ export default function AdminPage() {
                 <div className="report-card-header">
                   <strong className="report-title">Report #{r.id}</strong>
                   <span className={`admin-badge ${r.status === 'open' ? 'badge-unverified' : r.status === 'resolved' ? 'badge-banned' : 'badge-verified'}`}>Status: {REPORT_STATUS_LABELS[r.status] || 'Open'}</span>
-                  {r.admin_note && <span className="muted report-admin-note">📝 {r.admin_note}</span>}
                 </div>
 
                 <div className="report-meta-grid">
@@ -325,6 +313,24 @@ export default function AdminPage() {
                   <div className="report-section-label">Content:</div>
                   <p className="report-content-text">"{r.post_content ? r.post_content.slice(0, 180) : 'Reported content is unavailable.'}"</p>
                 </div>
+
+                {r.status === 'open' ? (
+                  <label className="report-admin-note-field">
+                    Admin note
+                    <textarea
+                      className="input"
+                      rows={2}
+                      placeholder="Optional note about this decision"
+                      value={reportNotes[r.id] || ''}
+                      onChange={e => setReportNotes(prev => ({ ...prev, [r.id]: e.target.value }))}
+                    />
+                  </label>
+                ) : r.admin_note ? (
+                  <div className="report-section">
+                    <div className="report-section-label">Admin note:</div>
+                    <p>{r.admin_note}</p>
+                  </div>
+                ) : null}
 
                 <div className="report-card-actions">
                   {r.status === 'open' && (

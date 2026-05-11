@@ -718,7 +718,6 @@ p { margin: 0 0 8px; }
   flex-wrap: wrap;
 }
 .report-title { color: var(--text-heading); font-size: 1rem; }
-.report-admin-note { font-size: 0.8rem; }
 .report-meta-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -745,6 +744,21 @@ p { margin: 0 0 8px; }
   overflow-wrap: anywhere;
 }
 .report-content-text { color: var(--text-muted); }
+.report-admin-note-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-heading);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.report-admin-note-field textarea {
+  font-weight: 400;
+  color: var(--text);
+  resize: vertical;
+}
 .report-card-actions {
   display: flex;
   gap: 8px;

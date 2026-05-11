@@ -68,17 +68,40 @@ router.get('/reports', requireAuth, requireAdmin, (req, res) => {
 // PATCH /api/admin/reports/:id
 router.patch('/reports/:id', requireAuth, requireAdmin, (req, res) => {
   const { status, adminNote } = req.body;
-  const updates: string[] = [];
-  const vals: any[] = [];
-  if (status && ['open','resolved','dismissed'].includes(status)) {
-    updates.push('status = ?'); vals.push(status);
-    updates.push("resolved_at = datetime('now')");
-    updates.push('resolved_by = ?'); vals.push((req as any).user.id);
+  const nextStatus = status && ['open','resolved','dismissed'].includes(status) ? status : undefined;
+  const note = adminNote !== undefined ? String(adminNote).trim().slice(0, 1000) : undefined;
+  if (!nextStatus && note === undefined) { res.status(400).json({ error: 'No valid updates.' }); return; }
+
+  const db = getDb();
+  const report = db.prepare('SELECT id, post_id FROM reports WHERE id = ?').get(req.params.id) as any;
+  if (!report) { res.status(404).json({ error: 'Report not found.' }); return; }
+
+  if (nextStatus === 'resolved') {
+    if (!report.post_id) { res.status(400).json({ error: 'Reported content is missing.' }); return; }
+    const post = db.prepare('SELECT id FROM posts WHERE id = ?').get(report.post_id);
+    if (!post) { res.status(404).json({ error: 'Reported content not found.' }); return; }
   }
-  if (adminNote !== undefined) { updates.push('admin_note = ?'); vals.push(adminNote); }
-  if (updates.length === 0) { res.status(400).json({ error: 'No valid updates.' }); return; }
-  vals.push(req.params.id);
-  getDb().prepare(`UPDATE reports SET ${updates.join(', ')} WHERE id = ?`).run(...vals);
+
+  const updateReport = db.transaction(() => {
+    if (nextStatus === 'resolved') {
+      db.prepare('UPDATE posts SET hidden = 1 WHERE id = ?').run(report.post_id);
+    }
+
+    const updates: string[] = [];
+    const vals: any[] = [];
+    if (nextStatus) {
+      updates.push('status = ?'); vals.push(nextStatus);
+      if (nextStatus !== 'open') {
+        updates.push("resolved_at = datetime('now')");
+        updates.push('resolved_by = ?'); vals.push((req as any).user.id);
+      }
+    }
+    if (note !== undefined) { updates.push('admin_note = ?'); vals.push(note); }
+    vals.push(report.id);
+    db.prepare(`UPDATE reports SET ${updates.join(', ')} WHERE id = ?`).run(...vals);
+  });
+
+  updateReport();
   res.json({ ok: true });
 });
 
