@@ -13,7 +13,7 @@ router.get('/', (req, res) => {
       SELECT g.*, 
         (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as lfg_count,
         (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
-        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as server_count
+        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
       FROM games g WHERE g.is_active = 1 AND g.name LIKE ? ORDER BY g.name LIMIT 20
     `).all(`%${q}%`);
   } else {
@@ -21,7 +21,7 @@ router.get('/', (req, res) => {
       SELECT g.*, 
         (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as lfg_count,
         (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
-        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as server_count
+        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
       FROM games g WHERE g.is_active = 1 ORDER BY g.name
     `).all();
   }
