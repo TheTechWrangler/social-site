@@ -172,3 +172,55 @@ router.get('/post/:postId', optionalAuth, (req, res) => {
 });
 
 export default router;
+
+// ─── Protected File Serving ───
+// Replaces express.static('/uploads') — enforces privacy on post media.
+// Mount at /uploads in index.ts.
+
+import { Router as FileRouter } from 'express';
+
+const SAFE_FILENAME = /^[\w.\-]+$/; // alphanumeric, dot, hyphen, underscore only
+
+export const uploadsFileRouter = FileRouter();
+
+uploadsFileRouter.get('/:filename', optionalAuth, (req, res) => {
+  const { filename } = req.params;
+
+  // Path traversal guard: reject anything that isn't a plain filename
+  if (!filename || !SAFE_FILENAME.test(filename) || filename.includes('..')) {
+    res.status(404).end(); return;
+  }
+
+  const filePath = path.join(UPLOADS_DIR, filename);
+  // Extra guard: resolved path must still be inside UPLOADS_DIR
+  if (!filePath.startsWith(UPLOADS_DIR + path.sep)) {
+    res.status(404).end(); return;
+  }
+
+  if (!fs.existsSync(filePath)) { res.status(404).end(); return; }
+
+  const db = getDb();
+  const urlKey = `/uploads/${filename}`;
+  const viewer = (req as any).user ?? null;
+
+  // 1. Is it an avatar? Avatars are public profile metadata — serve to everyone.
+  const avatarRow = db.prepare('SELECT id FROM users WHERE avatar_url = ? LIMIT 1').get(urlKey);
+  if (avatarRow) { res.sendFile(filePath); return; }
+
+  // 2. Is it tracked post media?
+  const mediaRow = db.prepare('SELECT post_id FROM post_media WHERE url = ? LIMIT 1').get(urlKey) as any;
+
+  if (mediaRow) {
+    if (mediaRow.post_id == null) {
+      // Freshly uploaded but not yet attached to a post — require auth (uploader preview).
+      if (!viewer) { res.status(404).end(); return; }
+      res.sendFile(filePath); return;
+    }
+    // Attached media: enforce post visibility.
+    if (!canViewPost(viewer, mediaRow.post_id)) { res.status(404).end(); return; }
+    res.sendFile(filePath); return;
+  }
+
+  // 3. File exists on disk but isn't in the DB — don't serve it.
+  res.status(404).end();
+});

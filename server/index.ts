@@ -22,7 +22,7 @@ import notificationRoutes from './routes/notifications.js';
 import adminRoutes from './routes/admin.js';
 import { publicRouter as rssPublicRouter, adminRouter as rssAdminRouter } from './routes/rss.js';
 import worldCommentsRoutes from './routes/worldComments.js';
-import uploadRoutes from './routes/uploads.js';
+import uploadRoutes, { uploadsFileRouter } from './routes/uploads.js';
 import gamesRoutes from './routes/games.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -93,7 +93,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
   app.use('/api/follows', writeLimiter);
 }
 
-app.use('/uploads', express.static(path.resolve(__dirname, '..', 'uploads')));
+app.use('/uploads', uploadsFileRouter);
 
 // API routes
 app.use('/api/auth', oauthRoutes);  // OAuth routes first (more specific paths)
