@@ -98,7 +98,7 @@ export function configurePassport(): void {
       const displayName = profile.displayName || profile.name?.givenName || '';
       const avatarUrl = profile.photos?.[0]?.value || '';
       const result = findOrCreateUser('google', profile.id, safeEmail, displayName, avatarUrl);
-      done(null, { id: result.userId, username: result.username, role: 'user', is_verified: 0, profile_visibility: 'public' });
+      done(null, { id: result.userId, username: result.username, role: 'user', is_verified: 0, profile_visibility: 'public', game_discovery_enabled: 0 });
     } catch (err) {
       done(err as Error);
     }
@@ -118,7 +118,7 @@ export function configurePassport(): void {
       const displayName = profile?.displayName || profile?.personaname || '';
       const avatarUrl = profile?.photos?.[2]?.value || profile?.avatarfull || '';
       const result = findOrCreateUser('steam', profile.id || _identifier, '', displayName, avatarUrl);
-      done(null, { id: result.userId, username: result.username, role: 'user', is_verified: 0, profile_visibility: 'public' });
+      done(null, { id: result.userId, username: result.username, role: 'user', is_verified: 0, profile_visibility: 'public', game_discovery_enabled: 0 });
     } catch (err) {
       done(err);
     }

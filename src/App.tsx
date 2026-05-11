@@ -29,7 +29,10 @@ export default function App() {
 
   useEffect(() => {
     if (token) {
-      api.me().then(r => setUser(r.user)).catch(() => {
+      api.me().then(r => {
+        localStorage.setItem('user', JSON.stringify(r.user));
+        setUser(r.user);
+      }).catch(() => {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
       });

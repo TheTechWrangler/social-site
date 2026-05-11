@@ -9,6 +9,7 @@ declare global {
       role: string;
       is_verified: number;
       profile_visibility: string;
+      game_discovery_enabled: number;
     }
   }
 }
@@ -32,7 +33,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     res.status(403).json({ error: 'Account banned or not found.' });
     return;
   }
-  (req as any).user = { id: user.id, username: user.username, role: user.role, is_verified: user.is_verified };
+  (req as any).user = {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    is_verified: user.is_verified,
+    game_discovery_enabled: user.game_discovery_enabled,
+  };
   next();
 }
 
@@ -43,7 +50,13 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction): 
     if (payload) {
       const user = getUserById(payload.id);
       if (user && !user.banned) {
-        (req as any).user = { id: user.id, username: user.username, role: user.role, is_verified: user.is_verified };
+        (req as any).user = {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          is_verified: user.is_verified,
+          game_discovery_enabled: user.game_discovery_enabled,
+        };
       }
     }
   }

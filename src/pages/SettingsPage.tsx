@@ -7,12 +7,21 @@ const WORLD_HOME_OPTIONS = [
   { key: 'world_home_balanced', label: 'Balanced' },
 ];
 
+function storedUser() {
+  return JSON.parse(localStorage.getItem('user') || 'null');
+}
+
+function gameDiscoveryValue(user: any): boolean {
+  return Boolean(user?.game_discovery_enabled ?? user?.gameDiscoveryEnabled ?? 0);
+}
+
 export default function SettingsPage({ user }: { user: any }) {
+  const initialUser = storedUser() || user;
   const [blocked, setBlocked] = useState<any[]>([]);
   const [muted, setMuted] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [gameDiscovery, setGameDiscovery] = useState(user?.game_discovery_enabled === 1);
-  const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
+  const [gameDiscovery, setGameDiscovery] = useState(gameDiscoveryValue(initialUser));
+  const [worldHomeInjection, setWorldHomeInjection] = useState(initialUser?.world_home_injection || 'world_home_few');
 
   useEffect(() => { loadData(); }, []);
 
@@ -46,10 +55,13 @@ export default function SettingsPage({ user }: { user: any }) {
     const newVal = !gameDiscovery;
     setGameDiscovery(newVal);
     try {
-      await fetch('/api/users/profile', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ gameDiscoveryEnabled: newVal }) });
-      const stored = localStorage.getItem('user');
-      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), game_discovery_enabled: newVal ? 1 : 0 }));
-    } catch (e) { console.error(e); }
+      const r = await api.updateProfile({ gameDiscoveryEnabled: newVal });
+      localStorage.setItem('user', JSON.stringify(r.user));
+      setGameDiscovery(gameDiscoveryValue(r.user));
+    } catch (e) {
+      console.error(e);
+      setGameDiscovery(!newVal);
+    }
   }
 
   async function updateWorldHomeInjection(value: string) {
