@@ -21,6 +21,7 @@ import LandingPage from './pages/LandingPage';
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [unread, setUnread] = useState(0);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const isAdminPage = location.pathname === '/admin';
@@ -44,6 +45,8 @@ export default function App() {
     return () => clearInterval(interval);
   }, [user]);
 
+  useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
+
   function logout() {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
@@ -54,22 +57,40 @@ export default function App() {
   if (!user && token) return <div className="loading">Loading...</div>;
 
   return (
-    <div className="app-layout">
-      <nav className="sidebar-left">
+    <div className={`app-layout ${isAdminPage ? 'admin-layout' : ''}`}>
+      {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
+      <nav className={`sidebar-left ${mobileNavOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
           <Link to="/">💬 Social</Link>
+          <button className="mobile-menu-btn" onClick={() => setMobileNavOpen(!mobileNavOpen)} aria-expanded={mobileNavOpen} aria-label="Toggle navigation">☰</button>
         </div>
         <div className="sidebar-links">
-          <Link to="/">🏠 Home</Link>
-          {user && <Link to="/discover">🔍 Discover</Link>}
-          {user && <Link to="/friends">👥 Friends</Link>}
-          {user && <Link to="/settings">⚙ Settings</Link>}
-          <Link to="/games">🎮 Games</Link>
-          <Link to="/world">🌍 World</Link>
-          {user && <Link to={`/profile/${user.username}`}>👤 Profile</Link>}
-          <Link to="/groups">👥 Groups</Link>
-          {user && <Link to="/notifications">🔔 Notifications {unread > 0 && <span className="badge">{unread}</span>}</Link>}
-          {user?.role === 'admin' && <Link to="/admin">🛡 Admin</Link>}
+          <div className="nav-group">
+            <span className="nav-group-label">Social</span>
+            <Link to="/">🏠 Home</Link>
+            {user && <Link to={`/profile/${user.username}`}>👤 Profile</Link>}
+            {user && <Link to="/discover">🔍 Discover</Link>}
+            {user && <Link to="/friends">👥 Friends</Link>}
+            {user && <Link to="/groups">👥 Groups</Link>}
+          </div>
+          <div className="nav-group">
+            <span className="nav-group-label">Media & Gaming</span>
+            <Link to="/world">🌍 World</Link>
+            <Link to="/games">🎮 Games</Link>
+          </div>
+          {user && (
+            <div className="nav-group">
+              <span className="nav-group-label">Account</span>
+              <Link to="/notifications">🔔 Notifications {unread > 0 && <span className="badge">{unread}</span>}</Link>
+              <Link to="/settings">⚙ Settings</Link>
+            </div>
+          )}
+          {user?.role === 'admin' && (
+            <div className="nav-group">
+              <span className="nav-group-label">Admin</span>
+              <Link to="/admin">🛡 Admin</Link>
+            </div>
+          )}
         </div>
         <div className="sidebar-user">
           {user ? (
