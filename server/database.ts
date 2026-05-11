@@ -234,6 +234,7 @@ export function initializeDatabase(): void {
       desired_group_size INTEGER,
       mic_required INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
+      expires_at TEXT DEFAULT (datetime('now', '+6 hours')),
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );

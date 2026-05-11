@@ -421,6 +421,9 @@ p { margin: 0 0 8px; }
 .lfg-section { margin-top: 12px; }
 .lfg-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .lfg-tag { padding: 2px 10px; background: rgba(94,235,255,0.10); border: 1px solid rgba(94,235,255,0.20); border-radius: 12px; font-size: 0.8rem; color: var(--accent-text); }
+.lfg-duration { display: flex; align-items: center; gap: 8px; }
+.lfg-expires { font-size: 0.8rem; color: var(--text-dim); }
+.lfg-expires.expired { color: var(--danger); }
 .lfg-section .post-card h4 { margin-bottom: 6px; }
 
 /* Servers */

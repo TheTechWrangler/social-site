@@ -11,17 +11,17 @@ router.get('/', (req, res) => {
   if (q) {
     games = getDb().prepare(`
       SELECT g.*, 
-        (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1) as lfg_count,
+        (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as lfg_count,
         (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
-        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
+        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as server_count
       FROM games g WHERE g.is_active = 1 AND g.name LIKE ? ORDER BY g.name LIMIT 20
     `).all(`%${q}%`);
   } else {
     games = getDb().prepare(`
       SELECT g.*, 
-        (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1) as lfg_count,
+        (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as lfg_count,
         (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
-        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
+        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as server_count
       FROM games g WHERE g.is_active = 1 ORDER BY g.name
     `).all();
   }
@@ -36,7 +36,7 @@ router.get('/:slug', optionalAuth, (req, res) => {
   const lfgPosts = getDb().prepare(`
     SELECT l.*, u.username, u.display_name, u.avatar_url, u.is_verified, u.profile_visibility
     FROM game_lfg_posts l JOIN users u ON l.user_id = u.id
-    WHERE l.game_id = ? AND l.is_active = 1
+    WHERE l.game_id = ? AND l.is_active = 1 AND l.expires_at > datetime('now')
     ORDER BY l.created_at DESC LIMIT 50
   `).all(game.id);
 
@@ -72,7 +72,7 @@ router.get('/:slug/lfg', (req, res) => {
   const posts = getDb().prepare(`
     SELECT l.*, u.username, u.display_name, u.avatar_url, u.is_verified
     FROM game_lfg_posts l JOIN users u ON l.user_id = u.id
-    WHERE l.game_id = ? AND l.is_active = 1 ORDER BY l.created_at DESC LIMIT 50
+    WHERE l.game_id = ? AND l.is_active = 1 AND l.expires_at > datetime('now') ORDER BY l.created_at DESC LIMIT 50
   `).all(game.id);
   res.json({ posts });
 });
@@ -80,11 +80,12 @@ router.get('/:slug/lfg', (req, res) => {
 router.post('/:slug/lfg', requireAuth, requireVerified, (req, res) => {
   const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
   if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
-  const { title, body, platform, playStyle, desiredGroupSize, micRequired } = req.body;
+  const { title, body, platform, playStyle, desiredGroupSize, micRequired, durationHours } = req.body;
   if (!title?.trim()) { res.status(400).json({ error: 'Title required.' }); return; }
+  const hours = Math.min(Math.max(Number(durationHours) || 6, 1), 24);
   const r = getDb().prepare(
-    'INSERT INTO game_lfg_posts (user_id, game_id, title, body, platform, play_style, desired_group_size, mic_required) VALUES (?,?,?,?,?,?,?,?)'
-  ).run((req as any).user.id, game.id, title.trim(), body || '', platform || '', playStyle || '', desiredGroupSize || null, micRequired ? 1 : 0);
+    'INSERT INTO game_lfg_posts (user_id, game_id, title, body, platform, play_style, desired_group_size, mic_required, expires_at) VALUES (?,?,?,?,?,?,?,?, datetime(\'now\', ?))'
+  ).run((req as any).user.id, game.id, title.trim(), body || '', platform || '', playStyle || '', desiredGroupSize || null, micRequired ? 1 : 0, `+${hours} hours`);
   const post = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ?').get(r.lastInsertRowid);
   res.status(201).json({ post });
 });
