@@ -322,10 +322,11 @@ The seed script includes 6 gaming RSS sources covering PC gaming, console news, 
 ## Media Uploads
 
 **Enabled now:**
-- Image uploads (PNG, JPEG, GIF, WebP, SVG) — max 5MB
+- Image uploads (JPG, PNG, GIF, WebP) — max 5MB
 - YouTube/external video embeds — normal URLs, shorts, youtu.be links
 
 **Intentionally disabled:**
+- SVG uploads are disabled for safety. Use JPG, PNG, GIF, or WebP.
 - Direct video uploads (`ENABLE_VIDEO_UPLOADS=false`)
 - Can be enabled later with `ENABLE_VIDEO_UPLOADS=true`
 - Future video hosting requires serious storage/bandwidth planning

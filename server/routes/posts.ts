@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
+import { canViewPost } from '../visibility.js';
 
 const router = Router();
 
@@ -29,7 +30,7 @@ function enrichPost(row: any, userId?: number): any {
       SELECT p.*, u.username, u.display_name, u.avatar_url
       FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
     `).get(row.repost_of) as any;
-    if (rp) repostedPost = enrichPost(rp, userId);
+    if (rp && canViewPost(userId ? { id: userId, role: 'user' } : null, rp.id)) repostedPost = enrichPost(rp, userId);
   }
 
   return {
@@ -77,10 +78,12 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
 
 // GET /api/posts/:id
 router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
+  const postId = Number(req.params.id);
+  if (!canViewPost(req.user as any, postId)) { res.status(404).json({ error: 'Post not found.' }); return; }
   const row = getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url
     FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
-  `).get(req.params.id);
+  `).get(postId);
   if (!row) { res.status(404).json({ error: 'Post not found.' }); return; }
   res.json({ post: enrichPost(row, req.user?.id) });
 });

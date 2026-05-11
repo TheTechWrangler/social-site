@@ -63,8 +63,13 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
         WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0
           AND (p.user_id = ? OR p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?))
           AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
+          AND NOT EXISTS (
+            SELECT 1 FROM user_relationship_blocks b
+            WHERE b.relationship_type = 'block'
+              AND ((b.blocker_user_id = p.user_id AND b.blocked_user_id = ?) OR (b.blocker_user_id = ? AND b.blocked_user_id = p.user_id))
+          )
         ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(req.user.id, req.user.id, req.user.id, friendLimit, offset);
+      `).all(req.user.id, req.user.id, req.user.id, req.user.id, req.user.id, friendLimit, offset);
 
       if (level === 'extended') {
         const extLimit = limit - rows.length;
@@ -73,14 +78,20 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
             SELECT DISTINCT p.*, u.username, u.display_name, u.avatar_url
             FROM posts p JOIN users u ON p.user_id = u.id
             WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1
+              AND u.profile_visibility = 'public'
               AND p.user_id != ?
               AND p.user_id NOT IN (SELECT following_id FROM follows WHERE follower_id = ?)
               AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
+              AND NOT EXISTS (
+                SELECT 1 FROM user_relationship_blocks b
+                WHERE b.relationship_type = 'block'
+                  AND ((b.blocker_user_id = p.user_id AND b.blocked_user_id = ?) OR (b.blocker_user_id = ? AND b.blocked_user_id = p.user_id))
+              )
               AND p.user_id IN (
                 SELECT following_id FROM follows WHERE follower_id IN (SELECT following_id FROM follows WHERE follower_id = ?)
               )
             ORDER BY p.created_at DESC LIMIT ?
-          `).all(req.user.id, req.user.id, req.user.id, req.user.id, extLimit);
+          `).all(req.user.id, req.user.id, req.user.id, req.user.id, req.user.id, req.user.id, extLimit);
           rows = [...rows, ...extRows].sort((a: any, b: any) => b.created_at.localeCompare(a.created_at));
         }
       }
@@ -88,15 +99,20 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
-        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1
+        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1 AND u.profile_visibility = 'public'
           AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
+          AND NOT EXISTS (
+            SELECT 1 FROM user_relationship_blocks b
+            WHERE b.relationship_type = 'block'
+              AND ((b.blocker_user_id = p.user_id AND b.blocked_user_id = ?) OR (b.blocker_user_id = ? AND b.blocked_user_id = p.user_id))
+          )
         ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(req.user.id, limit, offset);
+      `).all(req.user.id, req.user.id, req.user.id, limit, offset);
     } else {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
-        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1
+        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1 AND u.profile_visibility = 'public'
         ORDER BY p.created_at DESC LIMIT ? OFFSET ?
       `).all(limit, offset);
     }

@@ -4,11 +4,16 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getDb } from '../database.js';
-import { requireAuth, requireVerified } from '../middleware.js';
+import { optionalAuth, requireAuth, requireVerified } from '../middleware.js';
+import { canViewPost } from '../visibility.js';
+import type { Request, Response, NextFunction } from 'express';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, '..', '..', 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
+const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const ALLOWED_IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 
 // ─── Feature Flags ───
 function isEnabled(flag: string, def: string): boolean {
@@ -27,11 +32,24 @@ const imageUpload = multer({
   }),
   limits: { fileSize: (parseInt(process.env.MAX_IMAGE_UPLOAD_MB || '5', 10)) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
-    if (allowed.includes(file.mimetype)) { cb(null, true); }
-    else { cb(new Error(`File type ${file.mimetype} not allowed for image upload.`)); }
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (file.mimetype === 'image/svg+xml' || ext === '.svg') {
+      cb(new Error(IMAGE_UPLOAD_ERROR)); return;
+    }
+    if (ALLOWED_IMAGE_MIME.has(file.mimetype) && ALLOWED_IMAGE_EXT.has(ext)) { cb(null, true); }
+    else { cb(new Error(IMAGE_UPLOAD_ERROR)); }
   },
 });
+
+function handleImageUpload(req: Request, res: Response, next: NextFunction): void {
+  imageUpload.single('file')(req, res, (err: any) => {
+    if (err) {
+      res.status(400).json({ error: IMAGE_UPLOAD_ERROR });
+      return;
+    }
+    next();
+  });
+}
 
 const router = Router();
 
@@ -52,7 +70,7 @@ function parseYouTubeUrl(input: string): string | null {
 }
 
 // POST /api/uploads/image — upload an image for a post
-router.post('/image', requireAuth, requireVerified, imageUpload.single('file'), (req, res) => {
+router.post('/image', requireAuth, requireVerified, handleImageUpload, (req, res) => {
   try {
     if (!isEnabled('ENABLE_IMAGE_UPLOADS', 'true')) {
       res.status(403).json({ error: 'Image uploads are currently disabled.' }); return;
@@ -71,6 +89,11 @@ router.post('/image', requireAuth, requireVerified, imageUpload.single('file'), 
     // If postId provided, link immediately
     const postId = req.body.postId ? Number(req.body.postId) : null;
     if (postId) {
+      const post = getDb().prepare('SELECT user_id FROM posts WHERE id = ?').get(postId) as any;
+      if (!post) { res.status(404).json({ error: 'Post not found.' }); return; }
+      if (post.user_id !== (req as any).user.id && (req as any).user.role !== 'admin') {
+        res.status(403).json({ error: 'Not authorized to attach media to this post.' }); return;
+      }
       const result = getDb().prepare(
         'INSERT INTO post_media (post_id, media_type, url, mime_type, file_size_bytes) VALUES (?, ?, ?, ?, ?)'
       ).run(postId, 'image', url, req.file.mimetype, req.file.size);
@@ -112,6 +135,13 @@ router.post('/external-video', requireAuth, requireVerified, (req, res) => {
     }
 
     const provider = 'youtube';
+    if (postId) {
+      const post = getDb().prepare('SELECT user_id FROM posts WHERE id = ?').get(postId) as any;
+      if (!post) { res.status(404).json({ error: 'Post not found.' }); return; }
+      if (post.user_id !== (req as any).user.id && (req as any).user.role !== 'admin') {
+        res.status(403).json({ error: 'Not authorized to attach media to this post.' }); return;
+      }
+    }
     const result = getDb().prepare(
       'INSERT INTO post_media (post_id, media_type, url, provider, original_url) VALUES (?, ?, ?, ?, ?)'
     ).run(postId || null, 'external_video', embedUrl, provider, url);
@@ -132,10 +162,12 @@ router.post('/external-video', requireAuth, requireVerified, (req, res) => {
 });
 
 // GET /api/posts/:postId/media — get media for a post
-router.get('/post/:postId', (req, res) => {
+router.get('/post/:postId', optionalAuth, (req, res) => {
+  const postId = Number(req.params.postId);
+  if (!canViewPost((req as any).user, postId)) { res.status(404).json({ error: 'Post not found.' }); return; }
   const media = getDb().prepare(
     'SELECT * FROM post_media WHERE post_id = ? ORDER BY sort_order'
-  ).all(Number(req.params.postId));
+  ).all(postId);
   res.json({ media });
 });
 

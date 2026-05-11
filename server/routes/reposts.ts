@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
+import { canInteractWithPost } from '../visibility.js';
 
 const router = Router();
 
@@ -10,6 +11,8 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
   const originalId = Number(req.params.postId);
   const original = getDb().prepare('SELECT id FROM posts WHERE id = ? AND parent_id IS NULL').get(originalId) as any;
   if (!original) { res.status(404).json({ error: 'Post not found.' }); return; }
+  const access = canInteractWithPost(req.user as any, originalId);
+  if (!access.ok) { res.status(access.status || 403).json({ error: access.error }); return; }
 
   const result = getDb().prepare('INSERT INTO posts (user_id, content, repost_of) VALUES (?, ?, ?)')
     .run(req.user!.id, '', originalId);

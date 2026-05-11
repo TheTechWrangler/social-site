@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
+import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
+import { canInteractWithPost, canViewPost } from '../visibility.js';
 
 const router = Router();
 
@@ -17,8 +18,9 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
     res.status(400).json({ error: `Reaction must be one of: ${REACTIONS.join(', ')}` }); return;
   }
 
-  const post = getDb().prepare('SELECT id, user_id FROM posts WHERE id = ?').get(postId) as any;
-  if (!post) { res.status(404).json({ error: 'Post not found.' }); return; }
+  const access = canInteractWithPost(req.user as any, postId);
+  if (!access.ok) { res.status(access.status || 403).json({ error: access.error }); return; }
+  const post = access.post;
 
   const userId = req.user!.id;
 
@@ -41,14 +43,17 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 // DELETE /api/likes/:postId — remove all reactions from user on this post
 router.delete('/:postId', requireAuth, (req: AuthRequest, res) => {
   const postId = Number(req.params.postId);
+  if (!canViewPost(req.user as any, postId)) { res.status(404).json({ error: 'Post not found.' }); return; }
   getDb().prepare('DELETE FROM likes WHERE user_id = ? AND post_id = ?').run(req.user!.id, postId);
   const counts = getReactionCounts(postId);
   res.json({ ok: true, counts, userReaction: null });
 });
 
 // GET /api/posts/:postId/reactions
-router.get('/post/:postId', (req, res) => {
-  const counts = getReactionCounts(Number(req.params.postId));
+router.get('/post/:postId', optionalAuth, (req: AuthRequest, res) => {
+  const postId = Number(req.params.postId);
+  if (!canViewPost(req.user as any, postId)) { res.status(404).json({ error: 'Post not found.' }); return; }
+  const counts = getReactionCounts(postId);
   res.json({ counts });
 });
 

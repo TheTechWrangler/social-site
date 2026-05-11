@@ -3,6 +3,9 @@ import { useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 
+const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
+const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+
 export default function ProfilePage({ user: currentUser }: { user: any }) {
   const { username } = useParams<{ username: string }>();
   const [profile, setProfile] = useState<any>(null);
@@ -71,6 +74,8 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   async function handleAvatarUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { alert(IMAGE_UPLOAD_ERROR); if (avatarInputRef.current) avatarInputRef.current.value = ''; return; }
     if (file.size > 2 * 1024 * 1024) { alert('Avatar must be under 2MB.'); return; }
     setAvatarUploading(true);
     try {
@@ -147,7 +152,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
               <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit Profile</button>
               <label className="btn btn-ghost" style={{ cursor: 'pointer' }}>
                 {avatarUploading ? 'Uploading...' : '📷 Change Avatar'}
-                <input type="file" ref={avatarInputRef} accept="image/*" onChange={handleAvatarUpload} style={{ display: 'none' }} />
+                <input type="file" ref={avatarInputRef} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleAvatarUpload} style={{ display: 'none' }} />
               </label>
             </>
           )}

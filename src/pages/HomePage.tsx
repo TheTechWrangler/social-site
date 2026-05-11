@@ -14,6 +14,8 @@ const WORLD_HOME_OPTIONS = [
   { key: 'world_home_few', label: 'Few', help: 'Occasionally adds approved RSS/podcast items.' },
   { key: 'world_home_balanced', label: 'Balanced', help: 'Adds more approved RSS/podcast items.' },
 ];
+const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
+const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
 
 export default function HomePage({ user }: { user: any }) {
   const [posts, setPosts] = useState<any[]>([]);
@@ -84,6 +86,7 @@ export default function HomePage({ user }: { user: any }) {
     if (!file) return;
     const ext = file.name.split('.').pop()?.toLowerCase();
     if (['mp4', 'mov', 'webm', 'avi', 'mkv'].includes(ext || '')) { alert('Direct video uploads are currently disabled.'); return; }
+    if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { alert(IMAGE_UPLOAD_ERROR); if (fileInputRef.current) fileInputRef.current.value = ''; return; }
     if (file.size > 5 * 1024 * 1024) { alert('Image must be under 5MB.'); return; }
     setImageFile(file); setImagePreview(URL.createObjectURL(file));
   }
@@ -159,7 +162,7 @@ export default function HomePage({ user }: { user: any }) {
           <textarea className="input" placeholder="What's on your mind?" value={content} onChange={e => setContent(e.target.value)} rows={3} />
           {imagePreview && (<div className="image-preview-wrap"><img src={imagePreview} alt="Preview" className="image-preview" /><button type="button" className="btn btn-sm" onClick={removeImage}>✕ Remove</button></div>)}
           <div className="composer-actions">
-            <label className="composer-upload-btn">🖼 Image<input type="file" ref={fileInputRef} accept="image/*" onChange={handleFileSelect} style={{ display: 'none' }} /></label>
+            <label className="composer-upload-btn">🖼 Image<input type="file" ref={fileInputRef} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleFileSelect} style={{ display: 'none' }} /></label>
             <input className="input" placeholder="YouTube link (optional)" value={youtubeUrl} onChange={e => setYoutubeUrl(e.target.value)} style={{ flex: 1 }} />
             <button className="btn btn-primary" disabled={posting || (!content.trim() && !imageFile)}>{posting ? 'Posting...' : 'Post'}</button>
           </div>

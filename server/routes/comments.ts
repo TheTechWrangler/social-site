@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
+import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
+import { canInteractWithPost, canViewPost } from '../visibility.js';
 
 const router = Router();
 
@@ -13,6 +14,8 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 
   const parent = getDb().prepare('SELECT * FROM posts WHERE id = ?').get(parentId) as any;
   if (!parent) { res.status(404).json({ error: 'Post not found.' }); return; }
+  const access = canInteractWithPost(req.user as any, parentId);
+  if (!access.ok) { res.status(access.status || 403).json({ error: access.error }); return; }
 
   const result = getDb().prepare('INSERT INTO posts (user_id, content, parent_id) VALUES (?, ?, ?)')
     .run(req.user!.id, content.trim(), parentId);
@@ -31,14 +34,16 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 });
 
 // GET /api/comments/:postId
-router.get('/:postId', (req, res) => {
+router.get('/:postId', optionalAuth, (req: AuthRequest, res) => {
+  const parentId = Number(req.params.postId);
+  if (!canViewPost(req.user as any, parentId)) { res.status(404).json({ error: 'Post not found.' }); return; }
   const rows = getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url
     FROM posts p JOIN users u ON p.user_id = u.id
     WHERE p.parent_id = ? AND p.hidden = 0 ORDER BY p.created_at ASC
-  `).all(Number(req.params.postId));
+  `).all(parentId);
 
-  res.json({ comments: rows.map((r: any) => enrichPost(r)) });
+  res.json({ comments: rows.filter((r: any) => canViewPost(req.user as any, r.id)).map((r: any) => enrichPost(r, req.user?.id)) });
 });
 
 export default router;

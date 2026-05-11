@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
+import { isBlockedBetween } from '../visibility.js';
 
 const router = Router();
 
@@ -11,6 +12,9 @@ router.post('/:userId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 
   const exists = getDb().prepare('SELECT id FROM users WHERE id = ?').get(targetId);
   if (!exists) { res.status(404).json({ error: 'User not found.' }); return; }
+  if (isBlockedBetween(req.user!.id, targetId)) {
+    res.status(403).json({ error: 'Cannot follow this user.' }); return;
+  }
 
   try {
     getDb().prepare('INSERT OR IGNORE INTO follows (follower_id, following_id) VALUES (?, ?)')
