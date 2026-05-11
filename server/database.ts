@@ -31,6 +31,7 @@ export function initializeDatabase(): void {
       verified_by INTEGER,
       profile_visibility TEXT DEFAULT 'public' CHECK(profile_visibility IN ('public','private')),
       feed_exposure TEXT DEFAULT 'extended' CHECK(feed_exposure IN ('friends_only','mixed','everyone','friends','extended','world')),
+      world_home_injection TEXT DEFAULT 'world_home_few' CHECK(world_home_injection IN ('world_home_off','world_home_few','world_home_balanced')),
       game_discovery_enabled INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -284,4 +285,9 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON user_relationship_blocks(blocker_user_id);
     CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON user_relationship_blocks(blocked_user_id);
   `);
+
+  const userColumns = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
+  if (!userColumns.some(c => c.name === 'world_home_injection')) {
+    db.exec("ALTER TABLE users ADD COLUMN world_home_injection TEXT DEFAULT 'world_home_few'");
+  }
 }

@@ -15,6 +15,7 @@ export interface AuthUser {
   is_verified: number;
   profile_visibility: string;
   feed_exposure: string;
+  world_home_injection: string;
   game_discovery_enabled: number;
 }
 
@@ -44,7 +45,7 @@ export function verifyToken(token: string): { id: number; username: string; role
 
 export function getUserById(id: number): AuthUser | null {
   const row = getDb().prepare(
-    'SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, game_discovery_enabled FROM users WHERE id = ?'
+    'SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, world_home_injection, game_discovery_enabled FROM users WHERE id = ?'
   ).get(id) as AuthUser | undefined;
   return row ?? null;
 }

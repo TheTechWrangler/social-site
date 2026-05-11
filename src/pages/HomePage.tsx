@@ -9,14 +9,22 @@ const LEVELS = [
   { key: 'friends', label: 'Just Friends', help: 'Only your posts and people you follow.' },
   { key: 'world', label: 'Approved World Feeds', help: 'Approved RSS and podcast sources. External content stays clearly labeled.' },
 ];
+const WORLD_HOME_OPTIONS = [
+  { key: 'world_home_off', label: 'Off', help: 'Only native posts appear in this feed.' },
+  { key: 'world_home_few', label: 'Few', help: 'Occasionally adds approved RSS/podcast items.' },
+  { key: 'world_home_balanced', label: 'Balanced', help: 'Adds more approved RSS/podcast items.' },
+];
 
 export default function HomePage({ user }: { user: any }) {
   const [posts, setPosts] = useState<any[]>([]);
   const [worldItems, setWorldItems] = useState<any[]>([]);
+  const [feedItems, setFeedItems] = useState<any[]>([]);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [posting, setPosting] = useState(false);
-  const [level, setLevel] = useState('extended');
+  const initialLevel = ['everyone', 'extended', 'friends', 'world'].includes(user?.feed_exposure) ? user.feed_exposure : 'extended';
+  const [level, setLevel] = useState(initialLevel);
+  const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -32,6 +40,7 @@ export default function HomePage({ user }: { user: any }) {
       const r = await api.feed({ limit: 50, offset: 0, level: l } as any);
       setPosts(r.posts || []);
       setWorldItems(r.worldItems || []);
+      setFeedItems(r.items || r.posts || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
@@ -41,9 +50,31 @@ export default function HomePage({ user }: { user: any }) {
     setLoading(true);
     try {
       await fetch('/api/users/profile', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ feedExposure: lv }) });
+      const stored = localStorage.getItem('user');
+      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), feed_exposure: lv }));
       const r = await api.feed({ limit: 50, offset: 0, level: lv } as any);
       setPosts(r.posts || []);
       setWorldItems(r.worldItems || []);
+      setFeedItems(r.items || r.posts || []);
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  }
+
+  async function handleWorldHomeChange(value: string) {
+    setWorldHomeInjection(value);
+    setLoading(true);
+    try {
+      await fetch('/api/users/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({ worldHomeInjection: value }),
+      });
+      const stored = localStorage.getItem('user');
+      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), world_home_injection: value }));
+      const r = await api.feed({ limit: 50, offset: 0, level } as any);
+      setPosts(r.posts || []);
+      setWorldItems(r.worldItems || []);
+      setFeedItems(r.items || r.posts || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
@@ -92,8 +123,12 @@ export default function HomePage({ user }: { user: any }) {
     setPosting(false);
   }
 
-  function handlePostUpdate(updated: any) { setPosts(prev => prev.map(p => p.id === updated.id ? updated : p)); }
+  function handlePostUpdate(updated: any) {
+    setPosts(prev => prev.map(p => p.id === updated.id ? { ...updated, type: 'post' } : p));
+    setFeedItems(prev => prev.map(item => item.type === 'post' && item.id === updated.id ? { ...updated, type: 'post' } : item));
+  }
   const currentLevel = LEVELS.find(l => l.key === level) || LEVELS[1];
+  const currentWorldHome = WORLD_HOME_OPTIONS.find(o => o.key === worldHomeInjection) || WORLD_HOME_OPTIONS[1];
 
   return (
     <div className="feed-page">
@@ -108,6 +143,15 @@ export default function HomePage({ user }: { user: any }) {
           ))}
         </div>
         <p className="muted" style={{ fontSize: '0.78rem', marginTop: 4 }}>{currentLevel.help}</p>
+        <div className="world-home-control">
+          <span className="world-home-label">World Feed on Home</span>
+          <div className="feed-exposure">
+            {WORLD_HOME_OPTIONS.map(opt => (
+              <button key={opt.key} className={`btn btn-sm ${worldHomeInjection === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleWorldHomeChange(opt.key)}>{opt.label}</button>
+            ))}
+          </div>
+          <p className="muted" style={{ fontSize: '0.78rem', marginTop: 4 }}>{currentWorldHome.help}</p>
+        </div>
       </div>
 
       {isVerified && level !== 'world' && (
@@ -128,10 +172,15 @@ export default function HomePage({ user }: { user: any }) {
         level === 'world' ? (
           worldItems.length === 0 ? <div className="empty-state"><p>No world feed items yet.</p><p className="muted">Admins can fetch RSS sources in Admin → RSS Sources.</p></div> :
             <div className="world-feed-list">{worldItems.map(item => <WorldCard key={item.id} item={item} />)}</div>
-        ) : posts.length === 0 ? (
+        ) : feedItems.length === 0 ? (
           <div className="empty-state"><p>No posts yet.</p><p className="muted">Follow some users or create your first post!</p></div>
         ) : (
-          <div className="feed-list">{posts.map(p => <PostCard key={p.id} post={p} currentUser={user} onUpdate={handlePostUpdate} />)}</div>
+          <div className="feed-list">
+            {feedItems.map(item => item.type === 'world_item'
+              ? <WorldCard key={`world-${item.id}`} item={item} />
+              : <PostCard key={`post-${item.id}`} post={item} currentUser={user} onUpdate={handlePostUpdate} />
+            )}
+          </div>
         )
       }
     </div>

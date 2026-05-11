@@ -398,6 +398,18 @@ p { margin: 0 0 8px; }
 .feed-page h2 { margin-bottom: 18px; }
 .feed-controls { margin-bottom: 14px; }
 .feed-exposure { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.world-home-control {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.world-home-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-heading);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
 
 /* Games */
 .games-page h2 { margin-bottom: 4px; }
@@ -500,7 +512,7 @@ p { margin: 0 0 8px; }
 .settings-section { margin-bottom: 24px; }
 .settings-section h3 { font-size: 1rem; color: var(--text-muted); margin-bottom: 10px; }
 .settings-card { background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; backdrop-filter: blur(8px); }
-.settings-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+.settings-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
 .settings-row:last-child { border-bottom: none; }
 .settings-list { display: flex; flex-direction: column; gap: 6px; }
 .settings-row-card { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--card-gradient); border: 1px solid var(--border); border-radius: var(--radius-sm); }

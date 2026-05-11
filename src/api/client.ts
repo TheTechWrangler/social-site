@@ -25,7 +25,7 @@ export const api = {
   // Feed
   feed: (params?: { mode?: string; limit?: number; offset?: number; level?: string; exposure?: string }) => {
     const qs = new URLSearchParams(params as any).toString();
-    return request<{ posts: any[]; worldItems?: any[]; level?: string }>(`/feed?${qs}`);
+    return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string }>(`/feed?${qs}`);
   },
 
   // Posts
@@ -36,7 +36,7 @@ export const api = {
 
   // Users
   getUser: (username: string) => request<{ user: any }>(`/users/${username}`),
-  updateProfile: (data: { displayName?: string; bio?: string }) =>
+  updateProfile: (data: { displayName?: string; bio?: string; profileVisibility?: string; feedExposure?: string; worldHomeInjection?: string }) =>
     request<{ user: any }>('/users/profile', { method: 'PUT', body: JSON.stringify(data) }),
   searchUsers: (q: string) => request<{ users: any[] }>(`/users?q=${encodeURIComponent(q)}`),
 

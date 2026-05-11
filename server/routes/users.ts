@@ -78,15 +78,18 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
 
 // PUT /api/users/profile
 router.put('/profile', requireAuth, (req: AuthRequest, res) => {
-  const { displayName, bio, profileVisibility, feedExposure, gameDiscoveryEnabled, avatar_url } = req.body;
+  const { displayName, bio, profileVisibility, feedExposure, worldHomeInjection, gameDiscoveryEnabled, avatar_url } = req.body;
   const vis = profileVisibility === 'private' ? 'private' : 'public';
   const fex = ['friends_only', 'mixed', 'everyone', 'friends', 'extended', 'world'].includes(feedExposure) ? feedExposure : 'extended';
+  const whi = ['world_home_off', 'world_home_few', 'world_home_balanced'].includes(worldHomeInjection) ? worldHomeInjection : undefined;
   const fields: string[] = [];
   const vals: any[] = [];
   if (displayName !== undefined) { fields.push('display_name = ?'); vals.push(displayName); }
   if (bio !== undefined) { fields.push('bio = ?'); vals.push(bio); }
   if (avatar_url !== undefined) { fields.push('avatar_url = ?'); vals.push(avatar_url); }
-  fields.push('profile_visibility = ?'); vals.push(vis);
+  if (profileVisibility !== undefined) { fields.push('profile_visibility = ?'); vals.push(vis); }
+  if (feedExposure !== undefined) { fields.push('feed_exposure = ?'); vals.push(fex); }
+  if (whi !== undefined) { fields.push('world_home_injection = ?'); vals.push(whi); }
   if (gameDiscoveryEnabled !== undefined) { fields.push('game_discovery_enabled = ?'); vals.push(gameDiscoveryEnabled ? 1 : 0); }
   fields.push("updated_at = datetime('now')");
   vals.push(req.user!.id);

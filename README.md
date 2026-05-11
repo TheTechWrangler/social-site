@@ -52,7 +52,7 @@ Opens:
 - `GET /api/auth/steam/callback` — Steam OpenID callback
 
 ### Feed
-- `GET /api/feed?mode=following` — Chronological feed
+- `GET /api/feed?level=everyone|extended|friends|world` — Chronological Home feed. Native levels may include user-controlled World Feed injection; `world` returns only approved RSS/podcast items.
 
 ### Posts
 - `POST /api/posts` — Create post
@@ -201,6 +201,21 @@ When not configured, clicking Google or Steam buttons will show:
 The World Feed pulls content from external RSS sources into a chronological feed of excerpts. Every RSS item is clearly labeled with its source name and includes an "Open original" link pointing to the publisher's website.
 
 **Philosophy:** External content is never presented as native/local content. No ads, no tracking, no algorithmic ranking. Pure chronological order by published date.
+
+## Home Feed Controls
+
+Home feed levels control the native social circle:
+- **Everyone** — public native posts from verified users
+- **Friends of Friends** — people you follow plus extended circle
+- **Just Friends** — your posts and people you follow
+- **Approved World Feeds** — only approved RSS/podcast items
+
+The **World Feed on Home** preference controls whether approved RSS/podcast items are mixed into normal native Home feeds:
+- **Off** — only native posts appear
+- **Few** — occasionally adds approved RSS/podcast items
+- **Balanced** — adds more approved RSS/podcast items
+
+Injected external items remain visibly labeled as World Feed/RSS/podcast content and are rendered separately from native posts. RSS source blocking applies to Home injection. Native block/mute still applies to native posts. No engagement data, ads, boosted posts, or algorithmic ranking are used.
 
 ### How It Works
 

@@ -6,6 +6,21 @@ import { getWorldFeed } from '../rssService.js';
 
 const router = Router();
 
+function worldInjectionLimit(nativeCount: number, preference: string): number {
+  if (preference === 'world_home_off') return 0;
+  if (preference === 'world_home_balanced') {
+    if (nativeCount === 0) return 4;
+    return Math.min(20, Math.max(2, Math.ceil(nativeCount / 4)));
+  }
+  if (nativeCount === 0) return 2;
+  if (nativeCount < 8) return 1;
+  return Math.min(10, Math.max(1, Math.ceil(nativeCount / 9)));
+}
+
+function itemTime(item: any): string {
+  return item.type === 'world_item' ? (item.publishedAt || item.published_at || '') : (item.createdAt || '');
+}
+
 // GET /api/feed?level=everyone|extended|friends|world&limit=50&offset=0
 router.get('/', optionalAuth, (req: AuthRequest, res) => {
   try {
@@ -33,7 +48,7 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
     // ─── World Feed mode ───
     if (level === 'world') {
       const items = getWorldFeed({ limit, offset, userId: req.user?.id });
-      res.json({ posts: [], worldItems: items, level });
+      res.json({ posts: [], worldItems: items, items: items, level });
       return;
     }
 
@@ -86,8 +101,21 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       `).all(limit, offset);
     }
 
-    const posts = rows.map((r: any) => enrichPost(r, req.user?.id));
-    res.json({ posts, worldItems: [], level });
+    const posts = rows.map((r: any) => ({ ...enrichPost(r, req.user?.id), type: 'post' }));
+    let worldItems: any[] = [];
+
+    if (req.user) {
+      const prefRow = db.prepare('SELECT world_home_injection FROM users WHERE id = ?').get(req.user.id) as any;
+      const preference = prefRow?.world_home_injection || 'world_home_few';
+      const worldLimit = worldInjectionLimit(posts.length, preference);
+      if (worldLimit > 0) {
+        worldItems = getWorldFeed({ limit: worldLimit, offset: 0, userId: req.user.id });
+      }
+    }
+
+    const items = [...posts, ...worldItems]
+      .sort((a: any, b: any) => itemTime(b).localeCompare(itemTime(a)));
+    res.json({ posts, worldItems, items, level });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

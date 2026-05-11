@@ -136,7 +136,8 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; ite
   const limit = Math.min(params.limit || 50, 100);
   const offset = params.offset || 0;
   let sql = `
-    SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category
+    SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
+      (SELECT COUNT(*) FROM rss_item_comments c WHERE c.rss_item_id = ri.id AND c.is_hidden = 0) as comment_count
     FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
     WHERE rs.is_active = 1
   `;
@@ -158,6 +159,20 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; ite
   const items = getDb().prepare(sql).all(...vals) as any[];
   return items.map(i => ({
     id: i.id,
+    type: 'world_item',
+    item_type: i.item_type || 'article',
+    source_id: i.source_id,
+    source_name: i.source_name,
+    category: i.source_category,
+    content_snippet: i.content_snippet,
+    link_url: i.link_url,
+    image_url: i.image_url,
+    enclosure_url: i.enclosure_url || '',
+    enclosure_type: i.enclosure_type || '',
+    duration_text: i.duration_text || '',
+    episode_image_url: i.episode_image_url || '',
+    published_at: i.published_at,
+    comment_count: i.comment_count || 0,
     sourceId: i.source_id,
     sourceName: i.source_name,
     sourceUrl: i.source_url,
