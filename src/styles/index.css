@@ -636,6 +636,8 @@ p { margin: 0 0 8px; }
 .group-header { margin-bottom: 16px; }
 
 /* ─── Notifications ─── */
+.notifications-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.notifications-header h2 { margin: 0; }
 .notification { padding: 14px; border-bottom: 1px solid var(--border); transition: background 0.2s; }
 .notification.unread { background: rgba(94,235,255,0.06); border-left: 2px solid var(--accent); }
 .notification .time { font-size: 0.8rem; margin-left: 12px; }

@@ -10,17 +10,43 @@ const TYPE_LABELS: Record<string, string> = {
   group_invite: 'invited you to a group',
 };
 
-export default function NotificationsPage() {
+interface Props {
+  onMarkAllRead: () => void;
+}
+
+export default function NotificationsPage({ onMarkAllRead }: Props) {
   const [notifs, setNotifs] = useState<any[]>([]);
+  const [marking, setMarking] = useState(false);
 
   useEffect(() => {
     api.getNotifications().then(r => setNotifs(r.notifications)).catch(() => {});
-    api.readAll().catch(() => {});
   }, []);
+
+  const hasUnread = notifs.some(n => !n.read);
+
+  async function handleMarkAllRead() {
+    setMarking(true);
+    try {
+      await api.readAll();
+      setNotifs(prev => prev.map(n => ({ ...n, read: 1 })));
+      onMarkAllRead();
+    } catch {
+      // silent — badge will self-correct on next poll
+    } finally {
+      setMarking(false);
+    }
+  }
 
   return (
     <div className="notifications-page">
-      <h2>Notifications</h2>
+      <div className="notifications-header">
+        <h2>Notifications</h2>
+        {hasUnread && (
+          <button className="btn btn-sm" onClick={handleMarkAllRead} disabled={marking}>
+            {marking ? 'Marking…' : 'Mark all read'}
+          </button>
+        )}
+      </div>
       {notifs.length === 0 ? (
         <p className="muted">No notifications yet.</p>
       ) : (

@@ -118,7 +118,7 @@ export default function App() {
           <Route path="/profile/:username" element={user ? <ProfilePage user={user} /> : <Navigate to="/login" />} />
           <Route path="/groups" element={user ? <GroupsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/groups/:id" element={user ? <GroupPage user={user} /> : <Navigate to="/login" />} />
-          <Route path="/notifications" element={user ? <NotificationsPage /> : <Navigate to="/login" />} />
+          <Route path="/notifications" element={user ? <NotificationsPage onMarkAllRead={() => setUnread(0)} /> : <Navigate to="/login" />} />
           <Route path="/admin" element={user?.role === 'admin' ? <AdminPage /> : <Navigate to="/" />} />
           <Route path="/world" element={<WorldPage />} />
           <Route path="/discover" element={user ? <DiscoverPage /> : <Navigate to="/login" />} />
