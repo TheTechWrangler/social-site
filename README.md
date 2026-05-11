@@ -63,6 +63,7 @@ Opens:
 - `GET /api/users/:username` — User profile
 - `PUT /api/users/profile` — Update own profile
 - `GET /api/users?q=` — Search users
+- `GET /api/users/me/games` — Current user's game preferences
 
 ### Follows
 - `POST /api/follows/:userId` — Follow
@@ -100,6 +101,14 @@ Opens:
 - `POST /api/admin/posts/:id/unhide` — Unhide post
 - `GET /api/admin/reports` — List reports
 - `POST /api/admin/reports` — Report a post
+
+### Games
+- `GET /api/games?q=` — Game catalog search/list
+- `GET /api/games/:slug` — Game detail, LFG, live servers, and opted-in player discovery
+- `POST /api/games/:slug/profile` — Add or update a game on your profile
+- `DELETE /api/games/:slug/profile` — Remove a game from your profile
+
+Users can list games they play as profile expression, including platform, play style, mic preference, LFG status, favorite status, visibility, and notes. Game Discovery is opt-in: listed games can remain visible on a profile, but same-game player discovery only shows verified, non-banned, opted-in users who expose that game. Profile privacy and block/mute rules still apply. Matching is explicit shared-game matching and filters only, not algorithmic ranking.
 
 ## Database
 

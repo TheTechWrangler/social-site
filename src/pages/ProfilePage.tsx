@@ -1,10 +1,27 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 
 const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
 const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+const PLATFORM_OPTIONS = ['PC', 'Xbox', 'PlayStation', 'Switch', 'Mobile', 'Crossplay', 'Tabletop', 'Other'];
+const PLAY_STYLE_OPTIONS = ['Casual', 'Competitive', 'PvE', 'PvP', 'Co-op', 'Roleplay', 'Modded', 'Hardcore', 'Other'];
+const MIC_OPTIONS = ['Mic preferred', 'Mic required', 'No mic needed'];
+
+const emptyGameForm = {
+  slug: '',
+  gameName: '',
+  platform: 'PC',
+  playStyle: 'Casual',
+  micPreference: 'Mic preferred',
+  usualPlayTimes: '',
+  regionOrTimezone: '',
+  lookingForGroup: false,
+  isFavorite: false,
+  displayOnProfile: true,
+  notes: '',
+};
 
 export default function ProfilePage({ user: currentUser }: { user: any }) {
   const { username } = useParams<{ username: string }>();
@@ -19,10 +36,14 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   const [showGamePicker, setShowGamePicker] = useState(false);
   const [gameSearch, setGameSearch] = useState('');
   const [gameResults, setGameResults] = useState<any[]>([]);
-  const [gamePlatform, setGamePlatform] = useState('PC');
-  const [gamePlayStyle, setGamePlayStyle] = useState('');
-  const [gameLookingForGroup, setGameLookingForGroup] = useState(false);
-  const [gameFavorite, setGameFavorite] = useState(false);
+  const [editingGameSlug, setEditingGameSlug] = useState<string | null>(null);
+  const [gameForm, setGameForm] = useState(emptyGameForm);
+  const [gameMessage, setGameMessage] = useState('');
+  const storedUser = JSON.parse(localStorage.getItem('user') || 'null');
+  const gameDiscoveryEnabled =
+    currentUser?.game_discovery_enabled === 1 ||
+    currentUser?.gameDiscoveryEnabled === true ||
+    storedUser?.game_discovery_enabled === 1;
 
   useEffect(() => { loadProfile(); }, [username]);
 
@@ -91,23 +112,86 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
     try { const r = await api.get<any>(`/games?q=${encodeURIComponent(q)}`); setGameResults(r.games || []); } catch (e) {}
   }
 
-  async function addGame(gameId: number, slug: string) {
+  function resetGameForm() {
+    setShowGamePicker(false);
+    setEditingGameSlug(null);
+    setGameSearch('');
+    setGameResults([]);
+    setGameForm(emptyGameForm);
+  }
+
+  function startAddGame() {
+    setGameMessage('');
+    setEditingGameSlug(null);
+    setGameForm(emptyGameForm);
+    setGameSearch('');
+    setGameResults([]);
+    setShowGamePicker(true);
+  }
+
+  function selectGame(game: any) {
+    setGameForm({ ...emptyGameForm, slug: game.slug, gameName: game.name });
+    setGameSearch(game.name);
+    setGameResults([]);
+  }
+
+  function startEditGame(game: any) {
+    setGameMessage('');
+    setShowGamePicker(true);
+    setEditingGameSlug(game.game_slug);
+    setGameSearch(game.game_name);
+    setGameResults([]);
+    setGameForm({
+      slug: game.game_slug,
+      gameName: game.game_name,
+      platform: game.platform || 'PC',
+      playStyle: game.play_style || 'Casual',
+      micPreference: game.mic_preference || 'Mic preferred',
+      usualPlayTimes: game.usual_play_times || '',
+      regionOrTimezone: game.region_or_timezone || '',
+      lookingForGroup: !!game.looking_for_group,
+      isFavorite: !!game.is_favorite,
+      displayOnProfile: game.display_on_profile !== 0,
+      notes: game.notes || '',
+    });
+  }
+
+  async function saveGame(e: React.FormEvent) {
+    e.preventDefault();
+    if (!gameForm.slug) { setGameMessage('Choose a game from the catalog.'); return; }
     try {
-      await fetch(`/api/games/${slug}/profile`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify({ platform: gamePlatform, playStyle: gamePlayStyle, lookingForGroup: gameLookingForGroup, isFavorite: gameFavorite, displayOnProfile: true }),
+      await api.post(`/games/${gameForm.slug}/profile`, {
+        platform: gameForm.platform,
+        playStyle: gameForm.playStyle,
+        micPreference: gameForm.micPreference,
+        usualPlayTimes: gameForm.usualPlayTimes,
+        regionOrTimezone: gameForm.regionOrTimezone,
+        lookingForGroup: gameForm.lookingForGroup,
+        isFavorite: gameForm.isFavorite,
+        displayOnProfile: gameForm.displayOnProfile,
+        notes: gameForm.notes,
       });
-      setShowGamePicker(false); setGameSearch(''); setGameResults([]);
-      loadProfile();
-    } catch (e) { console.error(e); }
+      setGameMessage(editingGameSlug ? 'Game entry updated.' : 'Game added.');
+      resetGameForm();
+      await loadProfile();
+    } catch (e: any) { setGameMessage(e.message || 'Could not save game.'); }
   }
 
   async function removeGame(gameId: number, slug: string) {
+    if (!confirm('Remove this game from your profile?')) return;
     try {
       await fetch(`/api/games/${slug}/profile`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
-      loadProfile();
-    } catch (e) { console.error(e); }
+      setGameMessage('Game removed.');
+      await loadProfile();
+    } catch (e: any) { setGameMessage(e.message || 'Could not remove game.'); }
+  }
+
+  function handleFindPlayers(e: React.MouseEvent, slug: string) {
+    if (!gameDiscoveryEnabled) {
+      e.preventDefault();
+      alert('Turn on Game Discovery in Settings to find players who share your games.');
+      return;
+    }
   }
 
   if (!profile) return <div className="loading">Loading...</div>;
@@ -176,18 +260,120 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
         </div>
       )}
 
-      {!isLimited && profile.gamePrefs && profile.gamePrefs.length > 0 && (
+      {!isLimited && (
         <div className="profile-games">
-          <h3>🎮 Games I Play</h3>
-          <div className="profile-game-chips">
-            {profile.gamePrefs.map((g: any) => (
-              <a key={g.game_id} href={`/games/${g.game_slug}`} className="profile-game-chip">
-                {g.is_favorite ? '⭐' : ''} {g.game_name}
-                {g.platform && <span className="muted" style={{ fontSize: '0.75rem' }}> ({g.platform})</span>}
-                {g.looking_for_group ? ' 🔍' : ''}
-              </a>
-            ))}
+          <div className="profile-games-header">
+            <h3>Games I Play</h3>
+            {isOwn && !showGamePicker && (
+              <button className="btn btn-sm btn-primary" onClick={startAddGame}>Add game</button>
+            )}
           </div>
+          {gameMessage && <p className="muted profile-game-message">{gameMessage}</p>}
+
+          {isOwn && showGamePicker && (
+            <form className="profile-game-editor" onSubmit={saveGame}>
+              <div className="profile-game-search">
+                <label>
+                  Game
+                  <input
+                    className="input"
+                    placeholder="Search games..."
+                    value={gameSearch}
+                    onChange={e => { setGameSearch(e.target.value); searchGames(e.target.value); if (!editingGameSlug) setGameForm({ ...gameForm, slug: '', gameName: '' }); }}
+                  />
+                </label>
+                {gameResults.length > 0 && (
+                  <div className="profile-game-results">
+                    {gameResults.map((g: any) => (
+                      <button type="button" key={g.id} onClick={() => selectGame(g)}>
+                        <strong>{g.name}</strong>
+                        {g.platforms && <span>{g.platforms}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="profile-game-form-grid">
+                <label>Platform
+                  <select className="input" value={gameForm.platform} onChange={e => setGameForm({ ...gameForm, platform: e.target.value })}>
+                    {PLATFORM_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </label>
+                <label>Play style
+                  <select className="input" value={gameForm.playStyle} onChange={e => setGameForm({ ...gameForm, playStyle: e.target.value })}>
+                    {PLAY_STYLE_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </label>
+                <label>Mic preference
+                  <select className="input" value={gameForm.micPreference} onChange={e => setGameForm({ ...gameForm, micPreference: e.target.value })}>
+                    {MIC_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </label>
+                <label>Usual play times
+                  <input className="input" value={gameForm.usualPlayTimes} onChange={e => setGameForm({ ...gameForm, usualPlayTimes: e.target.value })} placeholder="Evenings, weekends..." />
+                </label>
+                <label>Region/timezone
+                  <input className="input" value={gameForm.regionOrTimezone} onChange={e => setGameForm({ ...gameForm, regionOrTimezone: e.target.value })} placeholder="US Central, EU..." />
+                </label>
+              </div>
+
+              <div className="profile-game-toggles">
+                <label><input type="checkbox" checked={gameForm.lookingForGroup} onChange={e => setGameForm({ ...gameForm, lookingForGroup: e.target.checked })} /> Looking for group</label>
+                <label><input type="checkbox" checked={gameForm.isFavorite} onChange={e => setGameForm({ ...gameForm, isFavorite: e.target.checked })} /> Favorite</label>
+                <label><input type="checkbox" checked={gameForm.displayOnProfile} onChange={e => setGameForm({ ...gameForm, displayOnProfile: e.target.checked })} /> Show on profile</label>
+              </div>
+
+              <label>Notes
+                <textarea className="input" rows={3} value={gameForm.notes} onChange={e => setGameForm({ ...gameForm, notes: e.target.value })} placeholder="Optional notes about how you play." />
+              </label>
+
+              <div className="profile-game-actions">
+                <button className="btn btn-primary" type="submit">{editingGameSlug ? 'Save changes' : 'Add game'}</button>
+                <button className="btn btn-ghost" type="button" onClick={resetGameForm}>Cancel</button>
+              </div>
+            </form>
+          )}
+
+          {profile.gamePrefs && profile.gamePrefs.length > 0 ? (
+            <div className="profile-game-cards">
+              {profile.gamePrefs.map((g: any) => (
+                <div key={g.game_id} className={`profile-game-card ${g.is_favorite ? 'favorite' : ''}`}>
+                  <div className="profile-game-card-main">
+                    <Link to={`/games/${g.game_slug}`} className="profile-game-title">
+                      {g.game_name}
+                    </Link>
+                    <div className="lfg-tags">
+                      {g.is_favorite ? <span className="lfg-tag">Favorite</span> : null}
+                      {g.shared_game && !isOwn ? <span className="lfg-tag">Shared game</span> : null}
+                      {g.looking_for_group ? <span className="lfg-tag">LFG</span> : null}
+                    </div>
+                  </div>
+                  <div className="profile-game-meta">
+                    {g.platform && <span>Platform: {g.platform}</span>}
+                    {g.play_style && <span>Style: {g.play_style}</span>}
+                    {g.mic_preference && <span>Mic: {g.mic_preference}</span>}
+                    {g.usual_play_times && <span>Times: {g.usual_play_times}</span>}
+                    {g.region_or_timezone && <span>Region: {g.region_or_timezone}</span>}
+                  </div>
+                  {g.notes && <p className="profile-game-notes">{g.notes}</p>}
+                  <div className="profile-game-actions">
+                    <Link className="btn btn-sm btn-ghost" to={`/games/${g.game_slug}?tab=players`} onClick={e => handleFindPlayers(e, g.game_slug)}>
+                      {gameDiscoveryEnabled ? 'See players' : 'Find players'}
+                    </Link>
+                    {isOwn && (
+                      <>
+                        <button className="btn btn-sm btn-ghost" onClick={() => startEditGame(g)}>Edit</button>
+                        <button className="btn btn-sm btn-ghost" onClick={() => removeGame(g.game_id, g.game_slug)}>Remove</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted">{isOwn ? 'Add games to show what you play.' : 'No visible games listed.'}</p>
+          )}
         </div>
       )}
       {!isLimited && <h3>Posts</h3>}

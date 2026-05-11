@@ -1,14 +1,19 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 
 export default function GameDetailPage() {
   const { slug } = useParams<{ slug: string }>();
+  const [searchParams] = useSearchParams();
   const [game, setGame] = useState<any>(null);
   const [lfgPosts, setLfgPosts] = useState<any[]>([]);
   const [players, setPlayers] = useState<any[]>([]);
   const [servers, setServers] = useState<any[]>([]);
   const [tab, setTab] = useState<'servers' | 'lfg' | 'players'>('servers');
+  const [viewerDiscoveryEnabled, setViewerDiscoveryEnabled] = useState(false);
+  const [playerPlatform, setPlayerPlatform] = useState('');
+  const [playerStyle, setPlayerStyle] = useState('');
+  const [lfgOnly, setLfgOnly] = useState(false);
   const [showCreateLfg, setShowCreateLfg] = useState(false);
   const [lfgTitle, setLfgTitle] = useState('');
   const [lfgBody, setLfgBody] = useState('');
@@ -17,7 +22,7 @@ export default function GameDetailPage() {
   const [lfgDuration, setLfgDuration] = useState(6);
 
   const user = JSON.parse(localStorage.getItem('user') || 'null');
-  const isVerified = user?.is_verified ?? user?.is_verified === 1;
+  const isVerified = user?.is_verified === 1 || user?.isVerified === true;
 
   function timeUntil(dateStr: string): string {
     const diff = new Date(dateStr + 'Z').getTime() - Date.now();
@@ -28,12 +33,17 @@ export default function GameDetailPage() {
     return `${m}m`;
   }
 
+  useEffect(() => {
+    if (searchParams.get('tab') === 'players') setTab('players');
+  }, [searchParams]);
+
   useEffect(() => { loadData(); }, [slug]);
 
   async function loadData() {
     try {
       const r = await api.get<any>(`/games/${slug}`);
       setGame(r.game); setLfgPosts(r.lfgPosts); setPlayers(r.players); setServers(r.servers || []);
+      setViewerDiscoveryEnabled(!!r.viewerDiscoveryEnabled);
     } catch (e) { console.error(e); }
   }
 
@@ -51,7 +61,22 @@ export default function GameDetailPage() {
     try { await fetch(`/api/games/lfg/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }); loadData(); } catch (e) {}
   }
 
+  async function followPlayer(player: any) {
+    try {
+      await api.follow(player.user_id);
+      setPlayers(prev => prev.map(p => p.user_id === player.user_id ? { ...p, is_following: 1 } : p));
+    } catch (e: any) { alert(e.message || 'Could not follow player.'); }
+  }
+
   if (!game) return <div className="loading">Loading...</div>;
+  const filteredPlayers = players.filter((p: any) => {
+    if (playerPlatform && p.platform !== playerPlatform) return false;
+    if (playerStyle && p.play_style !== playerStyle) return false;
+    if (lfgOnly && !p.looking_for_group) return false;
+    return true;
+  });
+  const playerPlatforms = Array.from(new Set(players.map((p: any) => p.platform).filter(Boolean)));
+  const playerStyles = Array.from(new Set(players.map((p: any) => p.play_style).filter(Boolean)));
 
   return (
     <div className="game-detail-page">
@@ -153,22 +178,47 @@ export default function GameDetailPage() {
 
       {tab === 'players' && (
         <div className="players-section">
-          {players.length === 0 ? <p className="muted">No players listed yet.</p> : (
+          {!viewerDiscoveryEnabled ? (
+            <div className="settings-card">
+              <p>Turn on Game Discovery to find and be found by players who share your games.</p>
+              <Link to="/settings" className="btn btn-primary">Open Settings</Link>
+            </div>
+          ) : players.length === 0 ? <p className="muted">No opted-in players for this game yet.</p> : (
+            <>
+            <div className="player-filters">
+              <select className="input" value={playerPlatform} onChange={e => setPlayerPlatform(e.target.value)}>
+                <option value="">All platforms</option>
+                {playerPlatforms.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <select className="input" value={playerStyle} onChange={e => setPlayerStyle(e.target.value)}>
+                <option value="">All play styles</option>
+                {playerStyles.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <label className="player-filter-check">
+                <input type="checkbox" checked={lfgOnly} onChange={e => setLfgOnly(e.target.checked)} />
+                LFG only
+              </label>
+            </div>
             <div className="discover-results">
-              {players.map(p => (
+              {filteredPlayers.length === 0 ? <p className="muted">No players match those filters.</p> : filteredPlayers.map(p => (
                 <div key={p.id} className="discover-card">
-                  <div className="avatar-placeholder">{p.display_name?.[0] || '?'}</div>
+                  {p.avatar_url ? <img src={p.avatar_url} alt="" className="avatar-img" /> : <div className="avatar-placeholder">{p.display_name?.[0] || '?'}</div>}
                   <div className="discover-info">
                     <Link to={`/profile/${p.username}`}><strong>{p.display_name}</strong> <span className="muted">@{p.username}</span></Link>
                     <div className="lfg-tags" style={{ marginTop: 4 }}>
                       {p.platform && <span className="lfg-tag">🎮 {p.platform}</span>}
                       {p.play_style && <span className="lfg-tag">⚡ {p.play_style}</span>}
                       {p.looking_for_group ? <span className="lfg-tag">🔍 LFG</span> : null}
+                      {p.is_favorite ? <span className="lfg-tag">Favorite</span> : null}
                     </div>
                   </div>
+                  {isVerified && user?.id !== p.user_id && !p.is_following && (
+                    <button className="btn btn-sm btn-ghost" onClick={() => followPlayer(p)}>Follow</button>
+                  )}
                 </div>
               ))}
             </div>
+            </>
           )}
         </div>
       )}

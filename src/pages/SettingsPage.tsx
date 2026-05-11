@@ -47,6 +47,8 @@ export default function SettingsPage({ user }: { user: any }) {
     setGameDiscovery(newVal);
     try {
       await fetch('/api/users/profile', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ gameDiscoveryEnabled: newVal }) });
+      const stored = localStorage.getItem('user');
+      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), game_discovery_enabled: newVal ? 1 : 0 }));
     } catch (e) { console.error(e); }
   }
 
@@ -101,7 +103,7 @@ export default function SettingsPage({ user }: { user: any }) {
               {gameDiscovery ? 'ON' : 'OFF'}
             </button>
           </div>
-          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>When enabled, players who share your listed games can find your profile through the Games section. You can turn this off anytime.</p>
+          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>Your listed games can stay visible on your profile, but you only appear in player discovery when Game Discovery is ON.</p>
         </div>
       </div>
 

@@ -36,9 +36,10 @@ export const api = {
 
   // Users
   getUser: (username: string) => request<{ user: any }>(`/users/${username}`),
-  updateProfile: (data: { displayName?: string; bio?: string; profileVisibility?: string; feedExposure?: string; worldHomeInjection?: string }) =>
+  updateProfile: (data: { displayName?: string; bio?: string; profileVisibility?: string; feedExposure?: string; worldHomeInjection?: string; gameDiscoveryEnabled?: boolean; avatar_url?: string }) =>
     request<{ user: any }>('/users/profile', { method: 'PUT', body: JSON.stringify(data) }),
   searchUsers: (q: string) => request<{ users: any[] }>(`/users?q=${encodeURIComponent(q)}`),
+  getMyGames: () => request<{ gamePrefs: any[] }>('/users/me/games'),
   getFriends: () => request<{ users: any[] }>('/users/me/friends'),
   getFollowing: () => request<{ users: any[] }>('/users/me/following'),
   getFollowers: () => request<{ users: any[] }>('/users/me/followers'),

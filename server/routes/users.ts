@@ -99,6 +99,16 @@ router.get('/me/friends', requireAuth, (req, res) => {
   res.json({ users });
 });
 
+// GET /api/users/me/games
+router.get('/me/games', requireAuth, (req: AuthRequest, res) => {
+  const gamePrefs = getDb().prepare(`
+    SELECT p.*, g.name as game_name, g.slug as game_slug, g.platforms as game_platforms
+    FROM user_game_preferences p JOIN games g ON p.game_id = g.id
+    WHERE p.user_id = ? ORDER BY p.is_favorite DESC, g.name
+  `).all(req.user!.id);
+  res.json({ gamePrefs });
+});
+
 // GET /api/users/:username
 router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
   const row = getDb().prepare(`
@@ -117,12 +127,19 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
   const following = getDb().prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id = ?').get(row.id) as any;
   const postCount = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL').get(row.id) as any;
 
+  const canViewGames = canViewFull || isOwner || isAdmin;
+  const gameVisibilityClause = isOwner || isAdmin ? '' : 'AND p.display_on_profile = 1';
+
   // Get visible game preferences
   const gamePrefs = getDb().prepare(`
-    SELECT p.*, g.name as game_name, g.slug as game_slug
+    SELECT p.*, g.name as game_name, g.slug as game_slug,
+      EXISTS (
+        SELECT 1 FROM user_game_preferences mine
+        WHERE mine.user_id = ? AND mine.game_id = p.game_id
+      ) as shared_game
     FROM user_game_preferences p JOIN games g ON p.game_id = g.id
-    WHERE p.user_id = ? AND p.display_on_profile = 1 ORDER BY p.is_favorite DESC, g.name
-  `).all(row.id);
+    WHERE p.user_id = ? ${gameVisibilityClause} ORDER BY p.is_favorite DESC, g.name
+  `).all(req.user?.id || 0, row.id);
 
   if (!canViewFull) {
     // Limited profile view for private profiles
@@ -145,7 +162,7 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
       profileVisibility: row.profile_visibility, isPrivate: isPrivate,
       followerCount: followers?.c ?? 0, followingCount: following?.c ?? 0,
       postCount: postCount?.c ?? 0, isFollowing,
-      gamePrefs,
+      gamePrefs: canViewGames ? gamePrefs : [],
     }
   });
 });

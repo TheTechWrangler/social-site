@@ -1,8 +1,17 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, optionalAuth } from '../middleware.js';
+import { isBlockedBetween } from '../visibility.js';
 
 const router = Router();
+
+function canDiscoverProfile(viewer: any, player: any): boolean {
+  if (!viewer) return player.profile_visibility !== 'private';
+  if (viewer.role === 'admin' || viewer.id === player.id) return true;
+  if (isBlockedBetween(viewer.id, player.id)) return false;
+  if (player.profile_visibility !== 'private') return true;
+  return !!getDb().prepare('SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?').get(viewer.id, player.id);
+}
 
 // GET /api/games — with optional search
 router.get('/', (req, res) => {
@@ -32,6 +41,8 @@ router.get('/', (req, res) => {
 router.get('/:slug', optionalAuth, (req, res) => {
   const game = getDb().prepare('SELECT * FROM games WHERE slug = ?').get(req.params.slug) as any;
   if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
+  const viewer = (req as any).user || null;
+  const viewerDiscoveryEnabled = !!viewer?.game_discovery_enabled;
 
   const lfgPosts = getDb().prepare(`
     SELECT l.*, u.username, u.display_name, u.avatar_url, u.is_verified, u.profile_visibility
@@ -40,18 +51,28 @@ router.get('/:slug', optionalAuth, (req, res) => {
     ORDER BY l.created_at DESC LIMIT 50
   `).all(game.id);
 
-  const players = getDb().prepare(`
-    SELECT p.*, u.username, u.display_name, u.avatar_url, u.is_verified, u.profile_visibility
+  const rawPlayers = viewerDiscoveryEnabled ? getDb().prepare(`
+    SELECT p.*, u.username, u.display_name, u.avatar_url, u.is_verified, u.profile_visibility,
+      EXISTS (
+        SELECT 1 FROM follows f
+        WHERE f.follower_id = ? AND f.following_id = u.id
+      ) as is_following
     FROM user_game_preferences p JOIN users u ON p.user_id = u.id
-    WHERE p.game_id = ? AND u.game_discovery_enabled = 1 AND u.banned = 0
-    ORDER BY p.updated_at DESC LIMIT 30
-  `).all(game.id);
+    WHERE p.game_id = ?
+      AND p.display_on_profile = 1
+      AND u.game_discovery_enabled = 1
+      AND u.banned = 0
+      AND u.is_verified = 1
+    ORDER BY p.looking_for_group DESC, p.is_favorite DESC, p.updated_at DESC
+    LIMIT 60
+  `).all(viewer?.id || 0, game.id) : [];
+  const players = rawPlayers.filter((p: any) => canDiscoverProfile(viewer, p)).slice(0, 30);
 
   const servers = getDb().prepare(
     'SELECT * FROM game_servers WHERE game_id = ? AND is_active = 1 ORDER BY is_featured DESC, name'
   ).all(game.id);
 
-  res.json({ game, lfgPosts, players, servers });
+  res.json({ game, lfgPosts, players, servers, viewerDiscoveryEnabled });
 });
 
 // GET /api/games/:slug/servers
