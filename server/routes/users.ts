@@ -5,6 +5,63 @@ import { getUserById } from '../auth.js';
 
 const router = Router();
 
+function connectionUserRows(userId: number, mode: 'following' | 'followers' | 'friends') {
+  const relationWhere = mode === 'following'
+    ? 'f.follower_id = ? AND u.id = f.following_id'
+    : mode === 'followers'
+      ? 'f.following_id = ? AND u.id = f.follower_id'
+      : `f.follower_id = ? AND u.id = f.following_id
+        AND EXISTS (SELECT 1 FROM follows mf WHERE mf.follower_id = u.id AND mf.following_id = ?)`;
+  const params = mode === 'friends'
+    ? [userId, userId, userId, userId, userId, userId, userId]
+    : [userId, userId, userId, userId, userId, userId];
+  return getDb().prepare(`
+    SELECT
+      u.id,
+      u.username,
+      u.display_name,
+      u.avatar_url,
+      CASE
+        WHEN u.profile_visibility = 'public'
+          OR EXISTS (SELECT 1 FROM follows vf WHERE vf.follower_id = ? AND vf.following_id = u.id)
+        THEN substr(u.bio, 1, 160)
+        ELSE ''
+      END as bio_snippet,
+      u.is_verified,
+      u.profile_visibility,
+      EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = ? AND cf.following_id = u.id) as is_following,
+      EXISTS (SELECT 1 FROM follows cm WHERE cm.follower_id = u.id AND cm.following_id = ?) as follows_me
+    FROM follows f
+    JOIN users u ON (${relationWhere})
+    WHERE u.banned = 0
+      AND NOT EXISTS (
+        SELECT 1 FROM user_relationship_blocks b
+        WHERE b.relationship_type = 'block'
+          AND ((b.blocker_user_id = ? AND b.blocked_user_id = u.id) OR (b.blocker_user_id = u.id AND b.blocked_user_id = ?))
+      )
+    ORDER BY u.display_name COLLATE NOCASE, u.username COLLATE NOCASE
+  `).all(...params);
+}
+
+function formatConnectionUser(row: any) {
+  return {
+    id: row.id,
+    username: row.username,
+    display_name: row.display_name,
+    displayName: row.display_name,
+    avatar_url: row.avatar_url,
+    avatarUrl: row.avatar_url,
+    bio_snippet: row.bio_snippet || '',
+    bioSnippet: row.bio_snippet || '',
+    is_verified: row.is_verified,
+    isVerified: !!row.is_verified,
+    profile_visibility: row.profile_visibility,
+    profileVisibility: row.profile_visibility,
+    isFollowing: !!row.is_following,
+    followsMe: !!row.follows_me,
+  };
+}
+
 // ─── Block / Mute ───
 
 router.get('/blocked/list', requireAuth, (req, res) => {
@@ -23,6 +80,23 @@ router.get('/muted/list', requireAuth, (req, res) => {
     WHERE r.blocker_user_id = ? AND r.relationship_type = 'mute' ORDER BY r.created_at DESC
   `).all((req as any).user.id);
   res.json({ muted: rows });
+});
+
+// ─── Current User Connections ───
+
+router.get('/me/following', requireAuth, (req, res) => {
+  const users = connectionUserRows((req as any).user.id, 'following').map(formatConnectionUser);
+  res.json({ users });
+});
+
+router.get('/me/followers', requireAuth, (req, res) => {
+  const users = connectionUserRows((req as any).user.id, 'followers').map(formatConnectionUser);
+  res.json({ users });
+});
+
+router.get('/me/friends', requireAuth, (req, res) => {
+  const users = connectionUserRows((req as any).user.id, 'friends').map(formatConnectionUser);
+  res.json({ users });
 });
 
 // GET /api/users/:username

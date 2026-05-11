@@ -39,6 +39,9 @@ export const api = {
   updateProfile: (data: { displayName?: string; bio?: string; profileVisibility?: string; feedExposure?: string; worldHomeInjection?: string }) =>
     request<{ user: any }>('/users/profile', { method: 'PUT', body: JSON.stringify(data) }),
   searchUsers: (q: string) => request<{ users: any[] }>(`/users?q=${encodeURIComponent(q)}`),
+  getFriends: () => request<{ users: any[] }>('/users/me/friends'),
+  getFollowing: () => request<{ users: any[] }>('/users/me/following'),
+  getFollowers: () => request<{ users: any[] }>('/users/me/followers'),
 
   // Follows
   follow: (userId: number) => request<{ ok: boolean }>(`/follows/${userId}`, { method: 'POST' }),

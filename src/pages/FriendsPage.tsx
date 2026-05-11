@@ -6,39 +6,24 @@ type Tab = 'friends' | 'following' | 'followers';
 
 export default function FriendsPage({ user }: { user: any }) {
   const [tab, setTab] = useState<Tab>('friends');
+  const [friends, setFriends] = useState<any[]>([]);
   const [following, setFollowing] = useState<any[]>([]);
   const [followers, setFollowers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => { loadFollowing(); }, []);
+  useEffect(() => { loadConnections(); }, []);
 
-  async function loadFollowing() {
+  async function loadConnections() {
     setLoading(true);
     try {
-      // Get user's profile to get following/follower info
-      const r = await api.getUser(user.username);
-      const profile = r.user;
-      // For a full friends page we'd need dedicated endpoints. For now, search all demo users and filter.
-      // Simplified: load all known users and determine relationships
-      const allUsers = await api.get<any>('/users?q=');
-      const users = allUsers.users || [];
-
-      // Get following/followers from follows data
-      const followingIds = new Set<number>();
-      const followerIds = new Set<number>();
-
-      // Check follows for each known user
-      for (const u of users) {
-        if (u.id === user.id) continue;
-        try {
-          const ur = await api.getUser(u.username);
-          if (ur.user.isFollowing) followingIds.add(u.id);
-        } catch (e) {}
-      }
-
-      setFollowing(users.filter((u: any) => followingIds.has(u.id)));
-      // For followers, check who follows the current user (simplified for MVP)
-      setFollowers(users.filter((u: any) => u.id !== user.id && users.some((f: any) => f.id === user.id)));
+      const [fr, fg, fl] = await Promise.all([
+        api.getFriends(),
+        api.getFollowing(),
+        api.getFollowers(),
+      ]);
+      setFriends(fr.users || []);
+      setFollowing(fg.users || []);
+      setFollowers(fl.users || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
@@ -46,22 +31,22 @@ export default function FriendsPage({ user }: { user: any }) {
   async function toggleFollow(userId: number, isFollowing: boolean) {
     try {
       await (isFollowing ? api.unfollow(userId) : api.follow(userId));
-      loadFollowing();
+      loadConnections();
     } catch (e) { console.error(e); }
   }
 
   const isVerified = user?.isVerified ?? user?.is_verified;
-  // Mutual friends = intersection of following and followers
-  const mutualIds = new Set(following.filter(f => followers.some(fl => fl.id === f.id)).map(f => f.id));
-  const displayList = tab === 'friends' ? following.filter(f => mutualIds.has(f.id))
+  const displayList = tab === 'friends' ? friends
     : tab === 'following' ? following : followers;
+  const emptyText = tab === 'friends' ? 'No friends yet.'
+    : tab === 'following' ? 'You are not following anyone yet.' : 'No followers yet.';
 
   return (
     <div className="friends-page">
       <h2>👥 Connections</h2>
       <div className="admin-tabs">
         <button className={`btn ${tab === 'friends' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('friends')}>
-          Friends ({mutualIds.size})
+          Friends ({friends.length})
         </button>
         <button className={`btn ${tab === 'following' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('following')}>
           Following ({following.length})
@@ -72,22 +57,24 @@ export default function FriendsPage({ user }: { user: any }) {
       </div>
 
       {loading ? <p className="muted">Loading...</p> : displayList.length === 0 ? (
-        <p className="muted">{tab === 'friends' ? 'No mutual friends yet.' : tab === 'following' ? 'Not following anyone yet.' : 'No followers yet.'}</p>
+        <p className="muted">{emptyText}</p>
       ) : (
         <div className="discover-results">
           {displayList.map((u: any) => {
-            const isFollowing = following.some(f => f.id === u.id);
-            const isFriend = mutualIds.has(u.id);
+            const isFollowing = !!u.isFollowing;
+            const isFriend = !!u.isFollowing && !!u.followsMe;
+            const displayName = u.displayName || u.display_name || u.username;
             return (
               <div key={u.id} className="discover-card">
-                <div className="avatar-placeholder">{u.display_name?.[0] || '?'}</div>
+                <div className="avatar-placeholder">{displayName?.[0] || '?'}</div>
                 <div className="discover-info">
                   <Link to={`/profile/${u.username}`} className="discover-name">
-                    <strong>{u.display_name}</strong>
+                    <strong>{displayName}</strong>
                     <span className="muted">@{u.username}</span>
                     {isFriend && <span className="verified-badge">🤝 Friend</span>}
                   </Link>
-                  {u.is_verified ? <span className="verified-badge">✅ Verified</span> : <span className="muted">⚠ Unverified</span>}
+                  {(u.isVerified ?? u.is_verified) ? <span className="verified-badge">✅ Verified</span> : <span className="muted">⚠ Unverified</span>}
+                  {u.bioSnippet && <p className="muted" style={{ fontSize: '0.82rem', marginTop: 4 }}>{u.bioSnippet}</p>}
                 </div>
                 {isVerified && (
                   <button className={`btn ${isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={() => toggleFollow(u.id, isFollowing)}>
