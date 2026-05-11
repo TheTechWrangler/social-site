@@ -94,7 +94,11 @@ export function initializeDatabase(): void {
       reporter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
       reason TEXT NOT NULL,
+      report_details TEXT DEFAULT '',
       status TEXT DEFAULT 'open' CHECK(status IN ('open','resolved','dismissed')),
+      resolved_by INTEGER REFERENCES users(id),
+      resolved_at TEXT,
+      admin_note TEXT DEFAULT '',
       created_at TEXT DEFAULT (datetime('now'))
     );
 

@@ -15,6 +15,11 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   const [showReactions, setShowReactions] = useState(false);
   const [showRepostConfirm, setShowRepostConfirm] = useState(false);
   const [reposting, setReposting] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportReason, setReportReason] = useState('Spam');
+  const [reportDetails, setReportDetails] = useState('');
+  const [reportSubmitted, setReportSubmitted] = useState(false);
+  const [reportError, setReportError] = useState('');
 
   const isVerified = currentUser?.is_verified ?? currentUser?.isVerified;
   const reactions = post.reactions || {};
@@ -81,6 +86,16 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   async function handleDelete() {
     if (!confirm('Delete this post?')) return;
     try { await api.deletePost(post.id); setPost({ ...post, deleted: true }); } catch (e) { console.error(e); }
+  }
+
+  async function submitReport() {
+    if (!reportReason) { setReportError('Please select a reason.'); return; }
+    if (!reportDetails.trim() || reportDetails.trim().length < 5) { setReportError('Please briefly explain the problem.'); return; }
+    setReportError('');
+    try {
+      await fetch('/api/admin/reports', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ postId: post.id, reason: reportReason, details: reportDetails }) });
+      setReportSubmitted(true);
+    } catch (e) { console.error(e); }
   }
 
   async function handleMuteUser() {
@@ -153,6 +168,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
         <button className="action-btn" onClick={loadComments}>💬 {post.commentCount || 0}</button>
         <button className="action-btn" onClick={handleRepost}>🔄 {post.repostCount || 0}</button>
         {(currentUser?.id === post.userId || currentUser?.role === 'admin') && <button className="action-btn danger" onClick={handleDelete}>🗑</button>}
+        {currentUser && currentUser.id !== post.userId && <button className="action-btn" onClick={() => setShowReportModal(true)} title="Report">🚩</button>}
         {currentUser?.id !== post.userId && currentUser && (
           <>
             <button className="action-btn" onClick={handleMuteUser} title="Mute">🔇</button>
@@ -183,6 +199,35 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
               <button className="btn btn-ghost" onClick={() => setShowRepostConfirm(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={confirmRepost} disabled={reposting}>{reposting ? 'Sharing...' : 'Share'}</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Report modal */}
+      {showReportModal && (
+        <div className="modal-overlay" onClick={() => { setShowReportModal(false); setReportSubmitted(false); }}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            {reportSubmitted ? (
+              <>
+                <h4>✅ Report Submitted</h4>
+                <p className="muted">Thank you. An admin will review it.</p>
+                <button className="btn btn-primary" onClick={() => { setShowReportModal(false); setReportSubmitted(false); }}>Close</button>
+              </>
+            ) : (
+              <>
+                <h4>🚩 Report this post</h4>
+                <p className="muted" style={{ fontSize: '0.85rem', marginBottom: 10 }}>Explain the problem</p>
+                <select className="input" value={reportReason} onChange={e => setReportReason(e.target.value)} style={{ marginBottom: 10 }}>
+                  {['Spam','Harassment','Hate or abuse','Sexual content','Violence or threats','Scam or unsafe link','Other'].map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+                <textarea className="input" placeholder="Briefly explain what is wrong with this content." value={reportDetails} onChange={e => setReportDetails(e.target.value)} rows={2} required />
+                {reportError && <p className="error-msg">{reportError}</p>}
+                <div className="modal-actions">
+                  <button className="btn btn-ghost" onClick={() => { setShowReportModal(false); setReportError(''); }}>Cancel</button>
+                  <button className="btn btn-primary" onClick={submitReport}>Submit Report</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

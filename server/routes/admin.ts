@@ -43,21 +43,64 @@ router.post('/posts/:id/unhide', requireAuth, requireAdmin, (req, res) => {
 });
 
 // GET /api/admin/reports
-router.get('/reports', requireAuth, requireAdmin, (_req, res) => {
-  const rows = getDb().prepare(`
-    SELECT r.*, u.username as reporter_name, p.content as post_content
-    FROM reports r JOIN users u ON r.reporter_id = u.id LEFT JOIN posts p ON r.post_id = p.id
-    ORDER BY r.created_at DESC LIMIT 50
-  `).all();
-  res.json({ reports: rows });
+router.get('/reports', requireAuth, requireAdmin, (req, res) => {
+  const statusFilter = req.query.status as string;
+  let sql = `
+    SELECT r.*, u.username as reporter_name, p.content as post_content, p.user_id as post_author_id, pu.username as post_author_name, p.hidden as post_hidden
+    FROM reports r JOIN users u ON r.reporter_id = u.id LEFT JOIN posts p ON r.post_id = p.id LEFT JOIN users pu ON p.user_id = pu.id
+  `;
+  if (statusFilter && ['open','resolved','dismissed'].includes(statusFilter)) {
+    sql += ' WHERE r.status = ?';
+    sql += ' ORDER BY r.created_at DESC LIMIT 50';
+    const rows = getDb().prepare(sql).all(statusFilter);
+    res.json({ reports: rows });
+  } else {
+    sql += ' ORDER BY r.created_at DESC LIMIT 50';
+    const rows = getDb().prepare(sql).all();
+    res.json({ reports: rows });
+  }
+});
+
+// PATCH /api/admin/reports/:id
+router.patch('/reports/:id', requireAuth, requireAdmin, (req, res) => {
+  const { status, adminNote } = req.body;
+  const updates: string[] = [];
+  const vals: any[] = [];
+  if (status && ['open','resolved','dismissed'].includes(status)) {
+    updates.push('status = ?'); vals.push(status);
+    updates.push("resolved_at = datetime('now')");
+    updates.push('resolved_by = ?'); vals.push((req as any).user.id);
+  }
+  if (adminNote !== undefined) { updates.push('admin_note = ?'); vals.push(adminNote); }
+  if (updates.length === 0) { res.status(400).json({ error: 'No valid updates.' }); return; }
+  vals.push(req.params.id);
+  getDb().prepare(`UPDATE reports SET ${updates.join(', ')} WHERE id = ?`).run(...vals);
+  res.json({ ok: true });
+});
+
+// GET /api/admin/stats
+router.get('/stats', requireAuth, requireAdmin, (_req, res) => {
+  const db = getDb();
+  res.json({
+    totalUsers: (db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c,
+    unverifiedUsers: (db.prepare('SELECT COUNT(*) as c FROM users WHERE is_verified = 0').get() as any).c,
+    bannedUsers: (db.prepare('SELECT COUNT(*) as c FROM users WHERE banned = 1').get() as any).c,
+    openReports: (db.prepare("SELECT COUNT(*) as c FROM reports WHERE status = 'open'").get() as any).c,
+    hiddenPosts: (db.prepare('SELECT COUNT(*) as c FROM posts WHERE hidden = 1').get() as any).c,
+    activeRssSources: (db.prepare('SELECT COUNT(*) as c FROM rss_sources WHERE is_active = 1').get() as any).c,
+    rssItemCount: (db.prepare('SELECT COUNT(*) as c FROM rss_items').get() as any).c,
+    gameCount: (db.prepare('SELECT COUNT(*) as c FROM games').get() as any).c,
+    serverCount: (db.prepare('SELECT COUNT(*) as c FROM game_servers WHERE is_active = 1').get() as any).c,
+    lfgCount: (db.prepare("SELECT COUNT(*) as c FROM game_lfg_posts WHERE is_active = 1 AND expires_at > datetime('now')").get() as any).c,
+  });
 });
 
 // POST /api/admin/reports
 router.post('/reports', requireAuth, (req: AuthRequest, res) => {
-  const { postId, reason } = req.body;
+  const { postId, reason, details } = req.body;
   if (!postId || !reason) { res.status(400).json({ error: 'postId and reason required.' }); return; }
-  getDb().prepare('INSERT INTO reports (reporter_id, post_id, reason) VALUES (?, ?, ?)')
-    .run(req.user!.id, postId, reason);
+  getDb().prepare('INSERT INTO reports (reporter_id, post_id, reason, report_details) VALUES (?, ?, ?, ?)')
+    .run(req.user!.id, postId, reason, details || '');
   res.status(201).json({ ok: true });
 });
 

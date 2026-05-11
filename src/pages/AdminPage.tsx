@@ -18,16 +18,22 @@ export default function AdminPage() {
   const [userSearch, setUserSearch] = useState('');
   const [userRoleFilter, setUserRoleFilter] = useState('');
   const [roleMsg, setRoleMsg] = useState('');
+  const [adminStats, setAdminStats] = useState<any>({});
+  const [reportFilter, setReportFilter] = useState('open');
   const [serverList, setServerList] = useState<any[]>([]);
   const [srvForm, setSrvForm] = useState({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
 
-  useEffect(() => { if (tab === 'rss') loadRss(); else loadData(); }, [tab]);
+  useEffect(() => { if (tab === 'rss') loadRss(); else if (tab === 'servers') loadServers(); else loadData(); loadStats(); }, [tab]);
+
+  async function loadStats() { try { const r = await api.get<any>('/admin/stats'); setAdminStats(r); } catch (e) {} }
 
   async function loadData() {
     try {
       if (tab === 'users') { const r = await api.getUsers(); setUsers(r.users); }
       if (tab === 'posts') { const r = await api.getAdminPosts(); setPosts(r.posts); }
-      if (tab === 'reports') { const r = await api.getReports(); setReports(r.reports); }
+      if (tab === 'reports') {
+        const apiFilter = reportFilter === 'approved' ? 'dismissed' : reportFilter === 'deleted' ? 'resolved' : reportFilter;
+        const r = await api.get<any>(`/admin/reports?status=${apiFilter}`); setReports(r.reports); }
     } catch (e) { console.error(e); }
   }
 
@@ -105,6 +111,26 @@ export default function AdminPage() {
     loadServers();
   }
 
+  async function resolveReport(id: number, status: string) {
+    try {
+      await fetch(`/api/admin/reports/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ status }) });
+      // If deleting, also hide the content
+      if (status === 'resolved' && (reports.find(r => r.id === id) as any)?.post_id) {
+        await hideReportedPost((reports.find(r => r.id === id) as any).post_id, true);
+      }
+      setReports(prev => prev.map(r => r.id === id ? { ...r, status } : r));
+      loadStats();
+    } catch (e) { console.error(e); }
+  }
+
+  async function hideReportedPost(postId: number, hide: boolean) {
+    try {
+      await fetch(`/api/admin/posts/${postId}/${hide ? 'hide' : 'unhide'}`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      setReports(prev => prev.map(r => r.post_id === postId ? { ...r, post_hidden: hide ? 1 : 0 } : r));
+      loadStats();
+    } catch (e) { console.error(e); }
+  }
+
   async function changeRole(id: number, role: string) {
     setRoleMsg('');
     try {
@@ -151,6 +177,14 @@ export default function AdminPage() {
   return (
     <div className="admin-page">
       <h2>🛡 Admin Dashboard</h2>
+      <div className="admin-stats">
+        <div className="admin-stat-card"><span className="admin-stat-num">{adminStats.totalUsers || 0}</span><span>Users</span></div>
+        <div className="admin-stat-card warn"><span className="admin-stat-num">{adminStats.unverifiedUsers || 0}</span><span>Unverified</span></div>
+        <div className="admin-stat-card danger"><span className="admin-stat-num">{adminStats.bannedUsers || 0}</span><span>Banned</span></div>
+        <div className="admin-stat-card alert"><span className="admin-stat-num">{adminStats.openReports || 0}</span><span>Open Reports</span></div>
+        <div className="admin-stat-card"><span className="admin-stat-num">{adminStats.activeRssSources || 0}</span><span>RSS Sources</span></div>
+        <div className="admin-stat-card"><span className="admin-stat-num">{adminStats.gameCount || 0}</span><span>Games</span></div>
+      </div>
       <div className="admin-tabs">
         <button className={`btn ${tab === 'users' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('users'); setRssFetchResult(null); }}>Users</button>
         <button className={`btn ${tab === 'posts' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('posts'); setRssFetchResult(null); }}>Posts</button>
@@ -232,13 +266,54 @@ export default function AdminPage() {
 
       {/* Reports tab */}
       {tab === 'reports' && (
-        <div className="admin-table-wrap"><table className="admin-table">
-          <thead><tr><th>ID</th><th>Reporter</th><th>Post</th><th>Reason</th><th>Status</th></tr></thead>
-          <tbody>{reports.map(r => (
-            <tr key={r.id}><td>{r.id}</td><td>@{r.reporter_name}</td><td>{r.post_content?.slice(0, 60) || '—'}</td>
-              <td>{r.reason}</td><td>{r.status}</td></tr>
-          ))}</tbody>
-        </table></div>
+        <div>
+          <div className="report-filters">
+            {(['open','approved','deleted','all'] as const).map(s => (
+              <button key={s} className={`btn btn-sm ${reportFilter === s ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => { setReportFilter(s); loadData(); }}>
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+              </button>
+            ))}
+          </div>
+          {reports.length === 0 ? <p className="muted">No {reportFilter} reports.</p> : (
+            reports.map(r => (
+              <div key={r.id} className="admin-user-card" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                <div className="admin-user-info">
+                  <div>
+                    <strong>#{r.id}</strong> <span className="muted">by @{r.reporter_name}</span>
+                    <span className={`admin-badge ${r.status === 'open' ? 'badge-unverified' : r.status === 'resolved' ? 'badge-banned' : 'badge-verified'}`}>{r.status === 'resolved' ? 'Deleted' : r.status === 'dismissed' ? 'Approved' : r.status}</span>
+                    {r.admin_note && <span className="muted" style={{ fontSize: '0.8rem', marginLeft: 8 }}>📝 {r.admin_note}</span>}
+                  </div>
+                  <div style={{ fontSize: '0.85rem', marginTop: 4 }}>
+                    <strong>Reason:</strong> {r.reason}
+                  </div>
+                  <div style={{ fontSize: '0.85rem', marginTop: 4 }}>
+                    <strong>Explanation:</strong> {r.report_details || 'No explanation provided.'}
+                  </div>
+                  {r.post_content && (
+                    <div style={{ fontSize: '0.85rem', marginTop: 4 }} className="muted">
+                      <strong>Post:</strong> "{r.post_content.slice(0, 120)}" by @{r.post_author_name}
+                      {r.post_hidden ? ' <span style="color:var(--orange)">[Hidden]</span>' : ''}
+                    </div>
+                  )}
+                </div>
+                <div className="admin-user-actions" style={{ marginTop: 8 }}>
+                  {r.status === 'open' && (
+                    <>
+                      <button className="btn btn-sm" onClick={() => resolveReport(r.id, 'dismissed')}>✅ Approve</button>
+                      <button className="btn btn-sm" onClick={() => resolveReport(r.id, 'resolved')}>🗑 Delete</button>
+                    </>
+                  )}
+                  {r.post_id && !(r.status === 'open') && (
+                    <button className="btn btn-sm" onClick={() => hideReportedPost(r.post_id, !r.post_hidden)}>
+                      {r.post_hidden ? '👁 Show' : '🙈 Hide'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       )}
 
       {/* RSS Sources tab */}
