@@ -3,6 +3,8 @@ import { getDb } from '../database.js';
 import { requireAuth, requireAdmin, type AuthRequest } from '../middleware.js';
 
 const router = Router();
+const REPORT_ERROR = 'Please select a reason and briefly explain the problem.';
+const REPORT_REASONS = new Set(['Spam', 'Harassment', 'Hate or abuse', 'Sexual content', 'Violence or threats', 'Scam or unsafe link', 'Other']);
 
 // GET /api/admin/users
 router.get('/users', requireAuth, requireAdmin, (_req, res) => {
@@ -32,7 +34,8 @@ router.get('/posts', requireAuth, requireAdmin, (_req, res) => {
 
 // POST /api/admin/posts/:id/hide
 router.post('/posts/:id/hide', requireAuth, requireAdmin, (req, res) => {
-  getDb().prepare('UPDATE posts SET hidden = 1 WHERE id = ?').run(req.params.id);
+  const result = getDb().prepare('UPDATE posts SET hidden = 1 WHERE id = ?').run(req.params.id);
+  if (result.changes === 0) { res.status(404).json({ error: 'Content not found.' }); return; }
   res.json({ ok: true });
 });
 
@@ -46,7 +49,8 @@ router.post('/posts/:id/unhide', requireAuth, requireAdmin, (req, res) => {
 router.get('/reports', requireAuth, requireAdmin, (req, res) => {
   const statusFilter = req.query.status as string;
   let sql = `
-    SELECT r.*, u.username as reporter_name, p.content as post_content, p.user_id as post_author_id, pu.username as post_author_name, p.hidden as post_hidden
+    SELECT r.*, u.username as reporter_name, p.content as post_content, p.user_id as post_author_id,
+      p.parent_id as post_parent_id, pu.username as post_author_name, p.hidden as post_hidden
     FROM reports r JOIN users u ON r.reporter_id = u.id LEFT JOIN posts p ON r.post_id = p.id LEFT JOIN users pu ON p.user_id = pu.id
   `;
   if (statusFilter && ['open','resolved','dismissed'].includes(statusFilter)) {
@@ -97,10 +101,15 @@ router.get('/stats', requireAuth, requireAdmin, (_req, res) => {
 
 // POST /api/admin/reports
 router.post('/reports', requireAuth, (req: AuthRequest, res) => {
-  const { postId, reason, details } = req.body;
-  if (!postId || !reason) { res.status(400).json({ error: 'postId and reason required.' }); return; }
+  const { postId } = req.body;
+  const reason = String(req.body.reason || '').trim().slice(0, 120);
+  const details = String(req.body.details ?? req.body.report_details ?? '').trim().slice(0, 1000);
+  if (!postId || !reason || details.length < 5) { res.status(400).json({ error: REPORT_ERROR }); return; }
+  if (!REPORT_REASONS.has(reason) && reason.length < 2) { res.status(400).json({ error: REPORT_ERROR }); return; }
+  const post = getDb().prepare('SELECT id FROM posts WHERE id = ?').get(postId);
+  if (!post) { res.status(404).json({ error: 'Content not found.' }); return; }
   getDb().prepare('INSERT INTO reports (reporter_id, post_id, reason, report_details) VALUES (?, ?, ?, ?)')
-    .run(req.user!.id, postId, reason, details || '');
+    .run(req.user!.id, postId, reason, details);
   res.status(201).json({ ok: true });
 });
 

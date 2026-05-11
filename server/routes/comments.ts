@@ -35,7 +35,7 @@ router.get('/:postId', (req, res) => {
   const rows = getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url
     FROM posts p JOIN users u ON p.user_id = u.id
-    WHERE p.parent_id = ? ORDER BY p.created_at ASC
+    WHERE p.parent_id = ? AND p.hidden = 0 ORDER BY p.created_at ASC
   `).all(Number(req.params.postId));
 
   res.json({ comments: rows.map((r: any) => enrichPost(r)) });

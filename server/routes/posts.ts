@@ -5,7 +5,7 @@ import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '..
 const router = Router();
 
 function enrichPost(row: any, userId?: number): any {
-  const comments = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE parent_id = ?').get(row.id) as any;
+  const comments = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE parent_id = ? AND hidden = 0').get(row.id) as any;
   const reposts = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE repost_of = ?').get(row.id) as any;
 
   // Get reaction counts grouped by type

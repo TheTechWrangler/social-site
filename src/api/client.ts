@@ -77,8 +77,8 @@ export const api = {
   hidePost: (id: number) => request<{ ok: boolean }>(`/admin/posts/${id}/hide`, { method: 'POST' }),
   unhidePost: (id: number) => request<{ ok: boolean }>(`/admin/posts/${id}/unhide`, { method: 'POST' }),
   getReports: () => request<{ reports: any[] }>('/admin/reports'),
-  reportPost: (postId: number, reason: string) =>
-    request<{ ok: boolean }>('/admin/reports', { method: 'POST', body: JSON.stringify({ postId, reason }) }),
+  reportPost: (postId: number, reason: string, details: string) =>
+    request<{ ok: boolean }>('/admin/reports', { method: 'POST', body: JSON.stringify({ postId, reason, details }) }),
 
   // Media
   uploadImage: async (file: File): Promise<{ media: any }> => {

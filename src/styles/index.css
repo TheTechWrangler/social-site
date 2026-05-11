@@ -607,6 +607,58 @@ p { margin: 0 0 8px; }
 
 /* Report filter tabs */
 .report-filters { display: flex; gap: 6px; margin-bottom: 12px; }
+.report-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+  background: var(--card-gradient);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+}
+.report-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.report-title { color: var(--text-heading); font-size: 1rem; }
+.report-admin-note { font-size: 0.8rem; }
+.report-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 6px 14px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.report-section {
+  width: 100%;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.report-section-label {
+  margin-bottom: 5px;
+  color: var(--text-heading);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.report-section p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.report-content-text { color: var(--text-muted); }
+.report-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
 
 /* ─── World Feed ─── */
 .world-page h2 { margin-bottom: 4px; }

@@ -5,6 +5,26 @@ import { getUserById } from '../auth.js';
 
 const router = Router();
 
+// ─── Block / Mute ───
+
+router.get('/blocked/list', requireAuth, (req, res) => {
+  const rows = getDb().prepare(`
+    SELECT u.id, u.username, u.display_name, u.avatar_url, r.created_at
+    FROM user_relationship_blocks r JOIN users u ON r.blocked_user_id = u.id
+    WHERE r.blocker_user_id = ? AND r.relationship_type = 'block' ORDER BY r.created_at DESC
+  `).all((req as any).user.id);
+  res.json({ blocked: rows });
+});
+
+router.get('/muted/list', requireAuth, (req, res) => {
+  const rows = getDb().prepare(`
+    SELECT u.id, u.username, u.display_name, u.avatar_url, r.created_at
+    FROM user_relationship_blocks r JOIN users u ON r.blocked_user_id = u.id
+    WHERE r.blocker_user_id = ? AND r.relationship_type = 'mute' ORDER BY r.created_at DESC
+  `).all((req as any).user.id);
+  res.json({ muted: rows });
+});
+
 // GET /api/users/:username
 router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
   const row = getDb().prepare(`
@@ -84,26 +104,6 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
     ? getDb().prepare('SELECT id, username, display_name, avatar_url, is_verified, profile_visibility, bio FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND banned = 0 LIMIT 20').all(q, q)
     : getDb().prepare("SELECT id, username, display_name, avatar_url, is_verified, profile_visibility, bio FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND banned = 0 AND profile_visibility = 'public' LIMIT 20").all(q, q);
   res.json({ users: rows });
-});
-
-// ─── Block / Mute ───
-
-router.get('/blocked/list', requireAuth, (req, res) => {
-  const rows = getDb().prepare(`
-    SELECT u.id, u.username, u.display_name, u.avatar_url, r.created_at
-    FROM user_relationship_blocks r JOIN users u ON r.blocked_user_id = u.id
-    WHERE r.blocker_user_id = ? AND r.relationship_type = 'block' ORDER BY r.created_at DESC
-  `).all((req as any).user.id);
-  res.json({ blocked: rows });
-});
-
-router.get('/muted/list', requireAuth, (req, res) => {
-  const rows = getDb().prepare(`
-    SELECT u.id, u.username, u.display_name, u.avatar_url, r.created_at
-    FROM user_relationship_blocks r JOIN users u ON r.blocked_user_id = u.id
-    WHERE r.blocker_user_id = ? AND r.relationship_type = 'mute' ORDER BY r.created_at DESC
-  `).all((req as any).user.id);
-  res.json({ muted: rows });
 });
 
 router.post('/:userId/block', requireAuth, (req, res) => {

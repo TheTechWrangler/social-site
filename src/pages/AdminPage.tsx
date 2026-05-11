@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
 
+type ReportFilter = 'open' | 'approved' | 'deleted' | 'all';
+const REPORT_FILTERS: ReportFilter[] = ['open', 'approved', 'deleted', 'all'];
+const REPORT_STATUS_LABELS: Record<string, string> = { open: 'Open', dismissed: 'Approved', resolved: 'Deleted' };
+
 export default function AdminPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
@@ -19,11 +23,12 @@ export default function AdminPage() {
   const [userRoleFilter, setUserRoleFilter] = useState('');
   const [roleMsg, setRoleMsg] = useState('');
   const [adminStats, setAdminStats] = useState<any>({});
-  const [reportFilter, setReportFilter] = useState('open');
+  const [reportFilter, setReportFilter] = useState<ReportFilter>('open');
+  const [reportActionError, setReportActionError] = useState('');
   const [serverList, setServerList] = useState<any[]>([]);
   const [srvForm, setSrvForm] = useState({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
 
-  useEffect(() => { if (tab === 'rss') loadRss(); else if (tab === 'servers') loadServers(); else loadData(); loadStats(); }, [tab]);
+  useEffect(() => { if (tab === 'rss') loadRss(); else if (tab === 'servers') loadServers(); else loadData(); loadStats(); }, [tab, reportFilter]);
 
   async function loadStats() { try { const r = await api.get<any>('/admin/stats'); setAdminStats(r); } catch (e) {} }
 
@@ -31,10 +36,15 @@ export default function AdminPage() {
     try {
       if (tab === 'users') { const r = await api.getUsers(); setUsers(r.users); }
       if (tab === 'posts') { const r = await api.getAdminPosts(); setPosts(r.posts); }
-      if (tab === 'reports') {
-        const apiFilter = reportFilter === 'approved' ? 'dismissed' : reportFilter === 'deleted' ? 'resolved' : reportFilter;
-        const r = await api.get<any>(`/admin/reports?status=${apiFilter}`); setReports(r.reports); }
+      if (tab === 'reports') { await loadReports(reportFilter); }
     } catch (e) { console.error(e); }
+  }
+
+  async function loadReports(filter: ReportFilter = reportFilter) {
+    const apiFilter = filter === 'approved' ? 'dismissed' : filter === 'deleted' ? 'resolved' : filter;
+    const qs = apiFilter === 'all' ? '' : `?status=${apiFilter}`;
+    const r = await api.get<any>(`/admin/reports${qs}`);
+    setReports(r.reports);
   }
 
   async function loadRss() {
@@ -111,24 +121,37 @@ export default function AdminPage() {
     loadServers();
   }
 
-  async function resolveReport(id: number, status: string) {
-    try {
-      await fetch(`/api/admin/reports/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ status }) });
-      // If deleting, also hide the content
-      if (status === 'resolved' && (reports.find(r => r.id === id) as any)?.post_id) {
-        await hideReportedPost((reports.find(r => r.id === id) as any).post_id, true);
-      }
-      setReports(prev => prev.map(r => r.id === id ? { ...r, status } : r));
-      loadStats();
-    } catch (e) { console.error(e); }
+  async function updateReportStatus(id: number, status: 'dismissed' | 'resolved') {
+    const res = await fetch(`/api/admin/reports/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Could not update report.');
+    }
   }
 
-  async function hideReportedPost(postId: number, hide: boolean) {
+  async function hideReportedContent(postId: number) {
+    const res = await fetch(`/api/admin/posts/${postId}/hide`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Could not hide reported content.');
+    }
+  }
+
+  async function reviewReport(report: any, status: 'dismissed' | 'resolved') {
+    setReportActionError('');
     try {
-      await fetch(`/api/admin/posts/${postId}/${hide ? 'hide' : 'unhide'}`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
-      setReports(prev => prev.map(r => r.post_id === postId ? { ...r, post_hidden: hide ? 1 : 0 } : r));
+      if (status === 'resolved') {
+        if (!report.post_id) throw new Error('Reported content is missing.');
+        await hideReportedContent(report.post_id);
+      }
+      await updateReportStatus(report.id, status);
+      await loadReports(reportFilter);
       loadStats();
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setReportActionError(e.message || 'Could not update report.'); }
   }
 
   async function changeRole(id: number, role: string) {
@@ -268,46 +291,47 @@ export default function AdminPage() {
       {tab === 'reports' && (
         <div>
           <div className="report-filters">
-            {(['open','approved','deleted','all'] as const).map(s => (
+            {REPORT_FILTERS.map(s => (
               <button key={s} className={`btn btn-sm ${reportFilter === s ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => { setReportFilter(s); loadData(); }}>
+                onClick={() => setReportFilter(s)}>
                 {s.charAt(0).toUpperCase() + s.slice(1)}
               </button>
             ))}
           </div>
+          {reportActionError && <p className="error-msg">{reportActionError}</p>}
           {reports.length === 0 ? <p className="muted">No {reportFilter} reports.</p> : (
             reports.map(r => (
-              <div key={r.id} className="admin-user-card" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
-                <div className="admin-user-info">
-                  <div>
-                    <strong>#{r.id}</strong> <span className="muted">by @{r.reporter_name}</span>
-                    <span className={`admin-badge ${r.status === 'open' ? 'badge-unverified' : r.status === 'resolved' ? 'badge-banned' : 'badge-verified'}`}>{r.status === 'resolved' ? 'Deleted' : r.status === 'dismissed' ? 'Approved' : r.status}</span>
-                    {r.admin_note && <span className="muted" style={{ fontSize: '0.8rem', marginLeft: 8 }}>📝 {r.admin_note}</span>}
-                  </div>
-                  <div style={{ fontSize: '0.85rem', marginTop: 4 }}>
-                    <strong>Reason:</strong> {r.reason}
-                  </div>
-                  <div style={{ fontSize: '0.85rem', marginTop: 4 }}>
-                    <strong>Explanation:</strong> {r.report_details || 'No explanation provided.'}
-                  </div>
-                  {r.post_content && (
-                    <div style={{ fontSize: '0.85rem', marginTop: 4 }} className="muted">
-                      <strong>Post:</strong> "{r.post_content.slice(0, 120)}" by @{r.post_author_name}
-                      {r.post_hidden ? ' <span style="color:var(--orange)">[Hidden]</span>' : ''}
-                    </div>
-                  )}
+              <div key={r.id} className="report-card">
+                <div className="report-card-header">
+                  <strong className="report-title">Report #{r.id}</strong>
+                  <span className={`admin-badge ${r.status === 'open' ? 'badge-unverified' : r.status === 'resolved' ? 'badge-banned' : 'badge-verified'}`}>Status: {REPORT_STATUS_LABELS[r.status] || 'Open'}</span>
+                  {r.admin_note && <span className="muted report-admin-note">📝 {r.admin_note}</span>}
                 </div>
-                <div className="admin-user-actions" style={{ marginTop: 8 }}>
+
+                <div className="report-meta-grid">
+                  <div><strong>Type:</strong> {r.post_parent_id ? 'Comment' : 'Post'}</div>
+                  <div><strong>Reporter:</strong> @{r.reporter_name}</div>
+                  <div><strong>Reported author:</strong> {r.post_author_name ? `@${r.post_author_name}` : 'Unknown'}</div>
+                  <div><strong>Reason:</strong> {r.reason || 'Unknown'}</div>
+                  <div><strong>Created:</strong> {r.created_at ? new Date(`${r.created_at}Z`).toLocaleString() : 'Unknown'}</div>
+                </div>
+
+                <div className="report-section">
+                  <div className="report-section-label">Explanation:</div>
+                  <p>{r.report_details || 'No explanation provided.'}</p>
+                </div>
+
+                <div className="report-section">
+                  <div className="report-section-label">Content:</div>
+                  <p className="report-content-text">"{r.post_content ? r.post_content.slice(0, 180) : 'Reported content is unavailable.'}"</p>
+                </div>
+
+                <div className="report-card-actions">
                   {r.status === 'open' && (
                     <>
-                      <button className="btn btn-sm" onClick={() => resolveReport(r.id, 'dismissed')}>✅ Approve</button>
-                      <button className="btn btn-sm" onClick={() => resolveReport(r.id, 'resolved')}>🗑 Delete</button>
+                      <button className="btn btn-sm" onClick={() => reviewReport(r, 'dismissed')}>Approve</button>
+                      <button className="btn btn-sm" onClick={() => reviewReport(r, 'resolved')}>Delete</button>
                     </>
-                  )}
-                  {r.post_id && !(r.status === 'open') && (
-                    <button className="btn btn-sm" onClick={() => hideReportedPost(r.post_id, !r.post_hidden)}>
-                      {r.post_hidden ? '👁 Show' : '🙈 Hide'}
-                    </button>
                   )}
                 </div>
               </div>

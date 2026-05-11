@@ -5,6 +5,7 @@ import { api } from '../api/client';
 const REACTIONS = ['like', 'love', 'laugh', 'wow', 'support', 'thoughtful'];
 const EMOJI: Record<string, string> = { like: '👍', love: '❤️', laugh: '😂', wow: '😮', support: '🙌', thoughtful: '🤔' };
 const LABELS: Record<string, string> = { like: 'Like', love: 'Love', laugh: 'Laugh', wow: 'Wow', support: 'Support', thoughtful: 'Think' };
+const REPORT_ERROR = 'Please select a reason and briefly explain the problem.';
 
 export default function PostCard({ post: initial, currentUser, onUpdate }: { post: any; currentUser: any; onUpdate?: (p: any) => void }) {
   const [post, setPost] = useState(initial);
@@ -16,6 +17,8 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   const [showRepostConfirm, setShowRepostConfirm] = useState(false);
   const [reposting, setReposting] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
+  const [reportTarget, setReportTarget] = useState<any>(initial);
+  const [reportTargetType, setReportTargetType] = useState<'post' | 'comment'>('post');
   const [reportReason, setReportReason] = useState('Spam');
   const [reportDetails, setReportDetails] = useState('');
   const [reportSubmitted, setReportSubmitted] = useState(false);
@@ -88,14 +91,38 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
     try { await api.deletePost(post.id); setPost({ ...post, deleted: true }); } catch (e) { console.error(e); }
   }
 
+  function openReportModal(target: any, type: 'post' | 'comment') {
+    setReportTarget(target);
+    setReportTargetType(type);
+    setReportReason('Spam');
+    setReportDetails('');
+    setReportSubmitted(false);
+    setReportError('');
+    setShowReportModal(true);
+  }
+
+  function closeReportModal() {
+    setShowReportModal(false);
+    setReportSubmitted(false);
+    setReportError('');
+  }
+
   async function submitReport() {
-    if (!reportReason) { setReportError('Please select a reason.'); return; }
-    if (!reportDetails.trim() || reportDetails.trim().length < 5) { setReportError('Please briefly explain the problem.'); return; }
+    if (!reportReason || !reportDetails.trim() || reportDetails.trim().length < 5) { setReportError(REPORT_ERROR); return; }
     setReportError('');
     try {
-      await fetch('/api/admin/reports', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ postId: post.id, reason: reportReason, details: reportDetails }) });
+      const res = await fetch('/api/admin/reports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        body: JSON.stringify({ postId: reportTarget?.id, reason: reportReason, details: reportDetails.trim() }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setReportError(body.error || REPORT_ERROR);
+        return;
+      }
       setReportSubmitted(true);
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); setReportError(REPORT_ERROR); }
   }
 
   async function handleMuteUser() {
@@ -168,7 +195,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
         <button className="action-btn" onClick={loadComments}>💬 {post.commentCount || 0}</button>
         <button className="action-btn" onClick={handleRepost}>🔄 {post.repostCount || 0}</button>
         {(currentUser?.id === post.userId || currentUser?.role === 'admin') && <button className="action-btn danger" onClick={handleDelete}>🗑</button>}
-        {currentUser && currentUser.id !== post.userId && <button className="action-btn" onClick={() => setShowReportModal(true)} title="Report">🚩</button>}
+        {currentUser && currentUser.id !== post.userId && <button className="action-btn" onClick={() => openReportModal(post, 'post')} title="Report">🚩</button>}
         {currentUser?.id !== post.userId && currentUser && (
           <>
             <button className="action-btn" onClick={handleMuteUser} title="Mute">🔇</button>
@@ -180,7 +207,13 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
       {showComments && (
         <div className="comments-section">
           {comments.map(c => (
-            <div key={c.id} className="comment"><Link to={`/profile/${c.username}`}><strong>{c.displayName}</strong></Link> <span className="muted">@{c.username}</span><p>{c.content}</p></div>
+            <div key={c.id} className="comment">
+              <Link to={`/profile/${c.username}`}><strong>{c.displayName}</strong></Link> <span className="muted">@{c.username}</span>
+              <p>{c.content}</p>
+              {currentUser && currentUser.id !== c.userId && (
+                <button className="btn btn-sm btn-ghost" onClick={() => openReportModal(c, 'comment')}>Report</button>
+              )}
+            </div>
           ))}
           <form className="comment-form" onSubmit={addComment}>
             <input className="input" placeholder="Write a comment..." value={commentText} onChange={e => setCommentText(e.target.value)} />
@@ -205,25 +238,23 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
 
       {/* Report modal */}
       {showReportModal && (
-        <div className="modal-overlay" onClick={() => { setShowReportModal(false); setReportSubmitted(false); }}>
+        <div className="modal-overlay" onClick={closeReportModal}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
             {reportSubmitted ? (
               <>
-                <h4>✅ Report Submitted</h4>
-                <p className="muted">Thank you. An admin will review it.</p>
-                <button className="btn btn-primary" onClick={() => { setShowReportModal(false); setReportSubmitted(false); }}>Close</button>
+                <h4>Report submitted. Thank you.</h4>
+                <button className="btn btn-primary" onClick={closeReportModal}>Close</button>
               </>
             ) : (
               <>
-                <h4>🚩 Report this post</h4>
-                <p className="muted" style={{ fontSize: '0.85rem', marginBottom: 10 }}>Explain the problem</p>
-                <select className="input" value={reportReason} onChange={e => setReportReason(e.target.value)} style={{ marginBottom: 10 }}>
+                <h4>Report this {reportTargetType}</h4>
+                <select className="input" value={reportReason} onChange={e => setReportReason(e.target.value)} style={{ marginBottom: 10 }} required>
                   {['Spam','Harassment','Hate or abuse','Sexual content','Violence or threats','Scam or unsafe link','Other'].map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
-                <textarea className="input" placeholder="Briefly explain what is wrong with this content." value={reportDetails} onChange={e => setReportDetails(e.target.value)} rows={2} required />
+                <textarea className="input" placeholder="Briefly explain what is wrong with this content." value={reportDetails} onChange={e => setReportDetails(e.target.value)} rows={2} required minLength={5} />
                 {reportError && <p className="error-msg">{reportError}</p>}
                 <div className="modal-actions">
-                  <button className="btn btn-ghost" onClick={() => { setShowReportModal(false); setReportError(''); }}>Cancel</button>
+                  <button className="btn btn-ghost" onClick={closeReportModal}>Cancel</button>
                   <button className="btn btn-primary" onClick={submitReport}>Submit Report</button>
                 </div>
               </>
