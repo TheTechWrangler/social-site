@@ -24,6 +24,8 @@ export default function HomePage({ user }: { user: any }) {
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [posting, setPosting] = useState(false);
+  const [repopulating, setRepopulating] = useState(false);
+  const [repopulateMsg, setRepopulateMsg] = useState('');
   const initialLevel = ['everyone', 'extended', 'friends', 'world'].includes(user?.feed_exposure) ? user.feed_exposure : 'extended';
   const [level, setLevel] = useState(initialLevel);
   const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
@@ -40,9 +42,13 @@ export default function HomePage({ user }: { user: any }) {
     setLoading(true);
     try {
       const r = await api.feed({ limit: 50, offset: 0, level: l } as any);
-      setPosts(r.posts || []);
-      setWorldItems(r.worldItems || []);
-      setFeedItems(r.items || r.posts || []);
+      const nativePosts = Array.isArray(r.posts) ? r.posts : [];
+      const normalizedItems = Array.isArray(r.items)
+        ? r.items
+        : nativePosts.map((p: any) => ({ ...p, type: p.type || 'post' }));
+      setPosts(nativePosts);
+      setWorldItems(Array.isArray(r.worldItems) ? r.worldItems : []);
+      setFeedItems(normalizedItems);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
@@ -55,9 +61,13 @@ export default function HomePage({ user }: { user: any }) {
       const stored = localStorage.getItem('user');
       if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), feed_exposure: lv }));
       const r = await api.feed({ limit: 50, offset: 0, level: lv } as any);
-      setPosts(r.posts || []);
-      setWorldItems(r.worldItems || []);
-      setFeedItems(r.items || r.posts || []);
+      const nativePosts = Array.isArray(r.posts) ? r.posts : [];
+      const normalizedItems = Array.isArray(r.items)
+        ? r.items
+        : nativePosts.map((p: any) => ({ ...p, type: p.type || 'post' }));
+      setPosts(nativePosts);
+      setWorldItems(Array.isArray(r.worldItems) ? r.worldItems : []);
+      setFeedItems(normalizedItems);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
@@ -74,9 +84,13 @@ export default function HomePage({ user }: { user: any }) {
       const stored = localStorage.getItem('user');
       if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), world_home_injection: value }));
       const r = await api.feed({ limit: 50, offset: 0, level } as any);
-      setPosts(r.posts || []);
-      setWorldItems(r.worldItems || []);
-      setFeedItems(r.items || r.posts || []);
+      const nativePosts = Array.isArray(r.posts) ? r.posts : [];
+      const normalizedItems = Array.isArray(r.items)
+        ? r.items
+        : nativePosts.map((p: any) => ({ ...p, type: p.type || 'post' }));
+      setPosts(nativePosts);
+      setWorldItems(Array.isArray(r.worldItems) ? r.worldItems : []);
+      setFeedItems(normalizedItems);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
@@ -126,6 +140,21 @@ export default function HomePage({ user }: { user: any }) {
     setPosting(false);
   }
 
+  async function handleRepopulate() {
+    setRepopulating(true);
+    setRepopulateMsg('');
+    try {
+      const results: any[] = await api.post('/admin/rss/fetch-all');
+      const totalNew = results.reduce((s: number, r: any) => s + (r.itemsInserted || 0), 0);
+      const errors = results.filter((r: any) => r.error).length;
+      setRepopulateMsg(`Done: ${totalNew} new items across ${results.length} sources${errors > 0 ? `, ${errors} errors` : ''}.`);
+      await loadFeed();
+    } catch (e: any) {
+      setRepopulateMsg('Repopulate failed: ' + (e.message || 'unknown error'));
+    }
+    setRepopulating(false);
+  }
+
   function handlePostUpdate(updated: any) {
     setPosts(prev => prev.map(p => p.id === updated.id ? { ...updated, type: 'post' } : p));
     setFeedItems(prev => prev.map(item => item.type === 'post' && item.id === updated.id ? { ...updated, type: 'post' } : item));
@@ -173,8 +202,26 @@ export default function HomePage({ user }: { user: any }) {
 
       {loading ? <p className="muted">Loading...</p> :
         level === 'world' ? (
-          worldItems.length === 0 ? <div className="empty-state"><p>No world feed items yet.</p><p className="muted">Admins can fetch RSS sources in Admin → RSS Sources.</p></div> :
-            <div className="world-feed-list">{worldItems.map(item => <WorldCard key={item.id} item={item} />)}</div>
+          <div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => loadFeed()}>↻ Refresh Feed</button>
+              {user?.role === 'admin' && (
+                <button className="btn btn-sm" onClick={handleRepopulate} disabled={repopulating}>
+                  {repopulating ? 'Fetching sources…' : '🔄 Repopulate World Feed'}
+                </button>
+              )}
+              {repopulateMsg && <span className="muted" style={{ fontSize: '0.82rem' }}>{repopulateMsg}</span>}
+            </div>
+            {worldItems.length === 0
+              ? <div className="empty-state">
+                  <p>No world feed items have been fetched yet.</p>
+                  {user?.role === 'admin'
+                    ? <p className="muted">Click "Repopulate World Feed" above, or go to Admin → RSS Sources.</p>
+                    : <p className="muted">An admin needs to fetch RSS sources before content appears here.</p>}
+                </div>
+              : <div className="world-feed-list">{worldItems.map(item => <WorldCard key={item.id} item={item} />)}</div>
+            }
+          </div>
         ) : feedItems.length === 0 ? (
           <div className="empty-state"><p>No posts yet.</p><p className="muted">Follow some users or create your first post!</p></div>
         ) : (

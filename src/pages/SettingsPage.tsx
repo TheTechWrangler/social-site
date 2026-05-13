@@ -7,6 +7,13 @@ const WORLD_HOME_OPTIONS = [
   { key: 'world_home_balanced', label: 'Balanced' },
 ];
 
+const DM_PRIVACY_OPTIONS = [
+  { key: 'noone', label: 'No one' },
+  { key: 'friends', label: 'Friends' },
+  { key: 'friends_of_friends', label: 'Friends of friends' },
+  { key: 'everyone', label: 'Everyone' },
+];
+
 function storedUser() {
   return JSON.parse(localStorage.getItem('user') || 'null');
 }
@@ -22,6 +29,7 @@ export default function SettingsPage({ user }: { user: any }) {
   const [loading, setLoading] = useState(true);
   const [gameDiscovery, setGameDiscovery] = useState(gameDiscoveryValue(initialUser));
   const [worldHomeInjection, setWorldHomeInjection] = useState(initialUser?.world_home_injection || 'world_home_few');
+  const [dmPrivacy, setDmPrivacy] = useState(initialUser?.dm_privacy || 'friends_of_friends');
 
   useEffect(() => { loadData(); }, []);
 
@@ -73,6 +81,17 @@ export default function SettingsPage({ user }: { user: any }) {
     } catch (e) { console.error(e); }
   }
 
+  async function updateDmPrivacy(value: string) {
+    setDmPrivacy(value);
+    try {
+      const r = await api.updateProfile({ dmPrivacy: value });
+      const stored = localStorage.getItem('user');
+      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), dm_privacy: r.user?.dm_privacy || value }));
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
   if (loading) return <div className="loading">Loading...</div>;
 
   return (
@@ -103,6 +122,23 @@ export default function SettingsPage({ user }: { user: any }) {
             </div>
           </div>
           <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>External items stay labeled and RSS source blocking still applies.</p>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3>Messages</h3>
+        <div className="settings-card">
+          <div className="settings-row">
+            <span>Who can message me?</span>
+            <div className="feed-exposure">
+              {DM_PRIVACY_OPTIONS.map(opt => (
+                <button key={opt.key} className={`btn btn-sm ${dmPrivacy === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => updateDmPrivacy(opt.key)}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>Controls who can start or continue a Direct Message conversation with you.</p>
         </div>
       </div>
 

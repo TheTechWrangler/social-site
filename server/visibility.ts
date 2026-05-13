@@ -49,6 +49,40 @@ export function canViewPost(viewer: Viewer | null | undefined, postId: number): 
   return canViewUserProfile(viewer, post.user_id);
 }
 
+// DM privacy values stored in users.dm_privacy
+export type DmPrivacy = 'noone' | 'friends' | 'friends_of_friends' | 'everyone';
+
+export function canUserMessageRecipient(senderId: number, recipientId: number): boolean {
+  if (senderId === recipientId) return false;
+  if (isBlockedBetween(senderId, recipientId)) return false;
+
+  const db = getDb();
+  const recipient = db.prepare('SELECT dm_privacy FROM users WHERE id = ? AND banned = 0').get(recipientId) as any;
+  if (!recipient) return false;
+
+  const policy: DmPrivacy = (recipient.dm_privacy as DmPrivacy) || 'friends_of_friends';
+  if (policy === 'noone') return false;
+  if (policy === 'everyone') return true;
+
+  const isMutualFollow = (a: number, b: number) =>
+    !!db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?').get(a, b) &&
+    !!db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?').get(b, a);
+
+  const isFriend = isMutualFollow(senderId, recipientId);
+  if (policy === 'friends') return isFriend;
+
+  // friends_of_friends: direct mutual friend OR shared mutual friend
+  if (isFriend) return true;
+  return !!db.prepare(`
+    SELECT 1 FROM follows f1
+    WHERE f1.follower_id = ?
+      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = f1.following_id AND following_id = ?)
+      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = f1.following_id AND following_id = ?)
+      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = ? AND following_id = f1.following_id)
+    LIMIT 1
+  `).get(senderId, senderId, recipientId, recipientId);
+}
+
 export function canInteractWithPost(viewer: Viewer, postId: number): { ok: boolean; post?: any; error?: string; status?: number } {
   const post = getDb().prepare('SELECT id, user_id, parent_id, hidden FROM posts WHERE id = ?').get(postId) as any;
   if (!post) return { ok: false, status: 404, error: 'Post not found.' };

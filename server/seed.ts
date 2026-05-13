@@ -1,33 +1,44 @@
 import 'dotenv/config';
 import { initializeDatabase, getDb } from './database.js';
 import { hashPassword } from './auth.js';
+import { fetchSource } from './rssService.js';
 
 console.log('[seed] Initializing database...');
 initializeDatabase();
 
 const db = getDb();
 
-// Clear existing data if empty (safe: only seeds if no users)
-const existingUsers = db.prepare('SELECT COUNT(*) as c FROM users').get() as any;
-if (existingUsers.c > 1) {
-  console.log(`[seed] Database has ${existingUsers.c} users. Skipping seed (add --reset to force).`);
-  process.exit(0);
-}
-
-// Reset if --reset flag
+// Reset first (before the skip-if-exists check, so --reset actually works)
 if (process.argv.includes('--reset')) {
   console.log('[seed] Resetting database...');
+  db.exec('DELETE FROM rss_item_comments');
+  db.exec('DELETE FROM user_rss_source_blocks');
   db.exec('DELETE FROM rss_items');
   db.exec('DELETE FROM rss_sources');
+  db.exec('DELETE FROM game_lfg_posts');
+  db.exec('DELETE FROM user_game_preferences');
+  db.exec('DELETE FROM user_relationship_blocks');
   db.exec('DELETE FROM notifications');
+  // reports.resolved_by has no CASCADE — null it before deleting users/reports
+  db.exec('UPDATE reports SET resolved_by = NULL');
   db.exec('DELETE FROM reports');
   db.exec('DELETE FROM likes');
+  db.exec('DELETE FROM post_media');
   db.exec('DELETE FROM posts');
   db.exec('DELETE FROM group_members');
   db.exec('DELETE FROM groups_table');
   db.exec('DELETE FROM follows');
   db.exec('DELETE FROM user_auth_providers');
   db.exec('DELETE FROM users');
+  // Reset auto-increment counters so IDs start from 1 again
+  db.exec("DELETE FROM sqlite_sequence");
+}
+
+// Skip if already seeded (and not resetting)
+const existingUsers = db.prepare('SELECT COUNT(*) as c FROM users').get() as any;
+if (existingUsers.c > 1) {
+  console.log(`[seed] Database has ${existingUsers.c} users. Skipping seed (add --reset to force).`);
+  process.exit(0);
 }
 
 // ─── Demo Users ───
@@ -255,6 +266,19 @@ const insertServer = db.prepare(`INSERT OR IGNORE INTO game_servers (game_id, na
   VALUES ((SELECT id FROM games WHERE slug = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 for (const s of seedServers) {
   try { insertServer.run(s.game, s.name, s.description, s.connection_host, s.connection_port, s.platform, s.status, s.max_players, s.current_players, s.is_featured || 0, s.join_instructions, s.rules_summary); console.log(`[seed] Added server: ${s.name}`); } catch (e: any) { console.log(`[seed] Server ${s.name}: ${e.message}`); }
+}
+
+// ─── Seed RSS items — one source per category for variety ───
+const seedRssSources = db.prepare(
+  'SELECT MIN(id) as id, MIN(name) as name FROM rss_sources WHERE is_active = 1 GROUP BY category'
+).all() as any[];
+for (const src of seedRssSources) {
+  try {
+    const result = await fetchSource(src.id);
+    console.log(`[seed] RSS fetch ${src.name}: ${result.itemsInserted} inserted, ${result.duplicatesSkipped} skipped`);
+  } catch (e: any) {
+    console.log(`[seed] RSS fetch ${src.name} failed: ${e.message}`);
+  }
 }
 
 console.log('\n[seed] Done! Demo accounts:');

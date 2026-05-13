@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 
@@ -25,6 +25,7 @@ const emptyGameForm = {
 
 export default function ProfilePage({ user: currentUser }: { user: any }) {
   const { username } = useParams<{ username: string }>();
+  const navigate = useNavigate();
   const [profile, setProfile] = useState<any>(null);
   const [posts, setPosts] = useState<any[]>([]);
   const [editing, setEditing] = useState(false);
@@ -73,6 +74,15 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
       await fetch(`/api/users/${profile.id}/mute`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
       alert('User muted.');
     } catch (e: any) { alert(e.message || 'Failed'); }
+  }
+
+  async function handleMessage() {
+    try {
+      const r = await api.startConversation(profile.id);
+      navigate(`/messages/${r.conversationId}`);
+    } catch (e: any) {
+      alert(e.message || 'Cannot start a conversation with this user.');
+    }
   }
 
   async function handleBlock() {
@@ -227,6 +237,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
               <button className={`btn ${profile.isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={handleFollow}>
                 {profile.isFollowing ? 'Unfollow' : 'Follow'}
               </button>
+              <button className="btn btn-ghost btn-sm" onClick={handleMessage}>💬 Message</button>
               <button className="btn btn-ghost btn-sm" onClick={handleMute}>🔇 Mute</button>
               <button className="btn btn-ghost btn-sm" onClick={handleBlock}>🚫 Block</button>
             </>

@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 
 type Tab = 'friends' | 'following' | 'followers';
 
 export default function FriendsPage({ user }: { user: any }) {
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>('friends');
   const [friends, setFriends] = useState<any[]>([]);
   const [following, setFollowing] = useState<any[]>([]);
@@ -33,6 +34,15 @@ export default function FriendsPage({ user }: { user: any }) {
       await (isFollowing ? api.unfollow(userId) : api.follow(userId));
       loadConnections();
     } catch (e) { console.error(e); }
+  }
+
+  async function handleMessage(userId: number) {
+    try {
+      const r = await api.startConversation(userId);
+      navigate(`/messages/${r.conversationId}`);
+    } catch (e: any) {
+      alert(e.message || 'Cannot start a conversation with this user.');
+    }
   }
 
   const isVerified = user?.isVerified ?? user?.is_verified;
@@ -77,9 +87,12 @@ export default function FriendsPage({ user }: { user: any }) {
                   {u.bioSnippet && <p className="muted" style={{ fontSize: '0.82rem', marginTop: 4 }}>{u.bioSnippet}</p>}
                 </div>
                 {isVerified && (
-                  <button className={`btn ${isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={() => toggleFollow(u.id, isFollowing)}>
-                    {isFollowing ? 'Unfollow' : 'Follow'}
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => handleMessage(u.id)} title="Send message">💬</button>
+                    <button className={`btn ${isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={() => toggleFollow(u.id, isFollowing)}>
+                      {isFollowing ? 'Unfollow' : 'Follow'}
+                    </button>
+                  </div>
                 )}
               </div>
             );

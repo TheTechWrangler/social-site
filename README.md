@@ -96,11 +96,21 @@ Opens:
 - `GET /api/admin/users` — List users
 - `POST /api/admin/users/:id/ban` — Ban user
 - `POST /api/admin/users/:id/unban` — Unban user
+- `DELETE /api/admin/users/:id` — Delete user (cascades posts, follows, likes, groups, notifications, etc.)
+- `POST /api/admin/users/:id/verify` — Verify user
+- `POST /api/admin/users/:id/unverify` — Unverify user (not allowed on admins)
+- `POST /api/admin/users/:id/role` — Change user role
 - `GET /api/admin/posts` — List posts
 - `POST /api/admin/posts/:id/hide` — Hide post
 - `POST /api/admin/posts/:id/unhide` — Unhide post
 - `GET /api/admin/reports` — List reports
 - `POST /api/admin/reports` — Report a post
+
+**Admin user deletion rules:**
+- Admin cannot delete their own account
+- Admin cannot delete the last remaining admin account
+- Deleting a user cascades: posts, comments, follows, likes, reactions, notifications, group memberships (and groups they own), reports they filed, game preferences, LFG posts, block/mute rows, OAuth provider links, RSS comments, RSS source blocks
+- `reports.resolved_by` is nulled before delete (nullable FK, no cascade)
 
 ### Games
 - `GET /api/games?q=` — Game catalog search/list

@@ -5,7 +5,7 @@ type ReportFilter = 'open' | 'approved' | 'deleted' | 'all';
 const REPORT_FILTERS: ReportFilter[] = ['open', 'approved', 'deleted', 'all'];
 const REPORT_STATUS_LABELS: Record<string, string> = { open: 'Open', dismissed: 'Approved', resolved: 'Deleted' };
 
-export default function AdminPage() {
+export default function AdminPage({ user: currentUser }: { user: any }) {
   const [users, setUsers] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
   const [reports, setReports] = useState<any[]>([]);
@@ -18,6 +18,7 @@ export default function AdminPage() {
   const [rssHomepage, setRssHomepage] = useState('');
   const [rssCategory, setRssCategory] = useState('general');
   const [rssFetchResult, setRssFetchResult] = useState<any>(null);
+  const [fetchingAll, setFetchingAll] = useState(false);
   const [rssCatFilter, setRssCatFilter] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [userRoleFilter, setUserRoleFilter] = useState('');
@@ -67,8 +68,6 @@ export default function AdminPage() {
 
   async function toggleSource(id: number, active: boolean) {
     try {
-      await api.post(`/admin/rss/sources`, {});
-      // Use update
       const r = await fetch(`/api/admin/rss/sources/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
@@ -87,11 +86,14 @@ export default function AdminPage() {
   }
 
   async function fetchAll() {
+    setFetchingAll(true);
+    setRssFetchResult(null);
     try {
       const r = await api.post<any>('/admin/rss/fetch-all');
       setRssFetchResult({ batch: r });
       loadRss();
     } catch (e) { console.error(e); }
+    setFetchingAll(false);
   }
 
   async function loadServers() {
@@ -186,6 +188,15 @@ export default function AdminPage() {
     } catch (e) { console.error(e); }
   }
 
+  async function deleteUser(u: any) {
+    if (!confirm(`Delete @${u.username}? This removes the user and their related content. This cannot be undone.`)) return;
+    try {
+      await api.deleteUser(u.id);
+      setUsers(prev => prev.filter(x => x.id !== u.id));
+      loadStats();
+    } catch (e: any) { alert(e.message || 'Could not delete user.'); }
+  }
+
   return (
     <div className="admin-page">
       <h2>🛡 Admin Dashboard</h2>
@@ -246,7 +257,8 @@ export default function AdminPage() {
                   </div>
                   <div className="admin-user-actions">
                     <select className="input" value={u.role} onChange={e => changeRole(u.id, e.target.value)}
-                      style={{ width: 90, padding: '4px 8px', fontSize: '0.8rem' }} disabled={u.id === 1}>
+                      style={{ width: 90, padding: '4px 8px', fontSize: '0.8rem' }}
+                      disabled={u.id === currentUser?.id}>
                       <option value="user">User</option>
                       <option value="mod">Mod</option>
                       <option value="admin">Admin</option>
@@ -257,6 +269,9 @@ export default function AdminPage() {
                       <button className="btn btn-sm" onClick={() => verifyUser(u.id)}>Verify</button>
                     ))}
                     <button className="btn btn-sm" onClick={() => toggleBan(u.id, !!u.banned)}>{u.banned ? 'Unban' : 'Ban'}</button>
+                    {u.id !== currentUser?.id && (
+                      <button className="btn btn-sm btn-danger" onClick={() => deleteUser(u)}>Delete</button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -360,16 +375,30 @@ export default function AdminPage() {
           </form>
 
           <div style={{ margin: '16px 0' }}>
-            <button className="btn btn-primary" onClick={fetchAll}>Fetch All Active Sources</button>
+            <button className="btn btn-primary" onClick={fetchAll} disabled={fetchingAll}>
+              {fetchingAll ? 'Fetching… (may take a minute)' : '🔄 Repopulate World Feed'}
+            </button>
+            <span className="muted" style={{ marginLeft: 10, fontSize: '0.82rem' }}>Fetches all active sources and inserts new items.</span>
           </div>
 
           {rssFetchResult && (
             <div className="rss-fetch-result" style={{ margin: '12px 0', padding: 12, background: 'var(--bg-card)', borderRadius: 'var(--radius-sm)' }}>
-              <strong>Fetch result:</strong>
-              {rssFetchResult.batch ? rssFetchResult.batch.map((r: any) => (
-                <div key={r.sourceId}>{r.sourceName}: {r.itemsInserted} new, {r.duplicatesSkipped} dupes{ r.error ? ` (error: ${r.error})` : ''}</div>
-              )) : (
-                <div>{rssFetchResult.sourceName}: {rssFetchResult.itemsInserted} new, {rssFetchResult.duplicatesSkipped} dupes{ rssFetchResult.error ? ` (error: ${rssFetchResult.error})` : ''}</div>
+              <strong>Repopulate result:</strong>
+              {rssFetchResult.batch ? (
+                <table style={{ marginTop: 8, width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                  <thead><tr style={{ textAlign: 'left' }}><th style={{ paddingRight: 12 }}>Source</th><th style={{ paddingRight: 12 }}>Category</th><th style={{ paddingRight: 12 }}>New</th><th style={{ paddingRight: 12 }}>Dupes</th><th>Status</th></tr></thead>
+                  <tbody>{rssFetchResult.batch.map((r: any) => (
+                    <tr key={r.sourceId} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ paddingRight: 12, paddingTop: 4 }}>{r.sourceName}</td>
+                      <td className="muted" style={{ paddingRight: 12 }}>{r.category || '—'}</td>
+                      <td style={{ paddingRight: 12, color: r.itemsInserted > 0 ? 'var(--green)' : undefined }}>{r.itemsInserted}</td>
+                      <td className="muted" style={{ paddingRight: 12 }}>{r.duplicatesSkipped}</td>
+                      <td>{r.error ? <span style={{ color: 'var(--danger)' }}>⚠ {r.error}</span> : '✓'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : (
+                <div style={{ marginTop: 6 }}>{rssFetchResult.sourceName}: {rssFetchResult.itemsInserted} new, {rssFetchResult.duplicatesSkipped} dupes{rssFetchResult.error ? ` — ⚠ ${rssFetchResult.error}` : ' ✓'}</div>
               )}
             </div>
           )}

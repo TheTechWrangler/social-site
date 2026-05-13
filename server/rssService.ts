@@ -14,6 +14,7 @@ interface RssSource {
 interface FetchResult {
   sourceId: number;
   sourceName: string;
+  category: string;
   itemsFound: number;
   itemsInserted: number;
   duplicatesSkipped: number;
@@ -72,7 +73,7 @@ export function updateSource(id: number, updates: { name?: string; url?: string;
 export async function fetchSource(sourceId: number): Promise<FetchResult> {
   const db = getDb();
   const source = db.prepare('SELECT * FROM rss_sources WHERE id = ?').get(sourceId) as RssSource | undefined;
-  if (!source) return { sourceId, sourceName: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
+  if (!source) return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
 
   let inserted = 0;
   let dupes = 0;
@@ -118,7 +119,7 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
     error = err.message || 'Unknown fetch error';
   }
 
-  return { sourceId, sourceName: source.name, itemsFound, itemsInserted: inserted, duplicatesSkipped: dupes, error };
+  return { sourceId, sourceName: source.name, category: source.category, itemsFound, itemsInserted: inserted, duplicatesSkipped: dupes, error };
 }
 
 export async function fetchAllSources(): Promise<FetchResult[]> {
@@ -135,26 +136,46 @@ export async function fetchAllSources(): Promise<FetchResult[]> {
 export function getWorldFeed(params: { sourceId?: number; category?: string; itemType?: string; limit?: number; offset?: number; userId?: number }) {
   const limit = Math.min(params.limit || 50, 100);
   const offset = params.offset || 0;
-  let sql = `
-    SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
-      (SELECT COUNT(*) FROM rss_item_comments c WHERE c.rss_item_id = ri.id AND c.is_hidden = 0) as comment_count
-    FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
-    WHERE rs.is_active = 1
-  `;
+
+  // Per-source cap prevents one prolific source from dominating the feed.
+  // Only applied when not filtering to a specific source or category.
+  const applyPerSourceCap = !params.sourceId && !params.category;
+  const perSourceCap = 8;
+
+  let whereClause = 'WHERE rs.is_active = 1';
   const vals: any[] = [];
 
-  if (params.sourceId) { sql += ' AND ri.source_id = ?'; vals.push(params.sourceId); }
-  if (params.category) { sql += ' AND rs.category = ?'; vals.push(params.category); }
-  if (params.itemType && (params.itemType === 'podcast' || params.itemType === 'article')) { sql += ' AND ri.item_type = ?'; vals.push(params.itemType); }
-
-  // Exclude blocked sources for authenticated users
+  if (params.sourceId) { whereClause += ' AND ri.source_id = ?'; vals.push(params.sourceId); }
+  if (params.category) { whereClause += ' AND rs.category = ?'; vals.push(params.category); }
+  if (params.itemType && (params.itemType === 'podcast' || params.itemType === 'article')) { whereClause += ' AND ri.item_type = ?'; vals.push(params.itemType); }
   if (params.userId) {
-    sql += ' AND ri.source_id NOT IN (SELECT source_id FROM user_rss_source_blocks WHERE user_id = ?)';
+    whereClause += ' AND ri.source_id NOT IN (SELECT source_id FROM user_rss_source_blocks WHERE user_id = ?)';
     vals.push(params.userId);
   }
 
-  sql += ' ORDER BY ri.published_at DESC LIMIT ? OFFSET ?';
-  vals.push(limit, offset);
+  let sql: string;
+  if (applyPerSourceCap) {
+    sql = `
+      WITH ranked AS (
+        SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
+          (SELECT COUNT(*) FROM rss_item_comments c WHERE c.rss_item_id = ri.id AND c.is_hidden = 0) as comment_count,
+          ROW_NUMBER() OVER (PARTITION BY ri.source_id ORDER BY ri.published_at DESC) as rn
+        FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
+        ${whereClause}
+      )
+      SELECT * FROM ranked WHERE rn <= ? ORDER BY published_at DESC LIMIT ? OFFSET ?
+    `;
+    vals.push(perSourceCap, limit, offset);
+  } else {
+    sql = `
+      SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
+        (SELECT COUNT(*) FROM rss_item_comments c WHERE c.rss_item_id = ri.id AND c.is_hidden = 0) as comment_count
+      FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
+      ${whereClause}
+      ORDER BY ri.published_at DESC LIMIT ? OFFSET ?
+    `;
+    vals.push(limit, offset);
+  }
 
   const items = getDb().prepare(sql).all(...vals) as any[];
   return items.map(i => ({

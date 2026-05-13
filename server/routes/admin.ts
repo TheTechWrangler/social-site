@@ -136,6 +136,34 @@ router.post('/reports', requireAuth, (req: AuthRequest, res) => {
   res.status(201).json({ ok: true });
 });
 
+// DELETE /api/admin/users/:id
+router.delete('/users/:id', requireAuth, requireAdmin, (req, res) => {
+  const viewerId = (req as any).user.id;
+  const targetId = Number(req.params.id);
+
+  if (targetId === viewerId) {
+    res.status(400).json({ error: 'You cannot delete your own account.' }); return;
+  }
+
+  const target = getDb().prepare('SELECT id, role FROM users WHERE id = ?').get(targetId) as any;
+  if (!target) { res.status(404).json({ error: 'User not found.' }); return; }
+
+  if (target.role === 'admin') {
+    const adminCount = (getDb().prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
+    if (adminCount <= 1) {
+      res.status(400).json({ error: 'Cannot delete the last admin account.' }); return;
+    }
+  }
+
+  // reports.resolved_by has no cascade — null it first to avoid dangling FK
+  getDb().prepare('UPDATE reports SET resolved_by = NULL WHERE resolved_by = ?').run(targetId);
+
+  // All other related data cascades via ON DELETE CASCADE on the users FK
+  getDb().prepare('DELETE FROM users WHERE id = ?').run(targetId);
+
+  res.json({ ok: true });
+});
+
 // POST /api/admin/users/:id/verify
 router.post('/users/:id/verify', requireAuth, requireAdmin, (req, res) => {
   getDb().prepare("UPDATE users SET is_verified = 1, verified_at = datetime('now'), verified_by = ? WHERE id = ?")

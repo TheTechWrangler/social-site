@@ -18,10 +18,12 @@ import GameDetailPage from './pages/GameDetailPage';
 import OAuthCallback from './pages/OAuthCallback';
 import LandingPage from './pages/LandingPage';
 import PostDetailPage from './pages/PostDetailPage';
+import MessagesPage from './pages/MessagesPage';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [unread, setUnread] = useState(0);
+  const [dmUnread, setDmUnread] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -42,10 +44,12 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    const interval = setInterval(() => {
+    const poll = () => {
       api.unreadCount().then(r => setUnread(r.count)).catch(() => {});
-    }, 30000);
-    api.unreadCount().then(r => setUnread(r.count)).catch(() => {});
+      api.dmUnreadCount().then(r => setDmUnread(r.count)).catch(() => {});
+    };
+    poll();
+    const interval = setInterval(poll, 30000);
     return () => clearInterval(interval);
   }, [user]);
 
@@ -86,6 +90,7 @@ export default function App() {
             <div className="nav-group">
               <span className="nav-group-label">Account</span>
               <Link to="/notifications">🔔 Notifications {unread > 0 && <span className="badge">{unread}</span>}</Link>
+              <Link to="/messages">💬 Messages {dmUnread > 0 && <span className="badge">{dmUnread}</span>}</Link>
               <Link to="/settings">⚙ Settings</Link>
             </div>
           )}
@@ -120,13 +125,15 @@ export default function App() {
           <Route path="/groups" element={user ? <GroupsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/groups/:id" element={user ? <GroupPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/notifications" element={user ? <NotificationsPage onMarkAllRead={() => setUnread(0)} /> : <Navigate to="/login" />} />
-          <Route path="/admin" element={user?.role === 'admin' ? <AdminPage /> : <Navigate to="/" />} />
+          <Route path="/admin" element={user?.role === 'admin' ? <AdminPage user={user} /> : <Navigate to="/" />} />
           <Route path="/world" element={<WorldPage />} />
           <Route path="/discover" element={user ? <DiscoverPage /> : <Navigate to="/login" />} />
           <Route path="/friends" element={user ? <FriendsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage />} />
           <Route path="/settings" element={user ? <SettingsPage user={user} /> : <Navigate to="/login" />} />
+          <Route path="/messages" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
+          <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/posts/:id" element={user ? <PostDetailPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/oauth/callback" element={<OAuthCallback onLogin={setUser} />} />
         </Routes>

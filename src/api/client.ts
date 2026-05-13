@@ -36,7 +36,7 @@ export const api = {
 
   // Users
   getUser: (username: string) => request<{ user: any }>(`/users/${username}`),
-  updateProfile: (data: { displayName?: string; bio?: string; profileVisibility?: string; feedExposure?: string; worldHomeInjection?: string; gameDiscoveryEnabled?: boolean; avatar_url?: string }) =>
+  updateProfile: (data: { displayName?: string; bio?: string; profileVisibility?: string; feedExposure?: string; worldHomeInjection?: string; gameDiscoveryEnabled?: boolean; avatar_url?: string; dmPrivacy?: string }) =>
     request<{ user: any }>('/users/profile', { method: 'PUT', body: JSON.stringify(data) }),
   searchUsers: (q: string) => request<{ users: any[] }>(`/users?q=${encodeURIComponent(q)}`),
   getMyGames: () => request<{ gamePrefs: any[] }>('/users/me/games'),
@@ -76,10 +76,27 @@ export const api = {
   readAll: () => request<{ ok: boolean }>('/notifications/read-all', { method: 'POST' }),
   markNotificationRead: (id: number) => request<{ ok: boolean }>(`/notifications/${id}/read`, { method: 'PATCH' }),
 
+  // Direct Messages
+  getConversations: () => request<{ conversations: any[] }>('/messages'),
+  startConversation: (userId: number) =>
+    request<{ conversationId: number }>('/messages', { method: 'POST', body: JSON.stringify({ userId }) }),
+  getMessages: (conversationId: number, before?: number) =>
+    request<{ messages: any[]; hasMore: boolean; otherUser: any; lastReadMessageId: number | null }>(
+      `/messages/${conversationId}${before ? `?before=${before}` : ''}`
+    ),
+  sendMessage: (conversationId: number, body: string) =>
+    request<{ message: any }>(`/messages/${conversationId}`, { method: 'POST', body: JSON.stringify({ body }) }),
+  markConversationRead: (conversationId: number) =>
+    request<{ ok: boolean }>(`/messages/${conversationId}/read`, { method: 'POST' }),
+  deleteMessage: (conversationId: number, messageId: number) =>
+    request<{ ok: boolean }>(`/messages/${conversationId}/messages/${messageId}`, { method: 'DELETE' }),
+  dmUnreadCount: () => request<{ count: number }>('/messages/unread-count'),
+
   // Admin
   getUsers: () => request<{ users: any[] }>('/admin/users'),
   banUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}/ban`, { method: 'POST' }),
   unbanUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}/unban`, { method: 'POST' }),
+  deleteUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}`, { method: 'DELETE' }),
   getAdminPosts: () => request<{ posts: any[] }>('/admin/posts'),
   hidePost: (id: number) => request<{ ok: boolean }>(`/admin/posts/${id}/hide`, { method: 'POST' }),
   unhidePost: (id: number) => request<{ ok: boolean }>(`/admin/posts/${id}/unhide`, { method: 'POST' }),

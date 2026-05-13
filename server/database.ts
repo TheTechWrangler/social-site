@@ -284,10 +284,38 @@ export function initializeDatabase(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON user_relationship_blocks(blocker_user_id);
     CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON user_relationship_blocks(blocked_user_id);
+
+    CREATE TABLE IF NOT EXISTS dm_conversations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS dm_conversation_members (
+      conversation_id INTEGER NOT NULL REFERENCES dm_conversations(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      last_read_message_id INTEGER,
+      deleted_at TEXT,
+      PRIMARY KEY (conversation_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_dm_members_user ON dm_conversation_members(user_id);
+    CREATE INDEX IF NOT EXISTS idx_dm_members_convo ON dm_conversation_members(conversation_id);
+
+    CREATE TABLE IF NOT EXISTS dm_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id INTEGER NOT NULL REFERENCES dm_conversations(id) ON DELETE CASCADE,
+      sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      deleted_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_dm_messages_convo ON dm_messages(conversation_id, id);
   `);
 
   const userColumns = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
   if (!userColumns.some(c => c.name === 'world_home_injection')) {
     db.exec("ALTER TABLE users ADD COLUMN world_home_injection TEXT DEFAULT 'world_home_few'");
+  }
+  if (!userColumns.some(c => c.name === 'dm_privacy')) {
+    db.exec("ALTER TABLE users ADD COLUMN dm_privacy TEXT DEFAULT 'friends_of_friends'");
   }
 }

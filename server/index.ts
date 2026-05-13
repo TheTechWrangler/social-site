@@ -25,6 +25,7 @@ import { publicRouter as rssPublicRouter, adminRouter as rssAdminRouter } from '
 import worldCommentsRoutes from './routes/worldComments.js';
 import uploadRoutes, { uploadsFileRouter } from './routes/uploads.js';
 import gamesRoutes from './routes/games.js';
+import messagesRoutes from './routes/messages.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3003;
@@ -145,6 +146,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
   app.use('/api/world-feed', writeLimiter);
   app.use('/api/games', writeLimiter);
   app.use('/api/follows', writeLimiter);
+  app.use('/api/messages', writeLimiter);
 }
 
 app.use('/uploads', uploadsFileRouter);
@@ -166,6 +168,7 @@ app.use('/api/world-feed', rssPublicRouter);
 app.use('/api/world-feed', worldCommentsRoutes);  // Comments on RSS items
 app.use('/api/uploads', uploadRoutes);               // Media uploads
 app.use('/api/games', gamesRoutes);                   // Games & LFG
+app.use('/api/messages', messagesRoutes);             // Direct messages
 app.use('/api/admin/rss', rssAdminRouter);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'social-site' }));
