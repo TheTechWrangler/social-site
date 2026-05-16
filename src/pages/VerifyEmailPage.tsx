@@ -4,7 +4,7 @@ import { api } from '../api/client';
 
 type Status = 'loading' | 'success' | 'error';
 
-export default function VerifyEmailPage() {
+export default function VerifyEmailPage({ onLogin }: { onLogin?: (u: any) => void }) {
   const [params] = useSearchParams();
   const [status, setStatus] = useState<Status>('loading');
   const [errorMsg, setErrorMsg] = useState('');
@@ -23,7 +23,12 @@ export default function VerifyEmailPage() {
     }
 
     api.verifyEmail(token)
-      .then(() => setStatus('success'))
+      .then((r) => {
+        // If the server returned a fresh user (is_verified=1 JWT already set as cookie),
+        // update App state immediately so protected writes work without re-login.
+        if (r.user && onLogin) onLogin(r.user);
+        setStatus('success');
+      })
       .catch((err: any) => {
         setStatus('error');
         setErrorMsg(err.message || 'Invalid or expired verification link.');

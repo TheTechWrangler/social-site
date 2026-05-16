@@ -163,7 +163,7 @@ export default function App() {
           <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/posts/:id" element={user ? <PostDetailPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
-          <Route path="/verify-email" element={<VerifyEmailPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage onLogin={setUser} />} />
           <Route path="/oauth/callback" element={<OAuthCallback onLogin={setUser} />} />
         </Routes>
       </main>

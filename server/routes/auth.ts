@@ -344,7 +344,20 @@ router.get('/verify-email', (req, res) => {
       ip: getClientIp(req),
       userAgent: req.headers['user-agent'],
     });
-    res.json({ ok: true });
+
+    // Fetch the updated user row (is_verified is now 1) and issue a fresh auth cookie.
+    // This means a logged-in user gets their JWT refreshed immediately — no re-login
+    // required. A user who clicked the link on a new device also gets logged in.
+    // Raw JWT is never returned in JSON — only set as an HttpOnly cookie.
+    const updatedUser = getUserById(result.userId);
+    if (updatedUser && !updatedUser.banned) {
+      const freshToken = generateToken(updatedUser);
+      setAuthCookie(res, freshToken);
+      res.json({ ok: true, user: updatedUser });
+    } else {
+      // Verified but user not found or banned (rare edge case) — report success without cookie.
+      res.json({ ok: true });
+    }
   } catch (err: any) {
     console.error('[auth] Verify email error:', err.message);
     res.status(500).json({ error: 'Could not verify email.' });

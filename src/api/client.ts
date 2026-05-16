@@ -37,7 +37,7 @@ export const api = {
   me: () => request<{ user: any }>('/auth/me'),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
   verifyEmail: (token: string) =>
-    request<{ ok: boolean }>(`/auth/verify-email?token=${encodeURIComponent(token)}`),
+    request<{ ok: boolean; user?: any }>(`/auth/verify-email?token=${encodeURIComponent(token)}`),
   resendVerification: () =>
     request<{ ok: boolean; message: string }>('/auth/resend-verification', { method: 'POST' }),
   forgotPassword: (emailOrUsername: string) =>
