@@ -34,12 +34,18 @@ export default function App() {
   const token = localStorage.getItem('token');
 
   useEffect(() => {
-    // Global unhandled error reporter — sends generic signal only, no stack traces or PII
+    // Global unhandled error reporter — sends generic signal only, no stack traces or PII.
+    // sessionStorage dedup: at most one report per route per browser session to prevent
+    // a rapid error loop from spamming hundreds of rows into client_errors.
     const handler = (_event: ErrorEvent) => {
+      const safeRoute = window.location.pathname.replace(/\/\d+/g, '/:id');
+      const dedupKey = `err_reported_${safeRoute}`;
+      if (sessionStorage.getItem(dedupKey)) return;
+      sessionStorage.setItem(dedupKey, '1');
       fetch('/api/usage/event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(localStorage.getItem('token') ? { Authorization: `Bearer ${localStorage.getItem('token')}` } : {}) },
-        body: JSON.stringify({ eventType: 'client_error', route: window.location.pathname.replace(/\/\d+/g, '/:id'), errorCode: 'UNHANDLED_ERROR' }),
+        body: JSON.stringify({ eventType: 'client_error', route: safeRoute, errorCode: 'UNHANDLED_ERROR' }),
       }).catch(() => {});
     };
     window.addEventListener('error', handler);

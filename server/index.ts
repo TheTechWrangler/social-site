@@ -7,7 +7,7 @@ import session from 'express-session';
 import passport from 'passport';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initializeDatabase } from './database.js';
+import { initializeDatabase, runRetentionCleanup } from './database.js';
 import { configurePassport } from './authProviders.js';
 import authRoutes from './routes/auth.js';
 import oauthRoutes from './routes/oauth.js';
@@ -147,7 +147,15 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     message: { error: 'Too many uploads. Please slow down.' },
     standardHeaders: true, legacyHeaders: false,
   });
+  const feedReadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_FEED_MAX || '120', 10),
+    message: { error: 'Too many requests. Please slow down.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
 
+  // Feed read endpoints
+  app.use('/api/feed', feedReadLimiter);
   // Auth endpoints
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/register', authLimiter);
@@ -236,6 +244,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 // Start
 initializeDatabase();
+runRetentionCleanup();
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[server] Refuge Cloud running on http://0.0.0.0:${PORT}`);
 });
