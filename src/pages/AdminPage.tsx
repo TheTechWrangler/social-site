@@ -114,6 +114,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [rssCategory, setRssCategory] = useState('general');
   const [rssFetchResult, setRssFetchResult] = useState<any>(null);
   const [fetchingAll, setFetchingAll] = useState(false);
+  const [fetchAllStatus, setFetchAllStatus] = useState<any>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
   const [rssCatFilter, setRssCatFilter] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [userRoleFilter, setUserRoleFilter] = useState('');
@@ -270,12 +272,29 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   async function fetchAll() {
     setFetchingAll(true);
     setRssFetchResult(null);
+    setFetchAllStatus(null);
     try {
       const r = await api.post<any>('/admin/rss/fetch-all');
-      setRssFetchResult({ batch: r });
-      loadRss();
+      if (r.started || r.running) {
+        // Async response — fetch runs in background
+        setRssFetchResult({ pending: true, message: r.message || 'RSS fetch started in background.' });
+        loadRss();
+      } else {
+        // Legacy fallback: synchronous batch array
+        setRssFetchResult({ batch: Array.isArray(r) ? r : [] });
+        loadRss();
+      }
     } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not repopulate World Feed.')); }
     setFetchingAll(false);
+  }
+
+  async function checkFetchAllStatus() {
+    setCheckingStatus(true);
+    try {
+      const s = await api.get<any>('/admin/rss/fetch-all/status');
+      setFetchAllStatus(s);
+    } catch (e: any) { console.error(e); }
+    setCheckingStatus(false);
   }
 
   async function loadServers() {
@@ -755,17 +774,22 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
             <button className="btn btn-primary">Add Source</button>
           </form>
 
-          <div style={{ margin: '16px 0' }}>
+          <div style={{ margin: '16px 0', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={fetchAll} disabled={fetchingAll}>
-              {fetchingAll ? 'Fetching… (may take a minute)' : '🔄 Repopulate World Feed'}
+              {fetchingAll ? 'Starting…' : '🔄 Repopulate World Feed'}
             </button>
-            <span className="muted" style={{ marginLeft: 10, fontSize: '0.82rem' }}>Fetches all active sources and inserts new items.</span>
+            <button className="btn" onClick={checkFetchAllStatus} disabled={checkingStatus} title="Check background fetch status">
+              {checkingStatus ? 'Checking…' : '📊 Check Status'}
+            </button>
+            <span className="muted" style={{ fontSize: '0.82rem' }}>Fetches all active sources in background. Use Check Status to see progress.</span>
           </div>
 
           {rssFetchResult && (
             <div className="rss-fetch-result" style={{ margin: '12px 0', padding: 12, background: 'var(--bg-card)', borderRadius: 'var(--radius-sm)' }}>
               <strong>Repopulate result:</strong>
-              {rssFetchResult.batch ? (
+              {rssFetchResult.pending ? (
+                <div style={{ marginTop: 6 }}>{rssFetchResult.message} Use <em>Check Status</em> above to see when it finishes.</div>
+              ) : rssFetchResult.batch ? (
                 <table style={{ marginTop: 8, width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
                   <thead><tr style={{ textAlign: 'left' }}><th style={{ paddingRight: 12 }}>Source</th><th style={{ paddingRight: 12 }}>Category</th><th style={{ paddingRight: 12 }}>New</th><th style={{ paddingRight: 12 }}>Dupes</th><th>Status</th></tr></thead>
                   <tbody>{rssFetchResult.batch.map((r: any) => (
@@ -781,6 +805,22 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
               ) : (
                 <div style={{ marginTop: 6 }}>{rssFetchResult.sourceName}: {rssFetchResult.itemsInserted} new, {rssFetchResult.duplicatesSkipped} dupes{rssFetchResult.error ? ` — ⚠ ${rssFetchResult.error}` : ' ✓'}</div>
               )}
+            </div>
+          )}
+
+          {fetchAllStatus && (
+            <div style={{ margin: '8px 0 16px', padding: 12, background: 'var(--bg-card)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }}>
+              <strong>Fetch-all status:</strong>{' '}
+              {fetchAllStatus.running
+                ? <span style={{ color: 'var(--accent)' }}>⏳ Running since {fetchAllStatus.startedAt ? new Date(fetchAllStatus.startedAt).toLocaleTimeString() : '?'}</span>
+                : fetchAllStatus.finishedAt
+                  ? <span>
+                      ✓ Finished {new Date(fetchAllStatus.finishedAt).toLocaleTimeString()}
+                      {fetchAllStatus.lastResultSummary && ` — ${fetchAllStatus.lastResultSummary.sourcesChecked} sources, ${fetchAllStatus.lastResultSummary.totalNew} new items, ${fetchAllStatus.lastResultSummary.errors} errors`}
+                      {fetchAllStatus.lastError && <span style={{ color: 'var(--danger)' }}> ⚠ {fetchAllStatus.lastError}</span>}
+                    </span>
+                  : <span className="muted">No fetch run yet this session.</span>
+              }
             </div>
           )}
 

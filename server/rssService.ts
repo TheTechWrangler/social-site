@@ -42,12 +42,66 @@ function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, '').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** Only allow http:// and https:// URLs; everything else (data:, javascript:, etc.) returns ''. */
+/**
+ * SSRF guard — returns true if the hostname/IP targets a private/loopback/
+ * link-local range that the server should never fetch on behalf of users.
+ *
+ * Covers without DNS resolution (limitation noted below):
+ *   localhost / *.local
+ *   127.0.0.0/8  10.0.0.0/8  172.16.0.0/12  192.168.0.0/16
+ *   169.254.0.0/16  0.0.0.0/8  100.64.0.0/10  198.18.0.0/15
+ *   ::1  fc00::/7 (fc/fd)  fe80::/10
+ *
+ * DNS-rebinding limitation: a hostname that *resolves* to a private IP at
+ * fetch time is not blocked here (no DNS lookup is performed — adding one
+ * would require async code and a safe resolver). Mitigated by the fact that
+ * only admin users can add sources.
+ */
+function isPrivateHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+
+  // Strip IPv6 brackets e.g. [::1]
+  const raw = h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
+
+  // Plain hostname checks
+  if (raw === 'localhost') return true;
+  if (raw === '') return true;
+  if (raw.endsWith('.local')) return true;
+  if (raw.endsWith('.localhost')) return true;
+  if (raw.endsWith('.internal')) return true;
+
+  // IPv6 loopback / ULA / link-local
+  if (raw === '::1' || raw === '0:0:0:0:0:0:0:1') return true;
+  if (raw.startsWith('fc') || raw.startsWith('fd')) return true; // fc00::/7 (ULA)
+  if (raw.startsWith('fe80')) return true; // fe80::/10 (link-local)
+
+  // IPv4 private/reserved ranges
+  const ipv4 = raw.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [a, b, c] = [Number(ipv4[1]), Number(ipv4[2]), Number(ipv4[3])];
+    if (a === 0) return true;                             // 0.0.0.0/8
+    if (a === 10) return true;                            // 10.0.0.0/8
+    if (a === 100 && b >= 64 && b <= 127) return true;   // 100.64.0.0/10 (shared)
+    if (a === 127) return true;                           // 127.0.0.0/8 (loopback)
+    if (a === 169 && b === 254) return true;              // 169.254.0.0/16 (link-local)
+    if (a === 172 && b >= 16 && b <= 31) return true;    // 172.16.0.0/12
+    if (a === 192 && b === 0 && c === 0) return true;    // 192.0.0.0/24 (IANA special)
+    if (a === 192 && b === 168) return true;              // 192.168.0.0/16
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 (benchmarking)
+    if (a >= 240) return true;                            // 240.0.0.0/4 + broadcast
+  }
+
+  return false;
+}
+
+/** Only allow http:// and https:// URLs to public hosts. Returns '' for anything private/invalid. */
 function sanitizeUrl(url: unknown): string {
   if (typeof url !== 'string' || !url) return '';
   try {
     const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : '';
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    if (isPrivateHostname(parsed.hostname)) return '';
+    return parsed.toString();
   } catch {
     return '';
   }

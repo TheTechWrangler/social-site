@@ -7,6 +7,10 @@ import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 
+// In-memory set of user IDs with a replenish already in flight.
+// Prevents the same user from stacking multiple concurrent fetches.
+const replenishInFlight = new Set<number>();
+
 function worldInjectionLimit(nativeCount: number, preference: string): number {
   if (preference === 'world_home_off') return 0;
   if (preference === 'world_home_balanced') {
@@ -140,15 +144,15 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
 });
 
 // POST /api/feed/replenish — User-triggered feed refresh, once per rolling 24 hours.
-// Fetches up to 5 sources that are most stale (oldest last_fetched_at) so one call
-// is fast and spread across categories rather than hammering everything at once.
-// Admins bypass the cooldown entirely and always get the full active source list.
-router.post('/replenish', requireAuth, requireVerified, async (req: AuthRequest, res) => {
+// Responds immediately and runs fetches asynchronously so slow sources never
+// block the HTTP response. Admins bypass the cooldown and get all active sources.
+router.post('/replenish', requireAuth, requireVerified, (req: AuthRequest, res) => {
   try {
     const db = getDb();
     const userId = req.user!.id;
     const isAdmin = req.user!.role === 'admin';
 
+    // Cooldown check (non-admin only)
     if (!isAdmin) {
       const row = db.prepare('SELECT last_feed_refresh_at FROM users WHERE id = ?').get(userId) as any;
       if (row?.last_feed_refresh_at) {
@@ -162,27 +166,46 @@ router.post('/replenish', requireAuth, requireVerified, async (req: AuthRequest,
       }
     }
 
-    // Fetch stale sources: for regular users fetch up to 5 least-recently-fetched active sources.
-    // Admins get all active sources (same as the admin fetch-all endpoint).
-    const sources = isAdmin
+    // Per-user in-flight guard (non-admin; admins use fetch-all instead)
+    if (!isAdmin && replenishInFlight.has(userId)) {
+      res.status(429).json({ error: 'A replenish is already running for your account.' });
+      return;
+    }
+
+    // Determine sources before responding so we can report the count
+    const sources: any[] = isAdmin
       ? db.prepare("SELECT id FROM rss_sources WHERE is_active = 1").all() as any[]
       : db.prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetched_at ASC NULLS FIRST LIMIT 5").all() as any[];
 
-    const results = [];
-    for (const s of sources) {
-      results.push(await fetchSource(s.id));
-    }
-
+    // Mark cooldown and in-flight immediately — before the async work starts —
+    // so a second request during the fetch window is correctly rejected.
     if (!isAdmin) {
       db.prepare("UPDATE users SET last_feed_refresh_at = datetime('now') WHERE id = ?").run(userId);
+      replenishInFlight.add(userId);
     }
 
-    const totalNew = results.reduce((sum, r) => sum + r.itemsInserted, 0);
-    const errors = results.filter(r => r.error).map(r => `${r.sourceName}: ${r.error}`);
-    if (errors.length) console.warn('[feed] Replenish source errors:', errors.join('; '));
-    console.log(`[feed] Replenish: ${results.length} sources checked, ${totalNew} new items`);
-    logUsage({ eventType: 'rss_replenished', userId, featureArea: 'world', metadata: { sourcesChecked: results.length, newItems: totalNew } });
-    res.json({ ok: true, sourcesChecked: results.length, newItems: totalNew });
+    // Respond immediately; actual fetching happens asynchronously
+    logUsage({ eventType: 'rss_replenished', userId, featureArea: 'world', metadata: { sourcesChecked: sources.length } });
+    res.json({ ok: true, started: true, sourcesChecked: sources.length });
+
+    // Fire-and-forget: run fetches after the response is sent
+    setImmediate(async () => {
+      try {
+        let totalNew = 0;
+        const errors: string[] = [];
+        for (const s of sources) {
+          const r = await fetchSource(s.id);
+          totalNew += r.itemsInserted;
+          if (r.error) errors.push(`${r.sourceName}: ${r.error}`);
+        }
+        if (errors.length) console.warn('[feed] Replenish errors:', errors.join('; '));
+        console.log(`[feed] Replenish (user ${userId}): ${sources.length} sources, ${totalNew} new items`);
+      } catch (err: any) {
+        console.error('[feed] Replenish async error:', err.message);
+      } finally {
+        replenishInFlight.delete(userId);
+      }
+    });
   } catch (err: any) {
     console.error('[feed] Replenish error:', err.message);
     res.status(500).json({ error: 'Could not replenish feed.' });

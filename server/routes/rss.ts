@@ -5,6 +5,48 @@ import { getWorldFeed, getSources, getBlockedSourceIds, blockSource, unblockSour
 const publicRouter = Router();
 const adminRouter = Router();
 
+// ─── In-memory fetch-all job state ───
+// Prevents multiple overlapping fetch-all jobs; surfaces basic status to admin.
+interface FetchAllState {
+  running: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+  lastResultSummary: { sourcesChecked: number; totalNew: number; errors: number } | null;
+  lastError: string | null;
+}
+const fetchAllState: FetchAllState = {
+  running: false,
+  startedAt: null,
+  finishedAt: null,
+  lastResultSummary: null,
+  lastError: null,
+};
+
+async function runFetchAllInBackground(): Promise<void> {
+  if (fetchAllState.running) return; // already in progress — skip
+  fetchAllState.running = true;
+  fetchAllState.startedAt = new Date().toISOString();
+  fetchAllState.finishedAt = null;
+  fetchAllState.lastError = null;
+  try {
+    const results = await fetchAllSources();
+    const totalNew = results.reduce((s, r) => s + r.itemsInserted, 0);
+    const errors = results.filter(r => r.error).length;
+    fetchAllState.lastResultSummary = { sourcesChecked: results.length, totalNew, errors };
+    if (errors) {
+      const errList = results.filter(r => r.error).map(r => `${r.sourceName}: ${r.error}`).join('; ');
+      console.warn('[rss] fetch-all errors:', errList);
+    }
+    console.log(`[rss] fetch-all complete: ${results.length} sources, ${totalNew} new items, ${errors} errors`);
+  } catch (err: any) {
+    fetchAllState.lastError = err.message || 'Unknown error';
+    console.error('[rss] fetch-all background error:', err.message);
+  } finally {
+    fetchAllState.running = false;
+    fetchAllState.finishedAt = new Date().toISOString();
+  }
+}
+
 function logRssError(context: string, err: unknown): void {
   console.error(`[rss] ${context}:`, err instanceof Error ? err.message : String(err));
 }
@@ -129,14 +171,21 @@ adminRouter.post('/sources/:id/fetch', requireAuth, requireAdmin, async (req, re
   }
 });
 
-adminRouter.post('/fetch-all', requireAuth, requireAdmin, async (_req, res) => {
-  try {
-    const results = await fetchAllSources();
-    res.json(results);
-  } catch (err: any) {
-    logRssError('Admin fetch all sources error', err);
-    res.status(500).json({ error: 'Could not fetch RSS sources.' });
+// GET /admin/rss/fetch-all/status — poll background fetch-all job state
+adminRouter.get('/fetch-all/status', requireAuth, requireAdmin, (_req, res) => {
+  res.json({ ...fetchAllState });
+});
+
+// POST /admin/rss/fetch-all — start background fetch of all active sources.
+// Returns immediately; use GET /fetch-all/status to follow progress.
+adminRouter.post('/fetch-all', requireAuth, requireAdmin, (_req, res) => {
+  if (fetchAllState.running) {
+    res.json({ ok: true, started: false, running: true, message: 'A fetch is already in progress.', startedAt: fetchAllState.startedAt });
+    return;
   }
+  // Fire-and-forget — setImmediate yields the event loop so the response is sent first
+  setImmediate(() => { runFetchAllInBackground().catch(() => {}); });
+  res.json({ ok: true, started: true, message: 'RSS fetch started in background. Use the status endpoint to monitor progress.' });
 });
 
 export { publicRouter, adminRouter };

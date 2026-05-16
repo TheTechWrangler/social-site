@@ -31,7 +31,7 @@ export const api = {
     return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string }>(`/feed?${qs}`);
   },
   replenishFeed: () =>
-    request<{ ok: boolean; sourcesChecked: number; newItems: number; nextAvailableAt?: string }>('/feed/replenish', { method: 'POST' }),
+    request<{ ok: boolean; started?: boolean; sourcesChecked: number; newItems?: number; nextAvailableAt?: string }>('/feed/replenish', { method: 'POST' }),
 
   // Posts
   createPost: (content: string, groupId?: number) =>

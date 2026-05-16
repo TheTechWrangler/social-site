@@ -147,9 +147,16 @@ export default function HomePage({ user }: { user: any }) {
     setRepopulating(true);
     setRepopulateMsg('');
     try {
-      const results: any[] = await api.post('/admin/rss/fetch-all');
-      const totalNew = results.reduce((s: number, r: any) => s + (r.itemsInserted || 0), 0);
-      const errors = results.filter((r: any) => r.error).length;
+      const r: any = await api.post('/admin/rss/fetch-all');
+      if (r.started || r.running) {
+        setRepopulateMsg('Repopulate started in background — new items will appear shortly.');
+        setTimeout(async () => { await loadFeed(); setRepopulating(false); }, 4000);
+        return;
+      }
+      // Legacy: synchronous array response (fallback)
+      const results: any[] = Array.isArray(r) ? r : [];
+      const totalNew = results.reduce((s: number, x: any) => s + (x.itemsInserted || 0), 0);
+      const errors = results.filter((x: any) => x.error).length;
       setRepopulateMsg(`Done: ${totalNew} new items across ${results.length} sources${errors > 0 ? `, ${errors} errors` : ''}.`);
       await loadFeed();
     } catch (e: any) {
@@ -163,7 +170,13 @@ export default function HomePage({ user }: { user: any }) {
     setReplenishMsg('');
     try {
       const r = await api.replenishFeed();
-      setReplenishMsg(`Done — ${r.newItems} new items added.`);
+      if (r.started) {
+        // Async — fetches happen in background; reload feed after a short delay
+        setReplenishMsg('Fetching in background — new items will appear shortly.');
+        setTimeout(async () => { await loadFeed(); setReplenishing(false); }, 4000);
+        return;
+      }
+      setReplenishMsg(r.newItems != null ? `Done — ${r.newItems} new items added.` : 'Replenish complete.');
       await loadFeed();
     } catch (e: any) {
       if (e.status === 429 || (e.message && e.message.includes('429'))) {
