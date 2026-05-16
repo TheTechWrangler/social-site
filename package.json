@@ -14,7 +14,8 @@
     "seed:with-rss": "tsx server/seed.ts && tsx server/rssFetch.ts",
     "rss:fetch": "tsx server/rssFetch.ts",
     "rss:status": "tsx server/rssStatus.ts",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "backup:db": "bash scripts/backup-db.sh"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

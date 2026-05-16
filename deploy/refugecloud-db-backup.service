@@ -1,0 +1,29 @@
+# RefugeCloud — one-shot database backup service
+#
+# This unit is invoked by refugecloud-db-backup.timer (daily at ~02:30).
+# It can also be run manually for an on-demand backup:
+#
+#   sudo systemctl start refugecloud-db-backup.service
+#
+# To enable automatic backups, install both files and enable the timer:
+#   sudo cp deploy/refugecloud-db-backup.service /etc/systemd/system/
+#   sudo cp deploy/refugecloud-db-backup.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now refugecloud-db-backup.timer
+#
+# Logs appear in journald:
+#   sudo journalctl -u refugecloud-db-backup -n 50 --no-pager
+
+[Unit]
+Description=RefugeCloud SQLite database backup
+After=network.target
+
+[Service]
+Type=oneshot
+User=brock
+WorkingDirectory=/home/brock/social-site
+ExecStart=/bin/bash /home/brock/social-site/scripts/backup-db.sh
+StandardOutput=journal
+StandardError=journal
+# Do not restart on failure — a failed backup should be investigated, not retried silently.
+Restart=no

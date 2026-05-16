@@ -1,0 +1,32 @@
+# RefugeCloud — daily database backup timer
+#
+# Fires the refugecloud-db-backup.service unit daily at ~02:30 AM.
+#
+# Installation (requires owner approval — do NOT run automatically):
+#   sudo cp deploy/refugecloud-db-backup.service /etc/systemd/system/
+#   sudo cp deploy/refugecloud-db-backup.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now refugecloud-db-backup.timer
+#
+# Verify it is scheduled:
+#   sudo systemctl list-timers refugecloud-db-backup.timer --no-pager
+#
+# Check last run:
+#   sudo journalctl -u refugecloud-db-backup -n 50 --no-pager
+
+[Unit]
+Description=RefugeCloud daily SQLite database backup timer
+
+[Timer]
+# Fire at 02:30 AM every day.
+OnCalendar=*-*-* 02:30:00
+# Spread the start time by up to 10 minutes to avoid load spikes if multiple
+# timers are scheduled at the same wall-clock time.
+RandomizedDelaySec=600
+# If the timer missed its window (e.g. server was off at 2:30 AM), run the
+# backup as soon as the server comes back up.
+Persistent=true
+Unit=refugecloud-db-backup.service
+
+[Install]
+WantedBy=timers.target
