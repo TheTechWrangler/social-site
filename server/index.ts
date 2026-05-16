@@ -205,6 +205,32 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
 
 app.use('/uploads', uploadsFileRouter);
 
+// ─── CSRF Origin Check ───
+// Now that auth uses HttpOnly cookies, cross-origin state-changing requests could
+// carry the cookie automatically (CSRF). SameSite=Lax on the cookie already blocks
+// cross-site POST from being sent with cookies, but we add an Origin header check
+// as defence-in-depth for all state-changing /api routes.
+// - GET/HEAD/OPTIONS are always allowed (no state change).
+// - Requests WITH an Origin header: must match an allowed frontend origin.
+// - Requests WITHOUT an Origin header (curl, server tools): allowed through.
+// Allowed origins: production + WEB_BASE_URL + localhost dev variants.
+const CSRF_ALLOWED_ORIGINS = new Set<string>([
+  'https://refugecloud.com',
+  'https://www.refugecloud.com',
+  'http://localhost:5174',
+  'http://localhost:3003',
+  ...(process.env.WEB_BASE_URL
+    ? [process.env.WEB_BASE_URL.replace(/\/$/, '')]
+    : []),
+]);
+app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) { next(); return; }
+  const origin = req.headers.origin;
+  if (!origin) { next(); return; }  // No Origin header — tools/curl pass through
+  if (CSRF_ALLOWED_ORIGINS.has(origin)) { next(); return; }
+  res.status(403).json({ error: 'Request origin not allowed.' });
+});
+
 // API routes
 app.use('/api/auth', oauthRoutes);  // OAuth routes first (more specific paths)
 app.use('/api/auth', authRoutes);   // Then regular auth (register, login, me)

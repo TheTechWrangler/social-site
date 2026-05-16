@@ -1,10 +1,21 @@
 const BASE = '/api';
 
+/**
+ * Core fetch wrapper. Auth is handled via HttpOnly cookie automatically sent
+ * by the browser with credentials:'include'. No Authorization header or
+ * localStorage token involved.
+ */
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('token');
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(`${BASE}${url}`, { headers, ...options });
+  // Don't set Content-Type for FormData — browser sets the correct multipart boundary.
+  const isFormData = options?.body instanceof FormData;
+  const headers: Record<string, string> = isFormData ? {} : { 'Content-Type': 'application/json' };
+
+  const res = await fetch(`${BASE}${url}`, {
+    ...options,
+    credentials: 'include',  // Always send the HttpOnly auth cookie
+    headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) },
+  });
+
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const err: any = new Error((body as any).error || `HTTP ${res.status}`);
@@ -20,10 +31,11 @@ export const api = {
   get: <T>(url: string) => request<T>(url),
   post: <T>(url: string, body?: any) => request<T>(url, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   register: (data: { username: string; displayName: string; email: string; password: string }) =>
-    request<{ user: any; token: string }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+    request<{ user: any }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
   login: (data: { username: string; password: string }) =>
-    request<{ user: any; token: string }>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
+    request<{ user: any }>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
   me: () => request<{ user: any }>('/auth/me'),
+  logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 
   // Feed
   feed: (params?: { mode?: string; limit?: number; offset?: number; level?: string; exposure?: string }) => {
@@ -133,24 +145,27 @@ export const api = {
   submitPasswordReset: (token: string, newPassword: string) =>
     request<{ ok: boolean; message: string }>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, newPassword }) }),
 
-  // Media
+  // Media — uses credentials:'include' via request() for cookie auth
   uploadImage: async (file: File): Promise<{ media: any }> => {
     const form = new FormData();
     form.append('file', file);
-    const token = localStorage.getItem('token');
-    const headers: Record<string, string> = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    const res = await fetch('/api/uploads/image', { method: 'POST', headers, body: form });
+    const res = await fetch('/api/uploads/image', {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+      // No Content-Type — browser sets multipart/form-data with boundary automatically
+    });
     if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error((body as any).error || 'Upload failed'); }
     return res.json();
   },
   uploadAvatar: async (file: File): Promise<{ media: any }> => {
     const form = new FormData();
     form.append('file', file);
-    const token = localStorage.getItem('token');
-    const headers: Record<string, string> = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    const res = await fetch('/api/uploads/image', { method: 'POST', headers, body: form });
+    const res = await fetch('/api/uploads/image', {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
     if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error((body as any).error || 'Upload failed'); }
     return res.json();
   },
@@ -159,15 +174,3 @@ export const api = {
   getPostMedia: (postId: number) =>
     request<{ media: any[] }>(`/uploads/post/${postId}`),
 };
-
-export function useAuth() {
-  const token = localStorage.getItem('token');
-  const user = localStorage.getItem('user');
-  return {
-    isLoggedIn: !!token,
-    user: user ? JSON.parse(user) : null,
-    token,
-    login: (u: any, t: string) => { localStorage.setItem('token', t); localStorage.setItem('user', JSON.stringify(u)); },
-    logout: () => { localStorage.removeItem('token'); localStorage.removeItem('user'); },
-  };
-}

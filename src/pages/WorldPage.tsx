@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 
-export default function WorldPage() {
+export default function WorldPage({ user }: { user?: any }) {
   const [items, setItems] = useState<any[]>([]);
   const [sources, setSources] = useState<any[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
@@ -19,8 +19,7 @@ export default function WorldPage() {
 
   useEffect(() => { loadSources(); loadFeed(); loadBlockedSources(); }, []);
 
-  const user = JSON.parse(localStorage.getItem('user') || 'null');
-  const isLoggedIn = !!localStorage.getItem('token');
+  const isLoggedIn = !!user;
 
   async function loadSources() {
     try { const r = await api.get<any>('/world-feed/sources'); setSources(r.sources); setCategories(r.categories); } catch (e) {}
@@ -53,7 +52,7 @@ export default function WorldPage() {
 
   async function handleUnblock(sourceId: number) {
     try {
-      await fetch(`/api/world-feed/sources/${sourceId}/block`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/world-feed/sources/${sourceId}/block`, { method: 'DELETE', credentials: 'include' });
       setBlockedSources(prev => prev.filter(s => s.id !== sourceId));
       loadFeed(selectedCategory, selectedSource, 0);
     } catch (e) {}
@@ -73,7 +72,7 @@ export default function WorldPage() {
 
   async function deleteComment(itemId: number, commentId: number) {
     try {
-      await fetch(`/api/world-feed/comments/${commentId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/world-feed/comments/${commentId}`, { method: 'DELETE', credentials: 'include' });
       setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], comments: prev[itemId].comments.filter((c: any) => c.id !== commentId) } }));
     } catch (e) {}
   }

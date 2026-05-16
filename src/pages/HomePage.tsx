@@ -60,9 +60,7 @@ export default function HomePage({ user }: { user: any }) {
     setLevel(lv);
     setLoading(true);
     try {
-      await fetch('/api/users/profile', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ feedExposure: lv }) });
-      const stored = localStorage.getItem('user');
-      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), feed_exposure: lv }));
+      await fetch('/api/users/profile', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedExposure: lv }) });
       const r = await api.feed({ limit: 50, offset: 0, level: lv } as any);
       const nativePosts = Array.isArray(r.posts) ? r.posts : [];
       const normalizedItems = Array.isArray(r.items)
@@ -81,11 +79,10 @@ export default function HomePage({ user }: { user: any }) {
     try {
       await fetch('/api/users/profile', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ worldHomeInjection: value }),
       });
-      const stored = localStorage.getItem('user');
-      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), world_home_injection: value }));
       const r = await api.feed({ limit: 50, offset: 0, level } as any);
       const nativePosts = Array.isArray(r.posts) ? r.posts : [];
       const normalizedItems = Array.isArray(r.items)
@@ -133,7 +130,7 @@ export default function HomePage({ user }: { user: any }) {
       const postId = postR.post.id;
       if (imageFile) {
         const form = new FormData(); form.append('file', imageFile); form.append('postId', String(postId));
-        await fetch('/api/uploads/image', { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: form });
+        await fetch('/api/uploads/image', { method: 'POST', credentials: 'include', body: form });
       }
       if (youtubeUrl.trim()) { try { await api.attachYouTube(youtubeUrl.trim(), postId); } catch (e) {} }
       setContent(''); setImageFile(null); setImagePreview(null); setYoutubeUrl('');

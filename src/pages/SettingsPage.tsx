@@ -14,16 +14,12 @@ const DM_PRIVACY_OPTIONS = [
   { key: 'everyone', label: 'Everyone' },
 ];
 
-function storedUser() {
-  return JSON.parse(localStorage.getItem('user') || 'null');
-}
-
 function gameDiscoveryValue(user: any): boolean {
   return Boolean(user?.game_discovery_enabled ?? user?.gameDiscoveryEnabled ?? 0);
 }
 
 export default function SettingsPage({ user }: { user: any }) {
-  const initialUser = storedUser() || user;
+  const initialUser = user;
   const [blocked, setBlocked] = useState<any[]>([]);
   const [muted, setMuted] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,14 +43,14 @@ export default function SettingsPage({ user }: { user: any }) {
 
   async function unblock(id: number) {
     try {
-      await fetch(`/api/users/${id}/block`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/users/${id}/block`, { method: 'DELETE', credentials: 'include' });
       setBlocked(prev => prev.filter(u => u.id !== id));
     } catch (e) { console.error(e); }
   }
 
   async function unmute(id: number) {
     try {
-      await fetch(`/api/users/${id}/mute`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/users/${id}/mute`, { method: 'DELETE', credentials: 'include' });
       setMuted(prev => prev.filter(u => u.id !== id));
     } catch (e) { console.error(e); }
   }
@@ -64,7 +60,6 @@ export default function SettingsPage({ user }: { user: any }) {
     setGameDiscovery(newVal);
     try {
       const r = await api.updateProfile({ gameDiscoveryEnabled: newVal });
-      localStorage.setItem('user', JSON.stringify(r.user));
       setGameDiscovery(gameDiscoveryValue(r.user));
     } catch (e) {
       console.error(e);
@@ -75,18 +70,14 @@ export default function SettingsPage({ user }: { user: any }) {
   async function updateWorldHomeInjection(value: string) {
     setWorldHomeInjection(value);
     try {
-      await fetch('/api/users/profile', { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ worldHomeInjection: value }) });
-      const stored = localStorage.getItem('user');
-      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), world_home_injection: value }));
+      await fetch('/api/users/profile', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worldHomeInjection: value }) });
     } catch (e) { console.error(e); }
   }
 
   async function updateDmPrivacy(value: string) {
     setDmPrivacy(value);
     try {
-      const r = await api.updateProfile({ dmPrivacy: value });
-      const stored = localStorage.getItem('user');
-      if (stored) localStorage.setItem('user', JSON.stringify({ ...JSON.parse(stored), dm_privacy: r.user?.dm_privacy || value }));
+      await api.updateProfile({ dmPrivacy: value });
     } catch (e) {
       console.error(e);
     }

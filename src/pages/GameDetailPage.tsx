@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 
-export default function GameDetailPage() {
+export default function GameDetailPage({ user }: { user?: any }) {
   const { slug } = useParams<{ slug: string }>();
   const [searchParams] = useSearchParams();
   const [game, setGame] = useState<any>(null);
@@ -24,7 +24,6 @@ export default function GameDetailPage() {
   const [extendDurations, setExtendDurations] = useState<Record<number, number>>({});
   const [extendingId, setExtendingId] = useState<number | null>(null);
 
-  const user = JSON.parse(localStorage.getItem('user') || 'null');
   const isVerified = user?.is_verified === 1 || user?.isVerified === true;
 
   function timeUntil(dateStr: string): string {
@@ -67,7 +66,7 @@ export default function GameDetailPage() {
   }
 
   async function deleteLfg(id: number) {
-    try { await fetch(`/api/games/lfg/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }); loadData(); } catch (e) {}
+    try { await fetch(`/api/games/lfg/${id}`, { method: 'DELETE', credentials: 'include' }); loadData(); } catch (e) {}
   }
 
   async function extendLfg(id: number) {
@@ -76,7 +75,8 @@ export default function GameDetailPage() {
     try {
       await fetch(`/api/games/lfg/${id}/extend`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ durationHours: hours }),
       });
       await loadData();

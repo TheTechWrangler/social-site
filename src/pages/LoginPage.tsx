@@ -23,8 +23,7 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
     setLoading(true); setError('');
     try {
       const r = await api.login({ username, password });
-      localStorage.setItem('token', r.token);
-      localStorage.setItem('user', JSON.stringify(r.user));
+      // Token is now an HttpOnly cookie set by the server — not in the response body.
       onLogin(r.user);
     } catch (err: any) {
       setError(err.message);

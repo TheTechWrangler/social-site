@@ -16,13 +16,31 @@ declare global {
 
 export type AuthRequest = Request;
 
+// ─── Cookie helpers ───
+// Cookie name must match setAuthCookie / clearAuthCookie in routes/auth.ts.
+export const AUTH_COOKIE_NAME = 'refugecloud_auth';
+
+/**
+ * Extract the auth JWT from the HttpOnly cookie.
+ * Parses the raw Cookie header without a third-party cookie-parser dependency.
+ * JWT values are base64url + periods — no URI encoding needed, but we
+ * call decodeURIComponent defensively in case a proxy rewrote the header.
+ */
+export function getAuthCookieValue(req: Request): string | undefined {
+  const cookieStr = req.headers.cookie;
+  if (!cookieStr) return undefined;
+  const re = /(?:^|;\s*)refugecloud_auth=([^;]+)/;
+  const m = cookieStr.match(re);
+  if (!m) return undefined;
+  try { return decodeURIComponent(m[1]); } catch { return undefined; }
+}
+
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const header = req.headers.authorization;
-  if (!header?.startsWith('Bearer ')) {
+  const token = getAuthCookieValue(req);
+  if (!token) {
     res.status(401).json({ error: 'Authentication required.' });
     return;
   }
-  const token = header.slice(7);
   const payload = verifyToken(token);
   if (!payload) {
     res.status(401).json({ error: 'Invalid or expired token.' });
@@ -44,9 +62,9 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 }
 
 export function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
-  const header = req.headers.authorization;
-  if (header?.startsWith('Bearer ')) {
-    const payload = verifyToken(header.slice(7));
+  const token = getAuthCookieValue(req);
+  if (token) {
+    const payload = verifyToken(token);
     if (payload) {
       const user = getUserById(payload.id);
       if (user && !user.banned) {

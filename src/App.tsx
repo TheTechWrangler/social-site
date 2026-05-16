@@ -24,6 +24,7 @@ import ResetPasswordPage from './pages/ResetPasswordPage';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
+  const [initializing, setInitializing] = useState(true);
   const [unread, setUnread] = useState(0);
   const [dmUnread, setDmUnread] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -31,12 +32,23 @@ export default function App() {
   const location = useLocation();
   usePageTracking();
   const isAdminPage = location.pathname === '/admin';
-  const token = localStorage.getItem('token');
+
+  // On mount: check whether the auth cookie is still valid by calling /me.
+  // This is the single source of truth for login state — no localStorage token.
+  useEffect(() => {
+    // Scrub any stale localStorage token/user from the old Bearer-based auth system.
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+
+    api.me()
+      .then(r => { setUser(r.user); })
+      .catch(() => { /* Not logged in or cookie expired — render as logged out */ })
+      .finally(() => { setInitializing(false); });
+  }, []);
 
   useEffect(() => {
-    // Global unhandled error reporter — sends generic signal only, no stack traces or PII.
-    // sessionStorage dedup: at most one report per route per browser session to prevent
-    // a rapid error loop from spamming hundreds of rows into client_errors.
+    // Global unhandled error reporter — sends a generic signal only (no stack traces or PII).
+    // sessionStorage dedup: at most one report per route per browser session.
     const handler = (_event: ErrorEvent) => {
       const safeRoute = window.location.pathname.replace(/\/\d+/g, '/:id');
       const dedupKey = `err_reported_${safeRoute}`;
@@ -44,25 +56,14 @@ export default function App() {
       sessionStorage.setItem(dedupKey, '1');
       fetch('/api/usage/event', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(localStorage.getItem('token') ? { Authorization: `Bearer ${localStorage.getItem('token')}` } : {}) },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ eventType: 'client_error', route: safeRoute, errorCode: 'UNHANDLED_ERROR' }),
       }).catch(() => {});
     };
     window.addEventListener('error', handler);
     return () => window.removeEventListener('error', handler);
   }, []);
-
-  useEffect(() => {
-    if (token) {
-      api.me().then(r => {
-        localStorage.setItem('user', JSON.stringify(r.user));
-        setUser(r.user);
-      }).catch(() => {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-      });
-    }
-  }, [token]);
 
   useEffect(() => {
     if (!user) return;
@@ -78,21 +79,16 @@ export default function App() {
   useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
 
   function logout() {
-    // Fire-and-forget audit log — never block or error on the UI side.
-    const t = localStorage.getItem('token');
-    if (t) {
-      fetch('/api/auth/logout', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${t}` },
-      }).catch(() => {});
-    }
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    // Ask server to clear the HttpOnly auth cookie. Fire-and-forget — we clear
+    // local state immediately regardless of the network outcome so logout never
+    // gets stuck.
+    api.logout().catch(() => {});
     setUser(null);
     navigate('/login');
   }
 
-  if (!user && token) return <div className="loading">Loading...</div>;
+  // Show a brief loading screen while we wait for the /me check on startup.
+  if (initializing) return <div className="loading">Loading...</div>;
 
   return (
     <div className={`app-layout ${isAdminPage ? 'admin-layout' : ''}`}>
@@ -156,11 +152,11 @@ export default function App() {
           <Route path="/groups/:id" element={user ? <GroupPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/notifications" element={user ? <NotificationsPage onMarkAllRead={() => setUnread(0)} onMarkOneRead={() => setUnread(prev => Math.max(0, prev - 1))} /> : <Navigate to="/login" />} />
           <Route path="/admin" element={user?.role === 'admin' ? <AdminPage user={user} /> : <Navigate to="/" />} />
-          <Route path="/world" element={<WorldPage />} />
-          <Route path="/discover" element={user ? <DiscoverPage /> : <Navigate to="/login" />} />
+          <Route path="/world" element={<WorldPage user={user} />} />
+          <Route path="/discover" element={user ? <DiscoverPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/friends" element={user ? <FriendsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/games" element={<GamesPage />} />
-          <Route path="/games/:slug" element={<GameDetailPage />} />
+          <Route path="/games/:slug" element={<GameDetailPage user={user} />} />
           <Route path="/settings" element={user ? <SettingsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/messages" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />

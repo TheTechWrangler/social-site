@@ -45,7 +45,8 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
       } else {
         const r = await fetch(`/api/likes/${post.id}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reactionType: type }),
         }).then(r => r.json());
         setPost({ ...post, userReaction: type, liked: true, reactions: r.counts });
@@ -113,7 +114,8 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
     try {
       const res = await fetch('/api/admin/reports', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ postId: reportTarget?.id, reason: reportReason, details: reportDetails.trim() }),
       });
       if (!res.ok) {
@@ -128,7 +130,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   async function handleMuteUser() {
     if (!confirm(`Mute @${post.username}? You will stop seeing their posts.`)) return;
     try {
-      await fetch(`/api/users/${post.userId}/mute`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/users/${post.userId}/mute`, { method: 'POST', credentials: 'include' });
       window.location.reload();
     } catch (e) { console.error(e); }
   }
@@ -136,7 +138,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   async function handleBlockUser() {
     if (!confirm(`Block @${post.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
     try {
-      await fetch(`/api/users/${post.userId}/block`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/users/${post.userId}/block`, { method: 'POST', credentials: 'include' });
       window.location.reload();
     } catch (e) { console.error(e); }
   }

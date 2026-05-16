@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import type { Response } from 'express';
 import { getDb } from '../database.js';
-import { registerUser, generateToken, verifyPassword, getUserByUsername, getUserById, hashPassword, type AuthUser } from '../auth.js';
-import { requireAuth, type AuthRequest } from '../middleware.js';
+import { registerUser, generateToken, verifyToken, verifyPassword, getUserByUsername, getUserById, hashPassword } from '../auth.js';
+import { requireAuth, getAuthCookieValue, AUTH_COOKIE_NAME, type AuthRequest } from '../middleware.js';
 import { logAuthEvent, getClientIp } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
 
@@ -10,6 +11,30 @@ const router = Router();
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,30}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const IS_PROD = process.env.NODE_ENV === 'production';
+// Cookie maxAge must match or be shorter than the JWT TOKEN_EXPIRY ('7d') in auth.ts.
+const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// ─── Cookie helpers (exported so other auth-adjacent routes can reuse) ───
+
+export function setAuthCookie(res: Response, token: string): void {
+  res.cookie(AUTH_COOKIE_NAME, token, {
+    httpOnly: true,          // Not accessible to JavaScript
+    secure: IS_PROD,         // HTTPS-only in production; allows HTTP in dev
+    sameSite: 'lax',         // Blocks cross-site POST CSRF; allows top-level nav
+    path: '/',
+    maxAge: COOKIE_MAX_AGE_MS,
+  });
+}
+
+export function clearAuthCookie(res: Response): void {
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    httpOnly: true,
+    secure: IS_PROD,
+    sameSite: 'lax',
+    path: '/',
+  });
+}
 
 // POST /api/auth/register
 router.post('/register', (req, res) => {
@@ -29,9 +54,11 @@ router.post('/register', (req, res) => {
     }
     const user = registerUser(username.trim(), displayName.trim(), email.trim().toLowerCase(), password);
     const token = generateToken(user);
+    setAuthCookie(res, token);
     logAuthEvent({ eventType: 'register_success', userId: user.id, ip: getClientIp(req), userAgent: req.headers['user-agent'], meta: { username: user.username } });
     logUsage({ eventType: 'register_success', userId: user.id, featureArea: 'account' });
-    res.status(201).json({ user, token });
+    // Token is set as HttpOnly cookie — not returned in JSON body.
+    res.status(201).json({ user });
   } catch (err: any) {
     const message = err.message === 'Username or email already taken.'
       ? err.message
@@ -60,13 +87,14 @@ router.post('/login', (req, res) => {
       logAuthEvent({ eventType: 'login_failure', userId: user.id, success: false, reason: 'ACCOUNT_BANNED', ip, userAgent: ua, meta: { username: user.username } });
       res.status(403).json({ error: 'Account is banned.' }); return;
     }
-    // Update last_login_at and log success
     getDb().prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(user.id);
     logAuthEvent({ eventType: 'login_success', userId: user.id, ip, userAgent: ua, meta: { username: user.username } });
     logUsage({ eventType: 'login_success', userId: user.id, featureArea: 'account' });
     const token = generateToken(user);
+    setAuthCookie(res, token);
     const { password_hash, ...safe } = user as any;
-    res.json({ user: safe, token });
+    // Token is set as HttpOnly cookie — not returned in JSON body.
+    res.json({ user: safe });
   } catch (err: any) {
     console.error('[auth] Login error:', err.message);
     res.status(500).json({ error: 'Login failed.' });
@@ -134,17 +162,17 @@ router.post('/reset-password', (req, res) => {
   }
 });
 
-// GET /api/auth/oauth-token — one-time JWT exchange after OAuth login (no prior auth required)
-// The frontend calls this immediately after being redirected to /oauth/callback.
-// The server stored the JWT in the session (server-side) during the OAuth callback so the
-// token was never placed in a URL query string.  This endpoint reads it once and clears it.
+// GET /api/auth/oauth-token — one-time OAuth handoff: sets the HttpOnly auth cookie,
+// returns the full user object. Token is NEVER exposed to JavaScript.
+// The server stored the JWT in session during the OAuth callback (not in the URL).
+// This endpoint claims it once, sets the cookie, clears the session data, returns the user.
 router.get('/oauth-token', (req, res) => {
   const session = (req as any).session;
   const token: string | undefined = session?.oauthHandoffToken;
   const username: string | undefined = session?.oauthHandoffUsername;
 
   if (!token || !username) {
-    // No handoff data — either already consumed, expired, or direct access without OAuth.
+    // No handoff data — already consumed, expired, or direct access without OAuth.
     res.status(401).json({ error: 'No OAuth session found. Please try logging in again.' });
     return;
   }
@@ -152,23 +180,49 @@ router.get('/oauth-token', (req, res) => {
   // Consume immediately — one-time use. Delete before responding to prevent replay.
   delete session.oauthHandoffToken;
   delete session.oauthHandoffUsername;
-  // Persist the deletion asynchronously; we don't need to wait before responding.
   session.save(() => {});
 
-  res.json({ token, username });
+  // Verify the stored token and fetch the canonical user
+  const payload = verifyToken(token);
+  if (!payload) {
+    res.status(401).json({ error: 'OAuth session expired. Please try logging in again.' });
+    return;
+  }
+  const user = getUserById(payload.id);
+  if (!user || user.banned) {
+    res.status(401).json({ error: 'Account unavailable. Please try logging in again.' });
+    return;
+  }
+
+  // Set the HttpOnly auth cookie — token never sent to frontend JS.
+  setAuthCookie(res, token);
+  res.json({ ok: true, user });
 });
 
-// POST /api/auth/logout — audit-log the logout; client clears its own token.
-// JWTs are stateless so we can't invalidate them server-side, but we record
-// the event for security audit purposes.
-router.post('/logout', requireAuth, (req: AuthRequest, res) => {
-  logAuthEvent({
-    eventType: 'logout',
-    userId: req.user!.id,
-    ip: getClientIp(req),
-    userAgent: req.headers['user-agent'],
-    meta: { username: req.user!.username },
-  });
+// POST /api/auth/logout — clears the HttpOnly auth cookie and audit-logs the event.
+// Always clears the cookie regardless of whether auth is valid, so logout never
+// "traps" a user with an expired/missing token. Returns { ok: true } unconditionally.
+router.post('/logout', (req, res) => {
+  // Soft-auth: try to identify the user for audit purposes but don't block on failure.
+  const token = getAuthCookieValue(req);
+  if (token) {
+    try {
+      const payload = verifyToken(token);
+      if (payload) {
+        const user = getUserById(payload.id);
+        if (user) {
+          logAuthEvent({
+            eventType: 'logout',
+            userId: user.id,
+            ip: getClientIp(req),
+            userAgent: req.headers['user-agent'],
+            meta: { username: user.username },
+          });
+        }
+      }
+    } catch { /* never block logout */ }
+  }
+  clearAuthCookie(res);
   res.json({ ok: true });
 });
 

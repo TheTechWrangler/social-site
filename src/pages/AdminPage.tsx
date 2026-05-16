@@ -254,7 +254,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     try {
       const r = await fetch(`/api/admin/rss/sources/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_active: active ? 0 : 1 }),
       });
       if (r.ok) loadRss();
@@ -389,7 +390,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     e.preventDefault();
     if (!srvForm.gameId || !srvForm.name) return;
     try {
-      await fetch('/api/admin/game-servers', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(srvForm) });
+      await fetch('/api/admin/game-servers', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(srvForm) });
       setSrvForm({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
       loadServers();
     } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not add game server.')); }
@@ -397,7 +398,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   async function toggleServerActive(id: number, active: boolean) {
     try {
-      await fetch(`/api/admin/game-servers/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ is_active: active ? 0 : 1 }) });
+      await fetch(`/api/admin/game-servers/${id}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: active ? 0 : 1 }) });
       loadServers();
     } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not update game server.')); }
   }
@@ -405,7 +406,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   async function deleteServer(id: number) {
     if (!confirm('Delete this server?')) return;
     try {
-      await fetch(`/api/admin/game-servers/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/admin/game-servers/${id}`, { method: 'DELETE', credentials: 'include' });
       loadServers();
     } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not delete game server.')); }
   }
@@ -413,7 +414,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   async function updateReportStatus(id: number, status: 'dismissed' | 'resolved', adminNote: string) {
     const res = await fetch(`/api/admin/reports/${id}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status, adminNote }),
     });
     if (!res.ok) {
@@ -445,7 +447,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     try {
       const r = await fetch(`/api/admin/users/${id}/role`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role }),
       });
       const data = await r.json();
@@ -483,14 +486,14 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   async function verifyUser(id: number) {
     try {
-      await fetch(`/api/admin/users/${id}/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/admin/users/${id}/verify`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
       setUsers(prev => prev.map(u => u.id === id ? { ...u, is_verified: 1 } : u));
     } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not verify user.')); }
   }
 
   async function unverifyUser(id: number) {
     try {
-      await fetch(`/api/admin/users/${id}/unverify`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/admin/users/${id}/unverify`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
       setUsers(prev => prev.map(u => u.id === id ? { ...u, is_verified: 0 } : u));
     } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not unverify user.')); }
   }

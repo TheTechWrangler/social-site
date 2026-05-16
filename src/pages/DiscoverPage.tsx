@@ -2,13 +2,12 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 
-export default function DiscoverPage() {
+export default function DiscoverPage({ user }: { user?: any }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const user = JSON.parse(localStorage.getItem('user') || 'null');
   const isVerified = !!user?.is_verified;
 
   async function handleSearch(e: React.FormEvent) {
