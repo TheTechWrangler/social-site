@@ -15,6 +15,26 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   admin_password_reset_token: '🔑 Reset token generated',
 };
 
+// ── Backup tab helpers ────────────────────────────────────────────────────────
+function formatBackupAge(ageHours: number): string {
+  if (ageHours < 1) return `${Math.round(ageHours * 60)} min ago`;
+  if (ageHours < 24) return `${Math.round(ageHours)}h ago`;
+  return `${(ageHours / 24).toFixed(1)}d ago`;
+}
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1_048_576).toFixed(1)} MB`;
+}
+function backupHealthStatus(s: any): { label: string; color: string } {
+  if (!s?.backupDirExists || s?.backupCount === 0) return { label: '❌ No Backups Found', color: 'var(--danger)' };
+  if (s?.integrityCheck === 'failed')              return { label: '❌ Integrity Check Failed', color: 'var(--danger)' };
+  if ((s?.latestBackup?.ageHours ?? 0) > 48)       return { label: '⚠ Backup Overdue', color: '#f59e0b' };
+  if (s?.timerActive && s.timerActive !== 'active' && s.timerActive !== 'unavailable')
+                                                    return { label: '⚠ Timer Inactive', color: '#f59e0b' };
+  return { label: '✅ Healthy', color: 'var(--green)' };
+}
+
 function UserDetailPanel({ act, resetLink, generatingReset, onGenerateReset, onDismissReset, onCopyLink }: {
   act: any; resetLink?: { link: string; expiresAt: string }; generatingReset: boolean;
   onGenerateReset: () => void; onDismissReset: () => void; onCopyLink: () => void;
@@ -77,7 +97,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [users, setUsers] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
   const [reports, setReports] = useState<any[]>([]);
-  const [tab, setTab] = useState<'users' | 'posts' | 'reports' | 'rss' | 'servers' | 'auth-logs' | 'health' | 'analytics'>('users');
+  const [tab, setTab] = useState<'users' | 'posts' | 'reports' | 'rss' | 'servers' | 'auth-logs' | 'health' | 'analytics' | 'backups'>('users');
 
   // RSS state
   const [rssSources, setRssSources] = useState<any[]>([]);
@@ -114,6 +134,11 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [analyticsFeatureUsage, setAnalyticsFeatureUsage] = useState<any>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
+  // Backups
+  const [backupStatus, setBackupStatus] = useState<any>(null);
+  const [backupRunning, setBackupRunning] = useState(false);
+  const [backupRunResult, setBackupRunResult] = useState<string | null>(null);
+
   // User detail expansion
   const [expandedUser, setExpandedUser] = useState<number | null>(null);
   const [userActivity, setUserActivity] = useState<Record<number, any>>({});
@@ -126,6 +151,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     else if (tab === 'auth-logs') loadAuthEvents();
     else if (tab === 'health') loadHealth();
     else if (tab === 'analytics') loadAnalytics();
+    else if (tab === 'backups') loadBackupStatus();
     else loadData();
     loadStats();
   }, [tab, reportFilter, authEventType, authEventSuccess]);
@@ -232,6 +258,28 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       setResetLinks(prev => ({ ...prev, [userId]: { link: r.resetLink, expiresAt: r.expiresAt } }));
     } catch (e: any) { alert(e.message || 'Could not generate reset link.'); }
     setGeneratingReset(null);
+  }
+
+  async function loadBackupStatus() {
+    try { const r = await api.getBackupStatus(); setBackupStatus(r); } catch (e) { console.error(e); }
+  }
+
+  async function runBackupNow() {
+    if (!confirm('Run a database backup now? This typically takes a few seconds.')) return;
+    setBackupRunning(true);
+    setBackupRunResult(null);
+    try {
+      const r = await api.runBackup();
+      if (r.ok) {
+        setBackupRunResult(`✅ Done (${r.durationMs}ms)\n\n${r.output}`);
+        await loadBackupStatus(); // refresh status card
+      } else {
+        setBackupRunResult(`❌ Failed: ${r.error}\n\n${r.output || ''}`);
+      }
+    } catch (e: any) {
+      setBackupRunResult(`❌ Request error: ${e.message || 'Unknown'}`);
+    }
+    setBackupRunning(false);
   }
 
   async function addServer(e: React.FormEvent) {
@@ -367,6 +415,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
         <button className={`btn ${tab === 'auth-logs' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('auth-logs')}>Auth Logs</button>
         <button className={`btn ${tab === 'health' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('health')}>System Health</button>
         <button className={`btn ${tab === 'analytics' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('analytics')}>Analytics</button>
+        <button className={`btn ${tab === 'backups' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('backups')}>Backups</button>
       </div>
 
       {/* Users tab */}
@@ -840,6 +889,110 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
           )}
         </div>
       )}
+
+      {/* Backups tab */}
+      {tab === 'backups' && (
+        <div style={{ maxWidth: 700 }}>
+          {!backupStatus ? (
+            <p className="muted">Loading…</p>
+          ) : (() => {
+            const health = backupHealthStatus(backupStatus);
+            const lb = backupStatus.latestBackup;
+            return (
+              <>
+                {/* ── Status banner ── */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, padding: '10px 16px', background: 'var(--bg-card)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
+                  <span style={{ fontSize: '1rem', fontWeight: 700, color: health.color }}>{health.label}</span>
+                  <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={loadBackupStatus}>↻ Refresh</button>
+                </div>
+
+                {/* ── Info grid ── */}
+                <div style={{ display: 'grid', gap: 10, marginBottom: 20 }}>
+                  {([
+                    ['Backup directory',  backupStatus.backupDir],
+                    ['Backup count',      `${backupStatus.backupCount} file${backupStatus.backupCount !== 1 ? 's' : ''}`],
+                    ['Total stored',      formatBytes(backupStatus.totalSizeBytes)],
+                    ['Retention policy',  `${backupStatus.retentionDays} days`],
+                    ['Uploads covered',   backupStatus.uploadsCovered ? 'Yes' : '⚠ No — media files not backed up yet'],
+                    ...(lb ? [
+                      ['Latest backup',    lb.filename],
+                      ['Latest size',      formatBytes(lb.sizeBytes)],
+                      ['Latest age',       formatBackupAge(lb.ageHours)],
+                      ['Integrity check',  backupStatus.integrityCheck === 'ok'
+                        ? '✅ ok'
+                        : backupStatus.integrityCheck === 'failed'
+                          ? '❌ FAILED — backup may be corrupt'
+                          : '— unavailable'],
+                    ] as [string, string][] : [
+                      ['Latest backup',    '⚠ None found'],
+                    ] as [string, string][]),
+                    ['Timer status',      backupStatus.timerActive === 'active'
+                      ? '✅ active'
+                      : backupStatus.timerActive === 'inactive'
+                        ? '⚠ inactive — enable with: sudo systemctl enable --now refugecloud-db-backup.timer'
+                        : `— ${backupStatus.timerActive}`],
+                    ['Next scheduled run', backupStatus.nextScheduledRun],
+                  ] as [string, string][]).map(([label, value]) => (
+                    <div key={label} style={{ display: 'flex', gap: 16, borderBottom: '1px solid var(--border)', paddingBottom: 8 }}>
+                      <span className="muted" style={{ minWidth: 170, fontSize: '0.88rem', flexShrink: 0 }}>{label}</span>
+                      <span style={{ fontSize: '0.88rem', wordBreak: 'break-all' }}>{value}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ── Last service log ── */}
+                {backupStatus.lastServiceLog && backupStatus.lastServiceLog !== 'unavailable' && (
+                  <div style={{ marginBottom: 20 }}>
+                    <strong style={{ display: 'block', marginBottom: 6, fontSize: '0.88rem' }}>Last service log</strong>
+                    <pre style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: '0.75rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {backupStatus.lastServiceLog}
+                    </pre>
+                  </div>
+                )}
+
+                {/* ── Uploads warning ── */}
+                <div style={{ background: 'var(--bg-card)', border: '1px solid #f59e0b55', borderRadius: 'var(--radius-sm)', padding: '10px 14px', marginBottom: 20, fontSize: '0.85rem' }}>
+                  <strong>⚠ Media files not included.</strong> Database backups do not cover uploaded images and media in the <code>uploads/</code> directory. This is a future task.
+                </div>
+
+                {/* ── Run backup now ── */}
+                <div style={{ marginBottom: 24 }}>
+                  <button className="btn btn-primary" disabled={backupRunning} onClick={runBackupNow}>
+                    {backupRunning ? '⏳ Running backup…' : '💾 Run Backup Now'}
+                  </button>
+                  <span className="muted" style={{ marginLeft: 12, fontSize: '0.82rem' }}>
+                    Runs <code>scripts/backup-db.sh</code> — safe, no service restart needed.
+                  </span>
+                  {backupRunResult && (
+                    <pre style={{ marginTop: 10, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: '0.75rem', overflowX: 'auto', maxHeight: 200, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {backupRunResult}
+                    </pre>
+                  )}
+                </div>
+
+                {/* ── Restore instructions (read-only) ── */}
+                <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '14px 16px', fontSize: '0.84rem' }}>
+                  <strong style={{ display: 'block', marginBottom: 10 }}>🔴 Restore Procedure — Manual Only</strong>
+                  <p className="muted" style={{ marginBottom: 10 }}>
+                    Restore requires stopping the service and copying the backup file via SSH. There is no restore button.
+                  </p>
+                  <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.9 }}>
+                    <li>Take a safety snapshot first: <code>npm run backup:db</code></li>
+                    <li>Stop the service: <code>sudo systemctl stop refugecloud</code></li>
+                    <li>Keep a copy of the live DB: <code>cp data/social.db data/social.db.pre-restore</code></li>
+                    <li><strong>Delete WAL sidecar files (critical):</strong> <code>rm -f data/social.db-wal data/social.db-shm</code></li>
+                    <li>Copy the backup in: <code>cp /home/brock/backups/refugecloud-db/&lt;filename&gt;.db data/social.db</code></li>
+                    <li>Verify: <code>sqlite3 data/social.db "PRAGMA integrity_check;"</code></li>
+                    <li>Restart: <code>sudo systemctl start refugecloud</code></li>
+                  </ol>
+                  <p className="muted" style={{ marginTop: 10, fontSize: '0.8rem' }}>Full documentation: <code>docs/backups.md</code></p>
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
     </div>
   );
 }

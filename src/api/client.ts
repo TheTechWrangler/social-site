@@ -117,6 +117,8 @@ export const api = {
   generatePasswordResetToken: (id: number) =>
     request<{ ok: boolean; resetLink: string; expiresAt: string; username: string }>(`/admin/users/${id}/password-reset-token`, { method: 'POST' }),
   getSystemHealth: () => request<any>('/admin/system-health'),
+  getBackupStatus: () => request<any>('/admin/backups/status'),
+  runBackup: () => request<any>('/admin/backups/run', { method: 'POST' }),
   getAnalyticsSummary: () => request<any>('/admin/analytics/summary'),
   getAnalyticsPeakHours: () => request<any>('/admin/analytics/peak-hours'),
   getAnalyticsFeatureUsage: () => request<any>('/admin/analytics/feature-usage'),
