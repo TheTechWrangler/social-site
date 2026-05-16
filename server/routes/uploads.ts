@@ -106,7 +106,8 @@ router.post('/image', requireAuth, requireVerified, handleImageUpload, (req, res
     res.status(201).json({ media });
   } catch (err: any) {
     logUsage({ eventType: 'upload_failed', userId: (req as any).user?.id ?? null, featureArea: 'feed', errorCode: 'SERVER_ERROR' });
-    res.status(500).json({ error: err.message });
+    console.error('[uploads] Image upload error:', err.message);
+    res.status(500).json({ error: 'Image upload failed.' });
   }
 });
 
@@ -160,7 +161,8 @@ router.post('/external-video', requireAuth, requireVerified, (req, res) => {
       }
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[uploads] External video attach error:', err.message);
+    res.status(500).json({ error: 'Could not attach video.' });
   }
 });
 

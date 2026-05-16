@@ -134,7 +134,8 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       .sort((a: any, b: any) => itemTime(b).localeCompare(itemTime(a)));
     res.json({ posts, worldItems, items, level });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[feed] Load feed error:', err.message);
+    res.status(500).json({ error: 'Could not load feed.' });
   }
 });
 
@@ -180,7 +181,8 @@ router.post('/replenish', requireAuth, requireVerified, async (req: AuthRequest,
     logUsage({ eventType: 'rss_replenished', userId, featureArea: 'world', metadata: { sourcesChecked: results.length, newItems: totalNew } });
     res.json({ ok: true, sourcesChecked: results.length, newItems: totalNew, results });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[feed] Replenish error:', err.message);
+    res.status(500).json({ error: 'Could not replenish feed.' });
   }
 });
 

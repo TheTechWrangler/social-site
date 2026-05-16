@@ -31,7 +31,8 @@ router.get('/:itemId/comments', optionalAuth, (req, res) => {
 
     res.json({ comments, count: comments.length });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[world-comments] Load comments error:', err.message);
+    res.status(500).json({ error: 'Could not load comments.' });
   }
 });
 
@@ -68,7 +69,8 @@ router.post('/:itemId/comments', requireAuth, requireVerified, (req, res) => {
 
     res.status(201).json({ comment });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[world-comments] Create comment error:', err.message);
+    res.status(500).json({ error: 'Could not create comment.' });
   }
 });
 
@@ -87,7 +89,8 @@ router.delete('/comments/:commentId', requireAuth, requireVerified, (req, res) =
     getDb().prepare('DELETE FROM rss_item_comments WHERE id = ?').run(commentId);
     res.json({ ok: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[world-comments] Delete comment error:', err.message);
+    res.status(500).json({ error: 'Could not delete comment.' });
   }
 });
 

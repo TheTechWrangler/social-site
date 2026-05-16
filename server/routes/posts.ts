@@ -88,7 +88,8 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
     logUsage({ eventType: 'post_created', userId: req.user!.id, featureArea: groupId ? 'groups' : 'feed' });
     res.status(201).json({ post: enrichPost(row, req.user!.id) });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[posts] Create post error:', err.message);
+    res.status(500).json({ error: 'Could not create post.' });
   }
 });
 

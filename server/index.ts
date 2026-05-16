@@ -125,10 +125,11 @@ app.use(cors({
   origin: corsOrigin,
   credentials: true,
 }));
-app.use(express.json());
+app.use(express.json({ limit: '64kb' }));
 
 // ─── Rate Limiting ───
 if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
+  const skipReadMethods = (req: express.Request) => ['GET', 'HEAD', 'OPTIONS'].includes(req.method);
   const authLimiter = rateLimit({
     windowMs: (parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MINUTES || '15', 10)) * 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_AUTH_MAX || '10', 10),
@@ -140,6 +141,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     max: parseInt(process.env.RATE_LIMIT_WRITE_MAX || '60', 10),
     message: { error: 'Too many requests. Please slow down.' },
     standardHeaders: true, legacyHeaders: false,
+    skip: skipReadMethods,
   });
   const uploadLimiter = rateLimit({
     windowMs: (parseInt(process.env.RATE_LIMIT_WRITE_WINDOW_MINUTES || '15', 10)) * 60 * 1000,
@@ -153,9 +155,26 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     message: { error: 'Too many requests. Please slow down.' },
     standardHeaders: true, legacyHeaders: false,
   });
+  const usageEventLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_USAGE_MAX || '120', 10),
+    message: { error: 'Too many analytics events. Please slow down.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
+  const pollingReadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_POLLING_MAX || '600', 10),
+    message: { error: 'Too many polling requests. Please slow down.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
 
   // Feed read endpoints
   app.use('/api/feed', feedReadLimiter);
+  // Lightweight client telemetry
+  app.use('/api/usage/event', usageEventLimiter);
+  // Lightweight polling endpoints (generous for normal 30s polling across tabs)
+  app.use('/api/notifications/unread-count', pollingReadLimiter);
+  app.use('/api/messages/unread-count', pollingReadLimiter);
   // Auth endpoints
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/register', authLimiter);

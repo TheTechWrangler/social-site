@@ -33,7 +33,11 @@ router.post('/register', (req, res) => {
     logUsage({ eventType: 'register_success', userId: user.id, featureArea: 'account' });
     res.status(201).json({ user, token });
   } catch (err: any) {
-    res.status(400).json({ error: err.message });
+    const message = err.message === 'Username or email already taken.'
+      ? err.message
+      : 'Could not create account.';
+    if (message !== err.message) console.error('[auth] Register error:', err.message);
+    res.status(400).json({ error: message });
   }
 });
 
@@ -64,7 +68,8 @@ router.post('/login', (req, res) => {
     const { password_hash, ...safe } = user as any;
     res.json({ user: safe, token });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[auth] Login error:', err.message);
+    res.status(500).json({ error: 'Login failed.' });
   }
 });
 

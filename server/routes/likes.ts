@@ -24,21 +24,35 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
   const post = access.post;
 
   const userId = req.user!.id;
+  const db = getDb();
+  const existingReaction = db.prepare('SELECT reaction_type FROM likes WHERE user_id = ? AND post_id = ?')
+    .get(userId, postId) as { reaction_type: string } | undefined;
+  const reactionChanged = existingReaction?.reaction_type !== reactionType;
 
-  // Remove any existing reaction from this user on this post
-  getDb().prepare('DELETE FROM likes WHERE user_id = ? AND post_id = ?').run(userId, postId);
+  if (reactionChanged) {
+    // Remove any existing reaction from this user on this post
+    db.prepare('DELETE FROM likes WHERE user_id = ? AND post_id = ?').run(userId, postId);
 
-  // Insert new reaction
-  getDb().prepare('INSERT INTO likes (user_id, post_id, reaction_type) VALUES (?, ?, ?)').run(userId, postId, reactionType);
+    // Insert new reaction
+    db.prepare('INSERT INTO likes (user_id, post_id, reaction_type) VALUES (?, ?, ?)').run(userId, postId, reactionType);
 
-  if (post.user_id !== userId) {
-    getDb().prepare(`INSERT INTO notifications (user_id, actor_id, type, post_id) VALUES (?, ?, 'like', ?)`)
-      .run(post.user_id, userId, postId);
+    if (post.user_id !== userId) {
+      db.prepare(`
+        INSERT INTO notifications (user_id, actor_id, type, post_id)
+        SELECT ?, ?, 'like', ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM notifications
+          WHERE user_id = ? AND actor_id = ? AND type = 'like' AND post_id = ?
+            AND created_at > datetime('now', '-24 hours')
+        )
+      `).run(post.user_id, userId, postId, post.user_id, userId, postId);
+    }
+
+    logUsage({ eventType: 'like_created', userId: req.user!.id, featureArea: 'feed' });
   }
 
   // Return grouped counts
   const counts = getReactionCounts(postId);
-  logUsage({ eventType: 'like_created', userId: req.user!.id, featureArea: 'feed' });
   res.json({ ok: true, reactionType, counts, userReaction: reactionType });
 });
 

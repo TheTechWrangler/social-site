@@ -5,6 +5,10 @@ import { getWorldFeed, getSources, getBlockedSourceIds, blockSource, unblockSour
 const publicRouter = Router();
 const adminRouter = Router();
 
+function logRssError(context: string, err: unknown): void {
+  console.error(`[rss] ${context}:`, err instanceof Error ? err.message : String(err));
+}
+
 // ─── Public World Feed ───
 
 publicRouter.get('/', optionalAuth, (req, res) => {
@@ -17,7 +21,8 @@ publicRouter.get('/', optionalAuth, (req, res) => {
     const items = getWorldFeed({ sourceId, category, limit, offset, userId });
     res.json({ items });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Load world feed error', err);
+    res.status(500).json({ error: 'Could not load world feed.' });
   }
 });
 
@@ -33,7 +38,8 @@ publicRouter.get('/sources', optionalAuth, (req, res) => {
     }));
     res.json({ sources: sourcesWithBlock, categories });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Load sources error', err);
+    res.status(500).json({ error: 'Could not load RSS sources.' });
   }
 });
 
@@ -50,7 +56,8 @@ publicRouter.get('/blocked-sources', requireAuth, requireVerified, (req, res) =>
     }));
     res.json({ blocked });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Load blocked sources error', err);
+    res.status(500).json({ error: 'Could not load blocked sources.' });
   }
 });
 
@@ -61,7 +68,8 @@ publicRouter.post('/sources/:sourceId/block', requireAuth, requireVerified, (req
     blockSource(user.id, Number(req.params.sourceId));
     res.json({ ok: true, blocked: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Block source error', err);
+    res.status(500).json({ error: 'Could not block source.' });
   }
 });
 
@@ -72,7 +80,8 @@ publicRouter.delete('/sources/:sourceId/block', requireAuth, requireVerified, (r
     unblockSource(user.id, Number(req.params.sourceId));
     res.json({ ok: true, blocked: false });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Unblock source error', err);
+    res.status(500).json({ error: 'Could not unblock source.' });
   }
 });
 
@@ -82,7 +91,8 @@ adminRouter.get('/sources', requireAuth, requireAdmin, (_req, res) => {
   try {
     res.json({ sources: getSources() });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Admin load sources error', err);
+    res.status(500).json({ error: 'Could not load RSS sources.' });
   }
 });
 
@@ -93,7 +103,8 @@ adminRouter.post('/sources', requireAuth, requireAdmin, (req, res) => {
     const source = addSource(name, url, homepageUrl || '', category || 'general');
     res.status(201).json({ source });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Admin add source error', err);
+    res.status(500).json({ error: 'Could not add RSS source.' });
   }
 });
 
@@ -103,7 +114,8 @@ adminRouter.patch('/sources/:id', requireAuth, requireAdmin, (req, res) => {
     if (!source) { res.status(404).json({ error: 'Source not found.' }); return; }
     res.json({ source });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Admin update source error', err);
+    res.status(500).json({ error: 'Could not update RSS source.' });
   }
 });
 
@@ -112,7 +124,8 @@ adminRouter.post('/sources/:id/fetch', requireAuth, requireAdmin, async (req, re
     const result = await fetchSource(Number(req.params.id));
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Admin fetch source error', err);
+    res.status(500).json({ error: 'Could not fetch RSS source.' });
   }
 });
 
@@ -121,7 +134,8 @@ adminRouter.post('/fetch-all', requireAuth, requireAdmin, async (_req, res) => {
     const results = await fetchAllSources();
     res.json(results);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    logRssError('Admin fetch all sources error', err);
+    res.status(500).json({ error: 'Could not fetch RSS sources.' });
   }
 });
 

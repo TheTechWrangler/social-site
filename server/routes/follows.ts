@@ -17,16 +17,26 @@ router.post('/:userId', requireAuth, requireVerified, (req: AuthRequest, res) =>
   }
 
   try {
-    getDb().prepare('INSERT OR IGNORE INTO follows (follower_id, following_id) VALUES (?, ?)')
+    const db = getDb();
+    const followResult = db.prepare('INSERT OR IGNORE INTO follows (follower_id, following_id) VALUES (?, ?)')
       .run(req.user!.id, targetId);
 
-    // Notification
-    getDb().prepare(`INSERT INTO notifications (user_id, actor_id, type) VALUES (?, ?, 'follow')`)
-      .run(targetId, req.user!.id);
+    if (followResult.changes > 0) {
+      db.prepare(`
+        INSERT INTO notifications (user_id, actor_id, type)
+        SELECT ?, ?, 'follow'
+        WHERE NOT EXISTS (
+          SELECT 1 FROM notifications
+          WHERE user_id = ? AND actor_id = ? AND type = 'follow'
+            AND created_at > datetime('now', '-24 hours')
+        )
+      `).run(targetId, req.user!.id, targetId, req.user!.id);
+    }
 
     res.json({ ok: true, following: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    console.error('[follows] Failed to follow user:', err.message);
+    res.status(500).json({ error: 'Could not follow user.' });
   }
 });
 
