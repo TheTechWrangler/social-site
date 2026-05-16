@@ -332,6 +332,11 @@ export function initializeDatabase(): void {
   if (!userColumns.some(c => c.name === 'password_changed_at')) {
     db.exec('ALTER TABLE users ADD COLUMN password_changed_at TEXT DEFAULT NULL');
   }
+  // profile_data: JSON blob for structured profile sections (tech, platforms,
+  // looking-for, current projects, genres, website). NULL means no sections set.
+  if (!userColumns.some(c => c.name === 'profile_data')) {
+    db.exec('ALTER TABLE users ADD COLUMN profile_data TEXT DEFAULT NULL');
+  }
 
   // ─── auth_events table (append-only login/admin event log) ───
   const authEventsExists = db.prepare(

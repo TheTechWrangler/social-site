@@ -112,7 +112,7 @@ router.get('/me/games', requireAuth, (req: AuthRequest, res) => {
 // GET /api/users/:username
 router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
   const row = getDb().prepare(`
-    SELECT id, username, display_name, email, bio, avatar_url, role, is_verified, profile_visibility, created_at
+    SELECT id, username, display_name, email, bio, avatar_url, role, is_verified, profile_visibility, created_at, profile_data
     FROM users WHERE username = ?
   `).get(req.params.username) as any;
   if (!row) { res.status(404).json({ error: 'User not found.' }); return; }
@@ -155,6 +155,9 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
     });
   }
 
+  let profileData: any = null;
+  try { profileData = row.profile_data ? JSON.parse(row.profile_data) : null; } catch { profileData = null; }
+
   res.json({
     user: {
       id: row.id, username: row.username, displayName: row.display_name,
@@ -163,13 +166,14 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
       followerCount: followers?.c ?? 0, followingCount: following?.c ?? 0,
       postCount: postCount?.c ?? 0, isFollowing,
       gamePrefs: canViewGames ? gamePrefs : [],
+      profileData,
     }
   });
 });
 
 // PUT /api/users/profile
 router.put('/profile', requireAuth, (req: AuthRequest, res) => {
-  const { displayName, bio, profileVisibility, feedExposure, worldHomeInjection, gameDiscoveryEnabled, avatar_url, dmPrivacy } = req.body;
+  const { displayName, bio, profileVisibility, feedExposure, worldHomeInjection, gameDiscoveryEnabled, avatar_url, dmPrivacy, profileData } = req.body;
   const vis = profileVisibility === 'private' ? 'private' : 'public';
   const fex = ['friends_only', 'mixed', 'everyone', 'friends', 'extended', 'world'].includes(feedExposure) ? feedExposure : 'extended';
   const whi = ['world_home_off', 'world_home_few', 'world_home_balanced'].includes(worldHomeInjection) ? worldHomeInjection : undefined;
@@ -184,6 +188,23 @@ router.put('/profile', requireAuth, (req: AuthRequest, res) => {
   if (whi !== undefined) { fields.push('world_home_injection = ?'); vals.push(whi); }
   if (gameDiscoveryEnabled !== undefined) { fields.push('game_discovery_enabled = ?'); vals.push(gameDiscoveryEnabled ? 1 : 0); }
   if (dmp !== undefined) { fields.push('dm_privacy = ?'); vals.push(dmp); }
+  // profileData: structured profile sections stored as JSON blob
+  if (profileData !== undefined && typeof profileData === 'object' && profileData !== null) {
+    const PD_LIMITS: Record<string, number> = {
+      techInterests: 200, platforms: 100, lookingFor: 200,
+      currentProjects: 300, favoriteGenres: 150, websiteUrl: 200,
+    };
+    const pd: Record<string, string> = {};
+    for (const [key, max] of Object.entries(PD_LIMITS)) {
+      if (typeof profileData[key] === 'string') {
+        pd[key] = profileData[key].trim().slice(0, max);
+      }
+    }
+    // websiteUrl must be http(s):// if provided
+    if (pd.websiteUrl && !/^https?:\/\/.+/.test(pd.websiteUrl)) { pd.websiteUrl = ''; }
+    fields.push('profile_data = ?');
+    vals.push(JSON.stringify(pd));
+  }
   fields.push("updated_at = datetime('now')");
   vals.push(req.user!.id);
   getDb().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...vals);

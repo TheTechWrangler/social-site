@@ -23,6 +23,52 @@ const emptyGameForm = {
   notes: '',
 };
 
+const emptySectionForm = {
+  techInterests: '',
+  platforms: '',
+  lookingFor: '',
+  currentProjects: '',
+  favoriteGenres: '',
+  websiteUrl: '',
+};
+
+type SectionForm = typeof emptySectionForm;
+
+function ProfileSectionCards({ data }: { data: any }) {
+  if (!data) return null;
+  const entries: Array<{ label: string; key: keyof SectionForm; isUrl?: boolean }> = [
+    { label: 'Tech', key: 'techInterests' },
+    { label: 'Platforms', key: 'platforms' },
+    { label: 'Looking for', key: 'lookingFor' },
+    { label: 'Current projects', key: 'currentProjects' },
+    { label: 'Fav genres', key: 'favoriteGenres' },
+    { label: 'Website', key: 'websiteUrl', isUrl: true },
+  ];
+  const visible = entries.filter(e => data[e.key] && data[e.key].trim());
+  if (visible.length === 0) return null;
+  return (
+    <div className="profile-sections">
+      {visible.map(({ label, key, isUrl }) => (
+        <div key={key} className="profile-section-card">
+          <span className="profile-section-label">{label}</span>
+          {isUrl ? (
+            <a
+              href={data[key]}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="profile-section-link"
+            >
+              {data[key].replace(/^https?:\/\//, '')}
+            </a>
+          ) : (
+            <span className="profile-section-value">{data[key]}</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ProfilePage({ user: currentUser }: { user: any }) {
   const { username } = useParams<{ username: string }>();
   const navigate = useNavigate();
@@ -32,6 +78,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   const [bio, setBio] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [profileVis, setProfileVis] = useState('public');
+  const [sectionForm, setSectionForm] = useState<SectionForm>(emptySectionForm);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const [showGamePicker, setShowGamePicker] = useState(false);
@@ -53,6 +100,15 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
       setBio(r.user.bio || '');
       setDisplayName(r.user.displayName || '');
       setProfileVis(r.user.profileVisibility || 'public');
+      const pd = r.user.profileData || {};
+      setSectionForm({
+        techInterests: pd.techInterests || '',
+        platforms: pd.platforms || '',
+        lookingFor: pd.lookingFor || '',
+        currentProjects: pd.currentProjects || '',
+        favoriteGenres: pd.favoriteGenres || '',
+        websiteUrl: pd.websiteUrl || '',
+      });
       if (r.user.limited) { setPosts([]); return; }
       const feed = await api.feed();
       setPosts(feed.posts.filter((p: any) => p.username === username));
@@ -93,9 +149,8 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
 
   async function handleSaveProfile() {
     try {
-      // Update profile fields
-      const r = await api.updateProfile({ displayName, bio, profileVisibility: profileVis } as any);
-      setProfile({ ...profile, ...r.user, avatarUrl: profile.avatarUrl });
+      const r = await api.updateProfile({ displayName, bio, profileVisibility: profileVis, profileData: sectionForm });
+      setProfile({ ...profile, ...r.user, avatarUrl: profile.avatarUrl, profileData: sectionForm });
       setEditing(false);
     } catch (e) { console.error(e); }
   }
@@ -109,7 +164,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
     setAvatarUploading(true);
     try {
       const r = await api.uploadAvatar(file);
-      await api.updateProfile({ avatar_url: r.media.url } as any);
+      await api.updateProfile({ avatar_url: r.media.url });
       setProfile({ ...profile, avatarUrl: r.media.url });
     } catch (e: any) { alert(e.message || 'Avatar upload failed'); }
     setAvatarUploading(false);
@@ -208,54 +263,93 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
 
   return (
     <div className="profile-page">
+      {/* ─── Profile Header ─── */}
       <div className="profile-header">
-        {profile.avatarUrl ? (
-          <img src={profile.avatarUrl} alt="" className="avatar-img large" />
-        ) : (
-          <div className="avatar-placeholder large">{profile.displayName?.[0] || '?'}</div>
-        )}
-        <div>
-          <h2>{profile.displayName}</h2>
-          <p className="muted">@{profile.username}</p>
-          {isLimited && !isOwn && (
-            <div className="verify-banner">🔒 This profile is private.</div>
-          )}
-          {(!isLimited || isOwn) && (
-            <>
-              {profile.bio && <p>{profile.bio}</p>}
-              <div className="profile-stats">
-                <span><strong>{profile.postCount}</strong> posts</span>
-                <span><strong>{profile.followerCount}</strong> followers</span>
-                <span><strong>{profile.followingCount}</strong> following</span>
-              </div>
-            </>
-          )}
-          {!isOwn && (
-            <>
-              <button className={`btn ${profile.isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={handleFollow}>
-                {profile.isFollowing ? 'Unfollow' : 'Follow'}
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={handleMessage}>💬 Message</button>
-              <button className="btn btn-ghost btn-sm" onClick={handleMute}>🔇 Mute</button>
-              <button className="btn btn-ghost btn-sm" onClick={handleBlock}>🚫 Block</button>
-            </>
+        <div className="profile-avatar-wrap">
+          {profile.avatarUrl ? (
+            <img src={profile.avatarUrl} alt="" className="avatar-img xlarge" />
+          ) : (
+            <div className="avatar-placeholder xlarge">{profile.displayName?.[0] || '?'}</div>
           )}
           {isOwn && !editing && (
-            <>
-              <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit Profile</button>
-              <label className="btn btn-ghost" style={{ cursor: 'pointer' }}>
-                {avatarUploading ? 'Uploading...' : '📷 Change Avatar'}
-                <input type="file" ref={avatarInputRef} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleAvatarUpload} style={{ display: 'none' }} />
-              </label>
-            </>
+            <label className="avatar-change-btn" title="Change avatar">
+              📷
+              <input
+                type="file"
+                ref={avatarInputRef}
+                accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp"
+                onChange={handleAvatarUpload}
+                style={{ display: 'none' }}
+              />
+            </label>
           )}
+          {avatarUploading && <span className="avatar-uploading">Uploading…</span>}
+        </div>
+
+        <div className="profile-header-info">
+          <div className="profile-name-row">
+            <h2 className="profile-display-name">{profile.displayName}</h2>
+            {profile.isVerified && <span className="verified-badge" title="Verified member">✓</span>}
+          </div>
+          <p className="muted profile-username">@{profile.username}</p>
+
+          {isLimited && !isOwn && (
+            <div className="verify-banner" style={{ marginTop: 8 }}>🔒 This profile is private.</div>
+          )}
+
+          {(!isLimited || isOwn) && profile.bio && (
+            <p className="profile-bio">{profile.bio}</p>
+          )}
+
+          {(!isLimited || isOwn) && (
+            <div className="profile-stats">
+              <span><strong>{profile.postCount}</strong> posts</span>
+              <span><strong>{profile.followerCount}</strong> followers</span>
+              <span><strong>{profile.followingCount}</strong> following</span>
+            </div>
+          )}
+
+          <div className="profile-actions">
+            {!isOwn && currentUser && (
+              <>
+                <button className={`btn ${profile.isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={handleFollow}>
+                  {profile.isFollowing ? 'Following' : 'Follow'}
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={handleMessage}>💬 Message</button>
+                <button className="btn btn-ghost btn-sm" onClick={handleMute}>🔇 Mute</button>
+                <button className="btn btn-ghost btn-sm" onClick={handleBlock}>🚫 Block</button>
+              </>
+            )}
+            {isOwn && !editing && (
+              <button className="btn btn-ghost" onClick={() => setEditing(true)}>Edit Profile</button>
+            )}
+          </div>
         </div>
       </div>
 
+      {/* ─── Structured sections (read view) ─── */}
+      {(!isLimited || isOwn) && !editing && (
+        <ProfileSectionCards data={profile.profileData} />
+      )}
+
+      {/* ─── Edit Form ─── */}
       {editing && (
         <div className="edit-profile">
-          <input className="input" placeholder="Display Name" value={displayName} onChange={e => setDisplayName(e.target.value)} />
-          <textarea className="input" placeholder="Bio" value={bio} onChange={e => setBio(e.target.value)} rows={3} />
+          <h3 style={{ margin: '0 0 4px' }}>Edit Profile</h3>
+
+          <input
+            className="input"
+            placeholder="Display Name"
+            value={displayName}
+            onChange={e => setDisplayName(e.target.value)}
+          />
+          <textarea
+            className="input"
+            placeholder="Bio (up to 500 characters)"
+            value={bio}
+            onChange={e => setBio(e.target.value)}
+            rows={3}
+          />
           <div className="privacy-control">
             <label className="privacy-label">Profile visibility:</label>
             <select className="input" value={profileVis} onChange={e => setProfileVis(e.target.value)} style={{ width: 'auto' }}>
@@ -264,11 +358,80 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
             </select>
             <span className="muted" style={{ fontSize: '0.8rem' }}>Private profiles limit who can view your profile and posts.</span>
           </div>
-          <button className="btn btn-primary" onClick={handleSaveProfile}>Save</button>
-          <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
+
+          <p className="profile-sections-heading">Profile Sections <span className="muted">(optional — shown on your profile)</span></p>
+          <div className="profile-sections-edit-grid">
+            <label className="profile-section-field">
+              <span>Tech interests</span>
+              <input
+                className="input"
+                placeholder="e.g. Python, Linux, TypeScript, self-hosting"
+                value={sectionForm.techInterests}
+                onChange={e => setSectionForm({ ...sectionForm, techInterests: e.target.value })}
+                maxLength={200}
+              />
+            </label>
+            <label className="profile-section-field">
+              <span>Platforms</span>
+              <input
+                className="input"
+                placeholder="e.g. PC, Xbox, PS5, Linux"
+                value={sectionForm.platforms}
+                onChange={e => setSectionForm({ ...sectionForm, platforms: e.target.value })}
+                maxLength={100}
+              />
+            </label>
+            <label className="profile-section-field">
+              <span>Looking for</span>
+              <input
+                className="input"
+                placeholder="e.g. gaming buddies, collaborators, chill conversation"
+                value={sectionForm.lookingFor}
+                onChange={e => setSectionForm({ ...sectionForm, lookingFor: e.target.value })}
+                maxLength={200}
+              />
+            </label>
+            <label className="profile-section-field">
+              <span>Current projects</span>
+              <input
+                className="input"
+                placeholder="e.g. building a home server, working on an indie game"
+                value={sectionForm.currentProjects}
+                onChange={e => setSectionForm({ ...sectionForm, currentProjects: e.target.value })}
+                maxLength={300}
+              />
+            </label>
+            <label className="profile-section-field">
+              <span>Favorite genres</span>
+              <input
+                className="input"
+                placeholder="e.g. RPG, Strategy, Survival, Horror"
+                value={sectionForm.favoriteGenres}
+                onChange={e => setSectionForm({ ...sectionForm, favoriteGenres: e.target.value })}
+                maxLength={150}
+              />
+            </label>
+            <label className="profile-section-field">
+              <span>Website</span>
+              <input
+                className="input"
+                placeholder="https://your-site.com"
+                value={sectionForm.websiteUrl}
+                onChange={e => setSectionForm({ ...sectionForm, websiteUrl: e.target.value })}
+                maxLength={200}
+                type="url"
+              />
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <button className="btn btn-primary" onClick={handleSaveProfile}>Save</button>
+            <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
+          </div>
         </div>
       )}
 
+      {/* ─── Games I Play ─── */}
       {!isLimited && (
         <div className="profile-games">
           <div className="profile-games-header">
@@ -385,8 +548,13 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
           )}
         </div>
       )}
+
+      {/* ─── Posts ─── */}
       {!isLimited && <h3>Posts</h3>}
-      {!isLimited && (posts.length === 0 ? <p className="muted">No posts yet.</p> : posts.map(p => <PostCard key={p.id} post={p} currentUser={currentUser} />))}
+      {!isLimited && (posts.length === 0
+        ? <p className="muted">No posts yet.</p>
+        : posts.map(p => <PostCard key={p.id} post={p} currentUser={currentUser} />)
+      )}
     </div>
   );
 }
