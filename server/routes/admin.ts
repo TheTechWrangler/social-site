@@ -30,10 +30,48 @@ function logBlockedAdminGuard(eventType: 'admin_self_ban_blocked' | 'admin_last_
   });
 }
 
+function parsePositiveInt(value: unknown, fallback: number): number {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const parsed = Number.parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parsePageLimit(query: any, defaultLimit: number, maxLimit: number): { page: number; limit: number; offset: number } {
+  const page = parsePositiveInt(query.page, 1);
+  const limit = Math.min(parsePositiveInt(query.limit, defaultLimit), maxLimit);
+  return { page, limit, offset: (page - 1) * limit };
+}
+
 // GET /api/admin/users
-router.get('/users', requireAuth, requireAdmin, (_req, res) => {
-  const rows = getDb().prepare('SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, created_at FROM users ORDER BY id').all();
-  res.json({ users: rows });
+router.get('/users', requireAuth, requireAdmin, (req, res) => {
+  const db = getDb();
+  const { page, limit, offset } = parsePageLimit(req.query, 50, 200);
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 120) : '';
+  const role = typeof req.query.role === 'string' && ['admin', 'mod', 'user'].includes(req.query.role) ? req.query.role : '';
+  const where: string[] = [];
+  const params: any[] = [];
+
+  if (q) {
+    where.push('(username LIKE ? OR display_name LIKE ? OR email LIKE ?)');
+    const like = `%${q}%`;
+    params.push(like, like, like);
+  }
+  if (role) {
+    where.push('role = ?');
+    params.push(role);
+  }
+
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  const total = (db.prepare(`SELECT COUNT(*) as c FROM users ${whereSql}`).get(...params) as any).c as number;
+  const users = db.prepare(`
+    SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, created_at
+    FROM users
+    ${whereSql}
+    ORDER BY id
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+
+  res.json({ users, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)), activeAdminCount: activeAdminCount() });
 });
 
 // POST /api/admin/users/:id/ban
@@ -310,14 +348,14 @@ router.delete('/game-servers/:id', requireAuth, requireAdmin, (req, res) => {
 
 // GET /api/admin/auth-events
 router.get('/auth-events', requireAuth, requireAdmin, (req, res) => {
-  const { eventType, success, userId, limit = '100' } = req.query;
+  const { eventType, success, userId } = req.query;
+  const { page, limit, offset } = parsePageLimit(req.query, 100, 300);
   const params: any[] = [];
   let where = 'WHERE 1=1';
   if (eventType) { where += ' AND ae.event_type = ?'; params.push(eventType); }
   if (success !== undefined && success !== '') { where += ' AND ae.success = ?'; params.push(success === '1' ? 1 : 0); }
   if (userId) { where += ' AND (ae.user_id = ? OR ae.target_user_id = ?)'; params.push(userId, userId); }
-  const cap = Math.min(Number(limit) || 100, 300);
-  params.push(cap);
+  const total = (getDb().prepare(`SELECT COUNT(*) as c FROM auth_events ae ${where}`).get(...params) as any).c as number;
   const events = getDb().prepare(`
     SELECT ae.*, u.username, u.email,
       aa.username as admin_actor_username,
@@ -327,9 +365,9 @@ router.get('/auth-events', requireAuth, requireAdmin, (req, res) => {
     LEFT JOIN users aa ON ae.admin_actor_id = aa.id
     LEFT JOIN users tu ON ae.target_user_id = tu.id
     ${where}
-    ORDER BY ae.created_at DESC LIMIT ?
-  `).all(...params);
-  res.json({ events });
+    ORDER BY ae.created_at DESC LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+  res.json({ events, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) });
 });
 
 // GET /api/admin/users/:id/activity — user detail + recent auth events + post counts

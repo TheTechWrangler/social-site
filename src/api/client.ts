@@ -98,7 +98,10 @@ export const api = {
   dmUnreadCount: () => request<{ count: number }>('/messages/unread-count'),
 
   // Admin
-  getUsers: () => request<{ users: any[] }>('/admin/users'),
+  getUsers: (params?: { q?: string; role?: string; page?: number; limit?: number }) => {
+    const qs = params ? new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([,v]) => v !== undefined && v !== '').map(([k,v]) => [k, String(v)]))).toString() : '';
+    return request<{ users: any[]; page: number; limit: number; total: number; totalPages: number; activeAdminCount?: number }>(`/admin/users${qs ? `?${qs}` : ''}`);
+  },
   banUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}/ban`, { method: 'POST' }),
   unbanUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}/unban`, { method: 'POST' }),
   deleteUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}`, { method: 'DELETE' }),
@@ -108,9 +111,9 @@ export const api = {
   getReports: () => request<{ reports: any[] }>('/admin/reports'),
   reportPost: (postId: number, reason: string, details: string) =>
     request<{ ok: boolean }>('/admin/reports', { method: 'POST', body: JSON.stringify({ postId, reason, details }) }),
-  getAuthEvents: (params?: { eventType?: string; success?: string; userId?: number }) => {
+  getAuthEvents: (params?: { eventType?: string; success?: string; userId?: number; page?: number; limit?: number }) => {
     const qs = params ? new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([,v]) => v !== undefined && v !== '').map(([k,v]) => [k, String(v)]))).toString() : '';
-    return request<{ events: any[] }>(`/admin/auth-events${qs ? `?${qs}` : ''}`);
+    return request<{ events: any[]; page: number; limit: number; total: number; totalPages: number }>(`/admin/auth-events${qs ? `?${qs}` : ''}`);
   },
   getUserActivity: (id: number) =>
     request<{ user: any; events: any[]; postCount: number; commentCount: number; providers: any[] }>(`/admin/users/${id}/activity`),

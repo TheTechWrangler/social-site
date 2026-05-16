@@ -117,8 +117,15 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [rssCatFilter, setRssCatFilter] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [userRoleFilter, setUserRoleFilter] = useState('');
+  const [userPage, setUserPage] = useState(1);
+  const [userLimit, setUserLimit] = useState(50);
+  const [userTotal, setUserTotal] = useState(0);
+  const [userTotalPages, setUserTotalPages] = useState(1);
+  const [activeAdminTotal, setActiveAdminTotal] = useState(0);
+  const [usersLoading, setUsersLoading] = useState(false);
   const [userRoleDraft, setUserRoleDraft] = useState<Record<number, string>>({});
   const [roleMsg, setRoleMsg] = useState('');
+  const [tabError, setTabError] = useState<Record<string, string>>({});
   const [adminStats, setAdminStats] = useState<any>({});
   const [reportFilter, setReportFilter] = useState<ReportFilter>('open');
   const [reportActionError, setReportActionError] = useState('');
@@ -131,6 +138,10 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [authEventType, setAuthEventType] = useState('');
   const [authEventSuccess, setAuthEventSuccess] = useState('');
   const [authEventsLoading, setAuthEventsLoading] = useState(false);
+  const [authEventPage, setAuthEventPage] = useState(1);
+  const [authEventLimit, setAuthEventLimit] = useState(100);
+  const [authEventTotal, setAuthEventTotal] = useState(0);
+  const [authEventTotalPages, setAuthEventTotalPages] = useState(1);
 
   // System health
   const [systemHealth, setSystemHealth] = useState<any>(null);
@@ -154,6 +165,23 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [resetLinks, setResetLinks] = useState<Record<number, { link: string; expiresAt: string }>>({});
   const [generatingReset, setGeneratingReset] = useState<number | null>(null);
 
+  function errorMessage(e: any, fallback: string): string {
+    return e?.message || fallback;
+  }
+
+  function clearTabError(key: string) {
+    setTabError(prev => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function setLoadError(key: string, message: string) {
+    setTabError(prev => ({ ...prev, [key]: message }));
+  }
+
   useEffect(() => {
     if (tab === 'rss') loadRss();
     else if (tab === 'servers') loadServers();
@@ -163,16 +191,37 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     else if (tab === 'backups') loadBackupStatus();
     else loadData();
     loadStats();
-  }, [tab, reportFilter, authEventType, authEventSuccess]);
+  }, [tab, reportFilter, userPage, userLimit, userSearch, userRoleFilter, authEventPage, authEventLimit, authEventType, authEventSuccess]);
 
   async function loadStats() { try { const r = await api.get<any>('/admin/stats'); setAdminStats(r); } catch (e) {} }
 
+  async function loadUsers() {
+    setUsersLoading(true);
+    try {
+      const r = await api.getUsers({ q: userSearch, role: userRoleFilter, page: userPage, limit: userLimit });
+      setUsers(r.users);
+      setUserTotal(r.total);
+      setUserTotalPages(r.totalPages || 1);
+      setActiveAdminTotal(r.activeAdminCount ?? 0);
+      clearTabError('users');
+    } catch (e: any) {
+      console.error(e);
+      setLoadError('users', errorMessage(e, 'Could not load users.'));
+    } finally {
+      setUsersLoading(false);
+    }
+  }
+
   async function loadData() {
     try {
-      if (tab === 'users') { const r = await api.getUsers(); setUsers(r.users); }
+      if (tab === 'users') { await loadUsers(); return; }
       if (tab === 'posts') { const r = await api.getAdminPosts(); setPosts(r.posts); }
       if (tab === 'reports') { await loadReports(reportFilter); }
-    } catch (e) { console.error(e); }
+      clearTabError(tab);
+    } catch (e: any) {
+      console.error(e);
+      setLoadError(tab, errorMessage(e, `Could not load ${tab}.`));
+    }
   }
 
   async function loadReports(filter: ReportFilter = reportFilter) {
@@ -185,7 +234,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     try {
       const r = await api.get<any>('/admin/rss/sources');
       setRssSources(r.sources);
-    } catch (e) { console.error(e); }
+      clearTabError('rss');
+    } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not load RSS sources.')); }
   }
 
   async function addRssSource(e: React.FormEvent) {
@@ -195,7 +245,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       await api.post('/admin/rss/sources', { name: rssName, url: rssUrl, homepageUrl: rssHomepage, category: rssCategory });
       setRssName(''); setRssUrl(''); setRssHomepage(''); setRssCategory('general');
       loadRss();
-    } catch (err) { console.error(err); }
+    } catch (err: any) { console.error(err); setLoadError('rss', errorMessage(err, 'Could not add RSS source.')); }
   }
 
   async function toggleSource(id: number, active: boolean) {
@@ -206,7 +256,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
         body: JSON.stringify({ is_active: active ? 0 : 1 }),
       });
       if (r.ok) loadRss();
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not update RSS source.')); }
   }
 
   async function fetchSource(id: number) {
@@ -214,7 +264,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       const r = await api.post<any>(`/admin/rss/sources/${id}/fetch`);
       setRssFetchResult(r);
       loadRss();
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not fetch RSS source.')); }
   }
 
   async function fetchAll() {
@@ -224,7 +274,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       const r = await api.post<any>('/admin/rss/fetch-all');
       setRssFetchResult({ batch: r });
       loadRss();
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not repopulate World Feed.')); }
     setFetchingAll(false);
   }
 
@@ -232,7 +282,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     try {
       const r = await api.get<any>('/admin/game-servers');
       setServerList(r.servers);
-    } catch (e) { console.error(e); }
+      clearTabError('servers');
+    } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not load game servers.')); }
   }
 
   async function loadAuthEvents() {
@@ -241,14 +292,19 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       const params: any = {};
       if (authEventType) params.eventType = authEventType;
       if (authEventSuccess !== '') params.success = authEventSuccess;
+      params.page = authEventPage;
+      params.limit = authEventLimit;
       const r = await api.getAuthEvents(params);
       setAuthEvents(r.events);
-    } catch (e) { console.error(e); }
+      setAuthEventTotal(r.total);
+      setAuthEventTotalPages(r.totalPages || 1);
+      clearTabError('auth-logs');
+    } catch (e: any) { console.error(e); setLoadError('auth-logs', errorMessage(e, 'Could not load auth logs.')); }
     setAuthEventsLoading(false);
   }
 
   async function loadHealth() {
-    try { const r = await api.getSystemHealth(); setSystemHealth(r); } catch (e) { console.error(e); }
+    try { const r = await api.getSystemHealth(); setSystemHealth(r); clearTabError('health'); } catch (e: any) { console.error(e); setLoadError('health', errorMessage(e, 'Could not load system health.')); }
   }
 
   async function loadUserActivity(userId: number) {
@@ -257,7 +313,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       const r = await api.getUserActivity(userId);
       setUserActivity(prev => ({ ...prev, [userId]: r }));
       setExpandedUser(userId);
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setLoadError('users', errorMessage(e, 'Could not load user details.')); }
   }
 
   async function generateResetLink(userId: number) {
@@ -270,7 +326,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   }
 
   async function loadBackupStatus() {
-    try { const r = await api.getBackupStatus(); setBackupStatus(r); } catch (e) { console.error(e); }
+    try { const r = await api.getBackupStatus(); setBackupStatus(r); clearTabError('backups'); } catch (e: any) { console.error(e); setLoadError('backups', errorMessage(e, 'Could not load backup status.')); }
   }
 
   async function runBackupNow() {
@@ -317,18 +373,22 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       await fetch('/api/admin/game-servers', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(srvForm) });
       setSrvForm({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
       loadServers();
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not add game server.')); }
   }
 
   async function toggleServerActive(id: number, active: boolean) {
-    await fetch(`/api/admin/game-servers/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ is_active: active ? 0 : 1 }) });
-    loadServers();
+    try {
+      await fetch(`/api/admin/game-servers/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify({ is_active: active ? 0 : 1 }) });
+      loadServers();
+    } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not update game server.')); }
   }
 
   async function deleteServer(id: number) {
     if (!confirm('Delete this server?')) return;
-    await fetch(`/api/admin/game-servers/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
-    loadServers();
+    try {
+      await fetch(`/api/admin/game-servers/${id}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      loadServers();
+    } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not delete game server.')); }
   }
 
   async function updateReportStatus(id: number, status: 'dismissed' | 'resolved', adminNote: string) {
@@ -373,7 +433,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       if (!r.ok) { setRoleMsg(data.error || 'Failed'); return; }
       setUsers(prev => prev.map(u => u.id === id ? { ...u, role: data.role } : u));
       setRoleMsg(`Role updated to ${role}`);
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not change role.')); }
   }
 
   async function toggleBan(id: number, banned: boolean) {
@@ -406,14 +466,14 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     try {
       await fetch(`/api/admin/users/${id}/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
       setUsers(prev => prev.map(u => u.id === id ? { ...u, is_verified: 1 } : u));
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not verify user.')); }
   }
 
   async function unverifyUser(id: number) {
     try {
       await fetch(`/api/admin/users/${id}/unverify`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
       setUsers(prev => prev.map(u => u.id === id ? { ...u, is_verified: 0 } : u));
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not unverify user.')); }
   }
 
   async function deleteUser(u: any) {
@@ -440,14 +500,24 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       setAnalyticsSummary(summary);
       setAnalyticsPeakHours(peak);
       setAnalyticsFeatureUsage(feature);
-    } catch (e) { console.error(e); }
+      clearTabError('analytics');
+    } catch (e: any) { console.error(e); setLoadError('analytics', errorMessage(e, 'Could not load analytics.')); }
     finally { setAnalyticsLoading(false); }
   }
 
+  function retryCurrentTab() {
+    if (tab === 'rss') loadRss();
+    else if (tab === 'servers') loadServers();
+    else if (tab === 'auth-logs') loadAuthEvents();
+    else if (tab === 'health') loadHealth();
+    else if (tab === 'analytics') loadAnalytics();
+    else if (tab === 'backups') loadBackupStatus();
+    else loadData();
+  }
+
   const currentUserId = Number(currentUser?.id ?? 0);
-  const activeAdminCount = users.filter(u => u.role === 'admin' && !u.banned).length;
   const isSelfAdmin = (u: any) => Number(u.id) === currentUserId && u.role === 'admin';
-  const isLastActiveAdmin = (u: any) => u.role === 'admin' && !u.banned && activeAdminCount <= 1;
+  const isLastActiveAdmin = (u: any) => u.role === 'admin' && !u.banned && activeAdminTotal <= 1;
   const adminRoleChangeDisabled = (u: any) => isSelfAdmin(u) || isLastActiveAdmin(u);
   const adminRoleChangeTitle = (u: any) => {
     if (isSelfAdmin(u)) return 'You cannot demote your own admin account.';
@@ -461,6 +531,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     if (isLastActiveAdmin(u)) return 'Cannot ban the last active admin.';
     return undefined;
   };
+  const currentTabError = tabError[tab];
 
   return (
     <div className="admin-page">
@@ -485,32 +556,42 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
         <button className={`btn ${tab === 'analytics' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('analytics')}>Analytics</button>
         <button className={`btn ${tab === 'backups' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('backups')}>Backups</button>
       </div>
+      {currentTabError && (
+        <div className="error-msg" style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'space-between', margin: '10px 0 14px' }}>
+          <span>{currentTabError}</span>
+          <button className="btn btn-sm" onClick={retryCurrentTab}>Retry</button>
+        </div>
+      )}
 
       {/* Users tab */}
       {tab === 'users' && (
         <div>
           <div className="admin-user-filters" style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
             <input className="input" placeholder="Search users..." value={userSearch}
-              onChange={e => setUserSearch(e.target.value)} style={{ maxWidth: 220 }} />
-            <select className="input" value={userRoleFilter} onChange={e => setUserRoleFilter(e.target.value)} style={{ width: 'auto' }}>
+              onChange={e => { setUserSearch(e.target.value); setUserPage(1); }} style={{ maxWidth: 220 }} />
+            <select className="input" value={userRoleFilter} onChange={e => { setUserRoleFilter(e.target.value); setUserPage(1); }} style={{ width: 'auto' }}>
               <option value="">All roles</option>
               <option value="admin">Admin</option>
               <option value="mod">Mod</option>
               <option value="user">User</option>
             </select>
+            <select className="input" value={userLimit} onChange={e => { setUserLimit(Number(e.target.value)); setUserPage(1); }} style={{ width: 'auto' }}>
+              <option value={50}>50 / page</option>
+              <option value={100}>100 / page</option>
+              <option value={200}>200 / page</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+            <span className="muted" style={{ fontSize: '0.82rem' }}>
+              {usersLoading ? 'Loading users...' : `${userTotal} user${userTotal !== 1 ? 's' : ''} found`}
+            </span>
+            <button className="btn btn-sm" disabled={userPage <= 1 || usersLoading} onClick={() => setUserPage(p => Math.max(1, p - 1))}>Previous</button>
+            <span className="muted" style={{ fontSize: '0.82rem' }}>Page {userPage} of {userTotalPages}</span>
+            <button className="btn btn-sm" disabled={userPage >= userTotalPages || usersLoading} onClick={() => setUserPage(p => p + 1)}>Next</button>
           </div>
           {roleMsg && <p className="muted" style={{ marginBottom: 8, color: 'var(--green)' }}>{roleMsg}</p>}
           <div className="admin-users-list">
-            {users
-              .filter(u => {
-                if (userSearch) {
-                  const q = userSearch.toLowerCase();
-                  if (!u.username?.toLowerCase().includes(q) && !u.display_name?.toLowerCase().includes(q) && !u.email?.toLowerCase().includes(q)) return false;
-                }
-                if (userRoleFilter && u.role !== userRoleFilter) return false;
-                return true;
-              })
-              .map(u => (
+            {users.length === 0 && !usersLoading ? <p className="muted">No users match the current filters.</p> : users.map(u => (
                 <Fragment key={u.id}>
                 <div className="admin-user-card">
                   <div className="admin-user-info">
@@ -777,19 +858,27 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       {tab === 'auth-logs' && (
         <div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-            <select className="input" value={authEventType} onChange={e => setAuthEventType(e.target.value)} style={{ width: 'auto' }}>
+            <select className="input" value={authEventType} onChange={e => { setAuthEventType(e.target.value); setAuthEventPage(1); }} style={{ width: 'auto' }}>
               <option value="">All event types</option>
               {Object.entries(EVENT_TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
-            <select className="input" value={authEventSuccess} onChange={e => setAuthEventSuccess(e.target.value)} style={{ width: 'auto' }}>
+            <select className="input" value={authEventSuccess} onChange={e => { setAuthEventSuccess(e.target.value); setAuthEventPage(1); }} style={{ width: 'auto' }}>
               <option value="">All outcomes</option>
               <option value="1">Success only</option>
               <option value="0">Failures only</option>
             </select>
+            <select className="input" value={authEventLimit} onChange={e => { setAuthEventLimit(Number(e.target.value)); setAuthEventPage(1); }} style={{ width: 'auto' }}>
+              <option value={100}>100 / page</option>
+              <option value={200}>200 / page</option>
+              <option value={300}>300 / page</option>
+            </select>
             <button className="btn btn-sm btn-ghost" onClick={loadAuthEvents} disabled={authEventsLoading}>
               {authEventsLoading ? 'Loading…' : '↻ Refresh'}
             </button>
-            <span className="muted" style={{ fontSize: '0.82rem' }}>{authEvents.length} events</span>
+            <span className="muted" style={{ fontSize: '0.82rem' }}>{authEvents.length} of {authEventTotal} events</span>
+            <button className="btn btn-sm" disabled={authEventPage <= 1 || authEventsLoading} onClick={() => setAuthEventPage(p => Math.max(1, p - 1))}>Previous</button>
+            <span className="muted" style={{ fontSize: '0.82rem' }}>Page {authEventPage} of {authEventTotalPages}</span>
+            <button className="btn btn-sm" disabled={authEventPage >= authEventTotalPages || authEventsLoading} onClick={() => setAuthEventPage(p => p + 1)}>Next</button>
           </div>
           {authEvents.length === 0 && !authEventsLoading && <p className="muted">No events match the current filter.</p>}
           <div className="admin-table-wrap">
