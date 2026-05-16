@@ -7,7 +7,7 @@ import session from 'express-session';
 import passport from 'passport';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initializeDatabase, runRetentionCleanup } from './database.js';
+import { initializeDatabase, runRetentionCleanup, getDb } from './database.js';
 import { configurePassport } from './authProviders.js';
 import authRoutes from './routes/auth.js';
 import oauthRoutes from './routes/oauth.js';
@@ -33,6 +33,36 @@ import { isEmailConfigured } from './email.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3003;
 const IS_PROD = process.env.NODE_ENV === 'production';
+
+// ─── Global process error handlers ───
+// Register before any async work so every unhandled failure is captured.
+//
+// uncaughtException: a synchronous throw escaped every try/catch. Process state is
+// indeterminate — log the full error and exit so systemd restarts cleanly.
+//
+// unhandledRejection: an async/await or Promise chain resolved without a rejection
+// handler. Node 18+ terminates on these by default. We log clearly without exiting
+// because the global Express error handler below may still catch the same error via
+// next(err); exiting here would race with that handler and abort in-flight requests.
+process.on('uncaughtException', (err: Error) => {
+  console.error('[fatal] uncaughtException — exiting for systemd restart:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason: unknown) => {
+  console.error('[fatal] unhandledRejection — unhandled Promise rejection:', reason);
+});
+
+// ─── Environment startup log ───
+console.log(`[env] NODE_ENV=${process.env.NODE_ENV ?? '(not set)'}`);
+// Safety check: if WEB_BASE_URL points at the live domain but NODE_ENV is not
+// 'production', the auth cookie will lack the Secure flag — sessions are
+// exploitable over unencrypted connections. Loud warning so it is not missed.
+if (!IS_PROD && (process.env.WEB_BASE_URL ?? '').includes('refugecloud.com')) {
+  console.warn(
+    '[env] WARNING: WEB_BASE_URL contains "refugecloud.com" but NODE_ENV is not "production". ' +
+    'Auth cookies will NOT have the Secure flag. Set NODE_ENV=production in the systemd unit.',
+  );
+}
 
 // ─── Production secret guards ───
 // Refuse startup in production if required secrets are missing.
@@ -189,6 +219,14 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     message: { error: 'Too many user search requests. Please slow down.' },
     standardHeaders: true, legacyHeaders: false,
   });
+  // Tight dedicated limiter for resend-verification — prevents email-quota abuse.
+  // Uses the same window as the general auth limiter but a much lower request cap.
+  const resendVerifLimiter = rateLimit({
+    windowMs: (parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MINUTES || '15', 10)) * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_RESEND_VERIFICATION_MAX || '3', 10),
+    message: { error: 'Too many verification emails requested. Please wait before trying again.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
 
   // Feed read endpoints
   app.use('/api/feed', feedReadLimiter);
@@ -205,7 +243,8 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
   app.use('/api/auth/reset-password', authLimiter);
   app.use('/api/auth/forgot-password', forgotPasswordLimiter);
   app.use('/api/auth/oauth-token', authLimiter);
-  app.use('/api/auth/resend-verification', authLimiter);
+  app.use('/api/auth/resend-verification', resendVerifLimiter);  // tighter: 3 / window
+  app.use('/api/auth/resend-verification', authLimiter);          // general fallback: 10 / window
   app.use('/api/auth/verify-email', authLimiter);
   // Upload endpoints
   app.use('/api/uploads/image', uploadLimiter);
@@ -298,7 +337,14 @@ app.use('/api/messages', messagesRoutes);             // Direct messages
 app.use('/api/admin/rss', rssAdminRouter);
 app.use('/api/usage', usageRoutes);
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'social-site' }));
+app.get('/api/health', (_req, res) => {
+  try {
+    getDb().prepare('SELECT 1').get();
+    res.json({ ok: true, app: 'social-site' });
+  } catch {
+    res.status(503).json({ ok: false, error: 'db_unavailable' });
+  }
+});
 
 // ─── Serve React SPA (production only) ───
 // In dev, Vite handles the frontend separately via `npm run dev`.

@@ -56,6 +56,27 @@ run_check() {
   fi
 }
 
+post_request() {
+  local name="$1"
+  local path="$2"
+  local body="$3"
+  local body_file="${TMP_DIR}/${name}.body"
+  local status_file="${TMP_DIR}/${name}.status"
+  curl -sS -X POST -H 'Content-Type: application/json' -d "${body}" \
+    -o "${body_file}" -w "%{http_code}" "${BASE_URL}${path}" > "${status_file}" || return 1
+}
+
+run_post_check() {
+  local name="$1"
+  local path="$2"
+  local body="$3"
+  if post_request "${name}" "${path}" "${body}"; then
+    pass "${name} request completed"
+  else
+    fail "${name} request failed"
+  fi
+}
+
 printf '[smoke] Target: %s\n' "${BASE_URL}"
 
 run_check health /api/health
@@ -89,6 +110,23 @@ expect_body_contains oauth_providers '"steam":'
 run_check oauth_token_no_session /api/auth/oauth-token
 expect_status oauth_token_no_session 401
 expect_body_contains oauth_token_no_session '"error":"No OAuth session found. Please try logging in again."'
+
+# ─── Email route existence checks ───
+# These confirm the routes are wired up and returning expected shapes — no real
+# emails are sent, no credentials are used.
+
+# GET /api/auth/verify-email with no token must return 400 (route validates input),
+# not 404 (route missing) or 500 (unhandled error).
+run_check verify_email_no_token /api/auth/verify-email
+expect_status verify_email_no_token 400
+expect_body_contains verify_email_no_token '"error":'
+
+# POST /api/auth/forgot-password with an empty body must return 200 with the
+# generic anti-enumeration message — not 404 (route missing) or 500.
+# Empty/short input bypasses real processing by design (anti-enumeration).
+run_post_check forgot_password_empty /api/auth/forgot-password '{}'
+expect_status forgot_password_empty 200
+expect_body_contains forgot_password_empty '"ok":true'
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   printf '[smoke] FAILED with %s issue(s).\n' "${FAILURES}" >&2
