@@ -136,6 +136,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/register', authLimiter);
   app.use('/api/auth/reset-password', authLimiter);
+  app.use('/api/auth/oauth-token', authLimiter);
   // Upload endpoints
   app.use('/api/uploads/image', uploadLimiter);
   app.use('/api/uploads/video', uploadLimiter);

@@ -111,6 +111,30 @@ router.post('/reset-password', (req, res) => {
   res.json({ ok: true, message: 'Password updated. You can now log in with your new password.' });
 });
 
+// GET /api/auth/oauth-token — one-time JWT exchange after OAuth login (no prior auth required)
+// The frontend calls this immediately after being redirected to /oauth/callback.
+// The server stored the JWT in the session (server-side) during the OAuth callback so the
+// token was never placed in a URL query string.  This endpoint reads it once and clears it.
+router.get('/oauth-token', (req, res) => {
+  const session = (req as any).session;
+  const token: string | undefined = session?.oauthHandoffToken;
+  const username: string | undefined = session?.oauthHandoffUsername;
+
+  if (!token || !username) {
+    // No handoff data — either already consumed, expired, or direct access without OAuth.
+    res.status(401).json({ error: 'No OAuth session found. Please try logging in again.' });
+    return;
+  }
+
+  // Consume immediately — one-time use. Delete before responding to prevent replay.
+  delete session.oauthHandoffToken;
+  delete session.oauthHandoffUsername;
+  // Persist the deletion asynchronously; we don't need to wait before responding.
+  session.save(() => {});
+
+  res.json({ token, username });
+});
+
 // GET /api/auth/me
 router.get('/me', requireAuth, (req: AuthRequest, res) => {
   const user = getUserById(req.user!.id);

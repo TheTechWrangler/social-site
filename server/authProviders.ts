@@ -145,6 +145,20 @@ export function handleOAuthCallback(req: any, res: any): void {
     role: 'user', is_verified: 0, profile_visibility: "public", feed_exposure: "extended", world_home_injection: "world_home_few", game_discovery_enabled: 0, dm_privacy: "friends_of_friends",
     banned: 0,
   });
-  // Redirect to frontend with token
-  res.redirect(`${WEB_URL}/oauth/callback?token=${token}&username=${user.username}`);
+
+  // Store the JWT in the server-side session for one-time retrieval by the frontend.
+  // This keeps the token out of the redirect URL, which would expose it via browser
+  // history, proxy/server logs, and Referer headers.
+  // The frontend calls GET /api/auth/oauth-token (with credentials) to claim it.
+  req.session.oauthHandoffToken = token;
+  req.session.oauthHandoffUsername = user.username;
+  req.session.save((err: any) => {
+    if (err) {
+      console.error('[auth] Failed to save OAuth handoff session:', err.message);
+      res.redirect(`${WEB_URL}/login?error=oauth_failed`);
+      return;
+    }
+    // Redirect to the frontend callback page — NO token in the URL.
+    res.redirect(`${WEB_URL}/oauth/callback`);
+  });
 }
