@@ -1,6 +1,24 @@
 import type { Request, Response, NextFunction } from 'express';
 import { verifyToken, getUserById } from './auth.js';
 
+// Mirrors clearAuthCookie in routes/auth.ts — kept here to avoid a circular import.
+const IS_PROD = process.env.NODE_ENV === 'production';
+function clearStaleCookie(res: Response): void {
+  res.clearCookie(AUTH_COOKIE_NAME, { httpOnly: true, secure: IS_PROD, sameSite: 'lax', path: '/' });
+}
+
+/**
+ * Returns true when a token's issued-at time predates the user's last password
+ * change, meaning the token should no longer be trusted.
+ * iat is in Unix seconds; password_changed_at is a UTC datetime string from SQLite.
+ */
+function isStaleToken(iat: number | undefined, passwordChangedAt: string | null): boolean {
+  if (!iat) return true; // no iat — reject defensively
+  if (!passwordChangedAt) return false; // no password change recorded — token is valid
+  const changedAtMs = new Date(passwordChangedAt + 'Z').getTime();
+  return iat * 1000 < changedAtMs;
+}
+
 declare global {
   namespace Express {
     interface User {
@@ -51,6 +69,14 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     res.status(403).json({ error: 'Account banned or not found.' });
     return;
   }
+  // Revoke tokens issued before the user's last password change.
+  // Uses the JWT iat (issued-at) claim vs password_changed_at in the DB.
+  // Existing users with null password_changed_at are unaffected.
+  if (isStaleToken(payload.iat, user.password_changed_at)) {
+    clearStaleCookie(res);
+    res.status(401).json({ error: 'Invalid or expired token.' });
+    return;
+  }
   (req as any).user = {
     id: user.id,
     username: user.username,
@@ -61,13 +87,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   next();
 }
 
-export function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
+export function optionalAuth(req: Request, res: Response, next: NextFunction): void {
   const token = getAuthCookieValue(req);
   if (token) {
     const payload = verifyToken(token);
     if (payload) {
       const user = getUserById(payload.id);
-      if (user && !user.banned) {
+      if (user && !user.banned && !isStaleToken(payload.iat, user.password_changed_at)) {
         (req as any).user = {
           id: user.id,
           username: user.username,
@@ -75,6 +101,9 @@ export function optionalAuth(req: Request, _res: Response, next: NextFunction): 
           is_verified: user.is_verified,
           game_discovery_enabled: user.game_discovery_enabled,
         };
+      } else if (user && isStaleToken(payload.iat, user.password_changed_at)) {
+        // Silently clear the stale cookie so the browser stops sending it.
+        clearStaleCookie(res);
       }
     }
   }

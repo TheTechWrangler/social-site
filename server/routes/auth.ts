@@ -144,7 +144,7 @@ router.post('/reset-password', (req, res) => {
       const tokenUpdate = db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL").run(row.id);
       if (tokenUpdate.changes !== 1) return { ok: false };
 
-      const passwordUpdate = db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newPasswordHash, user.id);
+      const passwordUpdate = db.prepare("UPDATE users SET password_hash = ?, password_changed_at = datetime('now') WHERE id = ?").run(newPasswordHash, user.id);
       if (passwordUpdate.changes !== 1) throw new Error('PASSWORD_UPDATE_FAILED');
 
       return { ok: true, user: { id: user.id, username: user.username } };

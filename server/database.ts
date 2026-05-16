@@ -246,6 +246,7 @@ export function initializeDatabase(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_lfg_game ON game_lfg_posts(game_id);
     CREATE INDEX IF NOT EXISTS idx_lfg_active ON game_lfg_posts(is_active, created_at);
+    CREATE INDEX IF NOT EXISTS idx_lfg_active_expires ON game_lfg_posts(is_active, expires_at);
     CREATE INDEX IF NOT EXISTS idx_ugp_game ON user_game_preferences(game_id);
 
     CREATE TABLE IF NOT EXISTS game_servers (
@@ -324,6 +325,12 @@ export function initializeDatabase(): void {
   }
   if (!userColumns.some(c => c.name === 'last_login_at')) {
     db.exec('ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL');
+  }
+  // password_changed_at: NULL for existing users (their current tokens remain valid).
+  // Set to datetime('now') whenever a password reset or password change succeeds.
+  // requireAuth compares token iat against this to revoke pre-change cookies.
+  if (!userColumns.some(c => c.name === 'password_changed_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN password_changed_at TEXT DEFAULT NULL');
   }
 
   // ─── auth_events table (append-only login/admin event log) ───

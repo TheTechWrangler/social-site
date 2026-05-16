@@ -19,6 +19,8 @@ export interface AuthUser {
   world_home_injection: string;
   game_discovery_enabled: number;
   dm_privacy: string;
+  /** UTC datetime string; NULL means no password change recorded — existing tokens stay valid. */
+  password_changed_at: string | null;
 }
 
 export function hashPassword(password: string): string {
@@ -44,9 +46,9 @@ export function generateToken(user: AuthUser): string {
   );
 }
 
-export function verifyToken(token: string): { id: number; username: string; role: string; is_verified?: number; isVerified?: boolean; banned?: number } | null {
+export function verifyToken(token: string): { id: number; username: string; role: string; is_verified?: number; isVerified?: boolean; banned?: number; iat?: number } | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as { id: number; username: string; role: string; is_verified?: number; isVerified?: boolean; banned?: number };
+    return jwt.verify(token, JWT_SECRET) as { id: number; username: string; role: string; is_verified?: number; isVerified?: boolean; banned?: number; iat?: number };
   } catch {
     return null;
   }
@@ -54,7 +56,7 @@ export function verifyToken(token: string): { id: number; username: string; role
 
 export function getUserById(id: number): AuthUser | null {
   const row = getDb().prepare(
-    'SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, world_home_injection, game_discovery_enabled, dm_privacy FROM users WHERE id = ?'
+    'SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, world_home_injection, game_discovery_enabled, dm_privacy, password_changed_at FROM users WHERE id = ?'
   ).get(id) as AuthUser | undefined;
   return row ?? null;
 }
