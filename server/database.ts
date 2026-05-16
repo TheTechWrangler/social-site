@@ -408,4 +408,16 @@ export function initializeDatabase(): void {
       CREATE INDEX idx_prt_hash ON password_reset_tokens(token_hash);
     `);
   }
+
+  // ─── sessions table (used by SQLiteSessionStore / express-session) ───
+  // IF NOT EXISTS is safe for both fresh installs and existing databases.
+  // Stored in the same social.db for a single backup target and unified WAL journal.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      sid  TEXT PRIMARY KEY,
+      sess TEXT NOT NULL,
+      expire TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sessions_expire ON sessions(expire);
+  `);
 }

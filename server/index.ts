@@ -27,6 +27,7 @@ import uploadRoutes, { uploadsFileRouter } from './routes/uploads.js';
 import gamesRoutes from './routes/games.js';
 import messagesRoutes from './routes/messages.js';
 import usageRoutes from './routes/usage.js';
+import { SQLiteSessionStore } from './sessionStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3003;
@@ -87,7 +88,11 @@ app.use(helmet({
 }));
 
 // Session (required for OAuth)
+// SQLiteSessionStore replaces the default MemoryStore so sessions survive service restarts
+// and no longer emit the "MemoryStore is not designed for production" warning.
+// Cookie settings are unchanged: httpOnly, secure (prod only), sameSite=lax, 24 h maxAge.
 app.use(session({
+  store: new SQLiteSessionStore(),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
