@@ -1,6 +1,14 @@
 import { Router } from 'express';
+import { randomBytes, createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getDb } from '../database.js';
 import { requireAuth, requireAdmin, type AuthRequest } from '../middleware.js';
+import { logAuthEvent } from '../authEvents.js';
+import { logUsage } from '../usageEvents.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const router = Router();
 const REPORT_ERROR = 'Please select a reason and briefly explain the problem.';
@@ -14,13 +22,19 @@ router.get('/users', requireAuth, requireAdmin, (_req, res) => {
 
 // POST /api/admin/users/:id/ban
 router.post('/users/:id/ban', requireAuth, requireAdmin, (req, res) => {
-  getDb().prepare('UPDATE users SET banned = 1 WHERE id = ?').run(req.params.id);
+  const adminId = (req as any).user.id;
+  const targetId = Number(req.params.id);
+  getDb().prepare('UPDATE users SET banned = 1 WHERE id = ?').run(targetId);
+  logAuthEvent({ eventType: 'admin_ban', userId: targetId, adminActorId: adminId, targetUserId: targetId });
   res.json({ ok: true });
 });
 
 // POST /api/admin/users/:id/unban
 router.post('/users/:id/unban', requireAuth, requireAdmin, (req, res) => {
-  getDb().prepare('UPDATE users SET banned = 0 WHERE id = ?').run(req.params.id);
+  const adminId = (req as any).user.id;
+  const targetId = Number(req.params.id);
+  getDb().prepare('UPDATE users SET banned = 0 WHERE id = ?').run(targetId);
+  logAuthEvent({ eventType: 'admin_unban', userId: targetId, adminActorId: adminId, targetUserId: targetId });
   res.json({ ok: true });
 });
 
@@ -161,20 +175,27 @@ router.delete('/users/:id', requireAuth, requireAdmin, (req, res) => {
   // All other related data cascades via ON DELETE CASCADE on the users FK
   getDb().prepare('DELETE FROM users WHERE id = ?').run(targetId);
 
+  logAuthEvent({ eventType: 'admin_delete_user', adminActorId: viewerId, targetUserId: targetId });
   res.json({ ok: true });
 });
 
 // POST /api/admin/users/:id/verify
 router.post('/users/:id/verify', requireAuth, requireAdmin, (req, res) => {
+  const adminId = (req as any).user.id;
+  const targetId = Number(req.params.id);
   getDb().prepare("UPDATE users SET is_verified = 1, verified_at = datetime('now'), verified_by = ? WHERE id = ?")
-    .run((req as any).user.id, req.params.id);
+    .run(adminId, targetId);
+  logAuthEvent({ eventType: 'admin_verify_user', userId: targetId, adminActorId: adminId, targetUserId: targetId });
   res.json({ ok: true });
 });
 
 // POST /api/admin/users/:id/unverify
 router.post('/users/:id/unverify', requireAuth, requireAdmin, (req, res) => {
+  const adminId = (req as any).user.id;
+  const targetId = Number(req.params.id);
   getDb().prepare('UPDATE users SET is_verified = 0, verified_at = NULL, verified_by = NULL WHERE id = ? AND role != ?')
-    .run(req.params.id, 'admin');
+    .run(targetId, 'admin');
+  logAuthEvent({ eventType: 'admin_unverify_user', userId: targetId, adminActorId: adminId, targetUserId: targetId });
   res.json({ ok: true });
 });
 
@@ -196,6 +217,7 @@ router.post('/users/:id/role', requireAuth, requireAdmin, (req, res) => {
   }
 
   getDb().prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
+  logAuthEvent({ eventType: 'admin_role_change', userId: targetId, adminActorId: adminId, targetUserId: targetId, meta: { newRole: role } });
   res.json({ ok: true, role });
 });
 
@@ -241,6 +263,260 @@ router.patch('/game-servers/:id', requireAuth, requireAdmin, (req, res) => {
 router.delete('/game-servers/:id', requireAuth, requireAdmin, (req, res) => {
   getDb().prepare('DELETE FROM game_servers WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
+});
+
+// ─── Auth Event Log ───
+
+// GET /api/admin/auth-events
+router.get('/auth-events', requireAuth, requireAdmin, (req, res) => {
+  const { eventType, success, userId, limit = '100' } = req.query;
+  const params: any[] = [];
+  let where = 'WHERE 1=1';
+  if (eventType) { where += ' AND ae.event_type = ?'; params.push(eventType); }
+  if (success !== undefined && success !== '') { where += ' AND ae.success = ?'; params.push(success === '1' ? 1 : 0); }
+  if (userId) { where += ' AND (ae.user_id = ? OR ae.target_user_id = ?)'; params.push(userId, userId); }
+  const cap = Math.min(Number(limit) || 100, 300);
+  params.push(cap);
+  const events = getDb().prepare(`
+    SELECT ae.*, u.username, u.email,
+      aa.username as admin_actor_username,
+      tu.username as target_user_username
+    FROM auth_events ae
+    LEFT JOIN users u ON ae.user_id = u.id
+    LEFT JOIN users aa ON ae.admin_actor_id = aa.id
+    LEFT JOIN users tu ON ae.target_user_id = tu.id
+    ${where}
+    ORDER BY ae.created_at DESC LIMIT ?
+  `).all(...params);
+  res.json({ events });
+});
+
+// GET /api/admin/users/:id/activity — user detail + recent auth events + post counts
+router.get('/users/:id/activity', requireAuth, requireAdmin, (req, res) => {
+  const userId = Number(req.params.id);
+  const db = getDb();
+  const user = db.prepare(
+    'SELECT id, username, display_name, email, role, banned, is_verified, created_at, last_login_at FROM users WHERE id = ?'
+  ).get(userId) as any;
+  if (!user) { res.status(404).json({ error: 'User not found.' }); return; }
+
+  const events = db.prepare(`
+    SELECT id, event_type, success, reason, ip_address, user_agent, admin_actor_id, created_at
+    FROM auth_events WHERE user_id = ? OR target_user_id = ?
+    ORDER BY created_at DESC LIMIT 30
+  `).all(userId, userId) as any[];
+
+  const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL').get(userId) as any).c;
+  const commentCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NOT NULL').get(userId) as any).c;
+  const providers = db.prepare('SELECT provider, provider_email, created_at FROM user_auth_providers WHERE user_id = ?').all(userId);
+
+  res.json({ user, events, postCount, commentCount, providers });
+});
+
+// POST /api/admin/users/:id/password-reset-token — generate a one-time admin-assisted reset link
+router.post('/users/:id/password-reset-token', requireAuth, requireAdmin, (req, res) => {
+  const adminId = (req as any).user.id;
+  const targetId = Number(req.params.id);
+  const db = getDb();
+
+  const target = db.prepare('SELECT id, username, password_hash FROM users WHERE id = ?').get(targetId) as any;
+  if (!target) { res.status(404).json({ error: 'User not found.' }); return; }
+  if (!target.password_hash) {
+    res.status(400).json({ error: 'User has no local password (OAuth-only account).' }); return;
+  }
+
+  // Invalidate any existing unused tokens for this user before creating a new one
+  db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(targetId);
+
+  const rawToken = randomBytes(32).toString('hex');
+  const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+  const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hours
+
+  db.prepare(
+    'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, created_by_admin_id) VALUES (?, ?, ?, ?)'
+  ).run(targetId, tokenHash, expiresAt, adminId);
+
+  logAuthEvent({ eventType: 'admin_password_reset_token', userId: targetId, adminActorId: adminId, targetUserId: targetId, meta: { username: target.username } });
+
+  // Use WEB_BASE_URL so the link points to the frontend, not the API server.
+  const baseUrl = (process.env.WEB_BASE_URL || process.env.APP_BASE_URL || 'https://refugecloud.com').replace(/\/$/, '');
+  // rawToken is returned ONCE and never stored. Admin must copy the link immediately.
+  res.json({ ok: true, resetLink: `${baseUrl}/reset-password?token=${rawToken}`, expiresAt, username: target.username });
+});
+
+// GET /api/admin/system-health — safe read-only diagnostics, no secrets
+router.get('/system-health', requireAuth, requireAdmin, (_req, res) => {
+  const db = getDb();
+  let dbReachable = false;
+  try { db.prepare('SELECT 1').get(); dbReachable = true; } catch {}
+
+  const uploadsPath = path.resolve(__dirname, '../../uploads');
+  let uploadsOk = false;
+  try { uploadsOk = fs.existsSync(uploadsPath); } catch {}
+
+  let appVersion = 'unknown';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
+    appVersion = pkg.version || 'unknown';
+  } catch {}
+
+  const googleConfigured = !!(
+    process.env.GOOGLE_CLIENT_ID &&
+    process.env.GOOGLE_CLIENT_ID.trim().length > 10 &&
+    process.env.GOOGLE_CLIENT_ID !== 'placeholder'
+  );
+  const steamConfigured = !!(
+    process.env.STEAM_RETURN_URL &&
+    process.env.STEAM_RETURN_URL.startsWith('http')
+  );
+
+  res.json({
+    status: 'ok',
+    nodeEnv: process.env.NODE_ENV || 'development',
+    appVersion,
+    googleOAuth: googleConfigured ? 'Configured' : 'Not configured',
+    steamOAuth: steamConfigured ? 'Configured' : 'Not configured',
+    dbReachable,
+    uploadsPathOk: uploadsOk,
+    uptimeSeconds: Math.floor(process.uptime()),
+    totalUsers: (db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c,
+    openReports: (db.prepare("SELECT COUNT(*) as c FROM reports WHERE status = 'open'").get() as any).c,
+    authEventsLast24h: (db.prepare("SELECT COUNT(*) as c FROM auth_events WHERE created_at > datetime('now','-24 hours')").get() as any).c,
+  });
+});
+
+// ─── Analytics Routes ───
+
+// GET /api/admin/analytics/summary
+router.get('/analytics/summary', requireAuth, requireAdmin, (_req, res) => {
+  const db = getDb();
+
+  const activeUsersToday = (db.prepare(`
+    SELECT COUNT(DISTINCT user_id) as c FROM usage_events
+    WHERE user_id IS NOT NULL AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const activeUsers7d = (db.prepare(`
+    SELECT COUNT(DISTINCT user_id) as c FROM usage_events
+    WHERE user_id IS NOT NULL AND created_at > datetime('now', '-7 days')
+  `).get() as any).c;
+
+  const activeUsers30d = (db.prepare(`
+    SELECT COUNT(DISTINCT user_id) as c FROM usage_events
+    WHERE user_id IS NOT NULL AND created_at > datetime('now', '-30 days')
+  `).get() as any).c;
+
+  const pageViewsToday = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'page_view' AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const pageViews7d = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'page_view' AND created_at > datetime('now', '-7 days')
+  `).get() as any).c;
+
+  const pageViews30d = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'page_view' AND created_at > datetime('now', '-30 days')
+  `).get() as any).c;
+
+  const postsToday = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'post_created' AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const commentsToday = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'comment_created' AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const likesToday = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'like_created' AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const loginSuccessToday = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'login_success' AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const loginFailToday = (db.prepare(`
+    SELECT COUNT(*) as c FROM auth_events
+    WHERE event_type = 'login_failure' AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const uploadSuccessToday = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'upload_completed' AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const uploadFailToday = (db.prepare(`
+    SELECT COUNT(*) as c FROM usage_events
+    WHERE event_type = 'upload_failed' AND created_at > datetime('now', '-1 day')
+  `).get() as any).c;
+
+  const recentlyActive = (db.prepare(`
+    SELECT COUNT(DISTINCT user_id) as c FROM usage_events
+    WHERE user_id IS NOT NULL AND created_at > datetime('now', '-15 minutes')
+  `).get() as any).c;
+
+  res.json({
+    activeUsersToday, activeUsers7d, activeUsers30d,
+    pageViewsToday, pageViews7d, pageViews30d,
+    postsToday, commentsToday, likesToday,
+    loginSuccessToday, loginFailToday,
+    uploadSuccessToday, uploadFailToday,
+    recentlyActive,
+  });
+});
+
+// GET /api/admin/analytics/peak-hours
+router.get('/analytics/peak-hours', requireAuth, requireAdmin, (_req, res) => {
+  const db = getDb();
+
+  const rows = db.prepare(`
+    SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as count
+    FROM usage_events
+    WHERE created_at > datetime('now', '-7 days')
+    GROUP BY hour
+    ORDER BY count DESC
+  `).all() as Array<{ hour: number; count: number }>;
+
+  const peakHours = rows;
+
+  // Suggested announcement windows = 1h before top hours (top 3 unique contiguous windows)
+  const topHours = rows.slice(0, 3).map(r => r.hour);
+  const suggestedAnnouncementWindows = topHours.map(h => {
+    const start = ((h - 1 + 24) % 24).toString().padStart(2, '0');
+    const end = ((h + 1) % 24).toString().padStart(2, '0');
+    return `${start}:00–${end}:00`;
+  });
+
+  // Quiet windows = bottom 3 hours
+  const bottomHours = [...rows].sort((a, b) => a.count - b.count).slice(0, 3).map(r => r.hour);
+  const quietWindows = bottomHours.map(h => {
+    const start = h.toString().padStart(2, '0');
+    const end = ((h + 3) % 24).toString().padStart(2, '0');
+    return `${start}:00–${end}:00`;
+  });
+
+  res.json({ peakHours, suggestedAnnouncementWindows, quietWindows });
+});
+
+// GET /api/admin/analytics/feature-usage
+router.get('/analytics/feature-usage', requireAuth, requireAdmin, (_req, res) => {
+  const db = getDb();
+
+  const featureAreas = db.prepare(`
+    SELECT feature_area as area, COUNT(*) as count
+    FROM usage_events
+    WHERE feature_area IS NOT NULL AND created_at > datetime('now', '-30 days')
+    GROUP BY feature_area
+    ORDER BY count DESC
+  `).all() as Array<{ area: string; count: number }>;
+
+  res.json({ featureAreas });
 });
 
 export default router;

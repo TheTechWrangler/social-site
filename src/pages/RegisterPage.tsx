@@ -62,7 +62,7 @@ export default function RegisterPage({ onLogin }: { onLogin: (u: any) => void })
         <input className="input" placeholder="Username" value={form.username} onChange={set('username')} required />
         <input className="input" placeholder="Display Name" value={form.displayName} onChange={set('displayName')} required />
         <input className="input" type="email" placeholder="Email" value={form.email} onChange={set('email')} required />
-        <input className="input" type="password" placeholder="Password (6+ chars)" value={form.password} onChange={set('password')} required />
+        <input className="input" type="password" placeholder="Password (8+ characters)" value={form.password} onChange={set('password')} required minLength={8} />
         {error && <p className="error-msg">{error}</p>}
         <button className="btn btn-primary" disabled={loading}>{loading ? 'Creating...' : 'Register'}</button>
       </form>

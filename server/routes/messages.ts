@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { isBlockedBetween, canUserMessageRecipient } from '../visibility.js';
+import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 const DM_MAX_LENGTH = 2000;
@@ -232,6 +233,7 @@ router.post('/:conversationId', requireAuth, requireVerified, (req: AuthRequest,
   ).run(conversationId, senderId, body);
 
   const msg = db.prepare('SELECT id, sender_id, body, created_at FROM dm_messages WHERE id = ?').get(result.lastInsertRowid) as any;
+  logUsage({ eventType: 'message_sent', userId: senderId, featureArea: 'messages' });
   res.status(201).json({
     message: {
       id: msg.id,

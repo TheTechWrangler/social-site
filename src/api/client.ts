@@ -7,7 +7,10 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${url}`, { headers, ...options });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error((body as any).error || `HTTP ${res.status}`);
+    const err: any = new Error((body as any).error || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = body;
+    throw err;
   }
   return res.json();
 }
@@ -27,6 +30,8 @@ export const api = {
     const qs = new URLSearchParams(params as any).toString();
     return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string }>(`/feed?${qs}`);
   },
+  replenishFeed: () =>
+    request<{ ok: boolean; sourcesChecked: number; newItems: number; nextAvailableAt?: string }>('/feed/replenish', { method: 'POST' }),
 
   // Posts
   createPost: (content: string, groupId?: number) =>
@@ -103,6 +108,24 @@ export const api = {
   getReports: () => request<{ reports: any[] }>('/admin/reports'),
   reportPost: (postId: number, reason: string, details: string) =>
     request<{ ok: boolean }>('/admin/reports', { method: 'POST', body: JSON.stringify({ postId, reason, details }) }),
+  getAuthEvents: (params?: { eventType?: string; success?: string; userId?: number }) => {
+    const qs = params ? new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([,v]) => v !== undefined && v !== '').map(([k,v]) => [k, String(v)]))).toString() : '';
+    return request<{ events: any[] }>(`/admin/auth-events${qs ? `?${qs}` : ''}`);
+  },
+  getUserActivity: (id: number) =>
+    request<{ user: any; events: any[]; postCount: number; commentCount: number; providers: any[] }>(`/admin/users/${id}/activity`),
+  generatePasswordResetToken: (id: number) =>
+    request<{ ok: boolean; resetLink: string; expiresAt: string; username: string }>(`/admin/users/${id}/password-reset-token`, { method: 'POST' }),
+  getSystemHealth: () => request<any>('/admin/system-health'),
+  getAnalyticsSummary: () => request<any>('/admin/analytics/summary'),
+  getAnalyticsPeakHours: () => request<any>('/admin/analytics/peak-hours'),
+  getAnalyticsFeatureUsage: () => request<any>('/admin/analytics/feature-usage'),
+  trackPageView: (route: string, featureArea?: string) =>
+    request<{ ok: boolean }>('/usage/event', { method: 'POST', body: JSON.stringify({ eventType: 'page_view', route, featureArea }) }),
+  validateResetToken: (token: string) =>
+    request<{ ok: boolean; username: string }>(`/auth/reset-password?token=${encodeURIComponent(token)}`),
+  submitPasswordReset: (token: string, newPassword: string) =>
+    request<{ ok: boolean; message: string }>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, newPassword }) }),
 
   // Media
   uploadImage: async (file: File): Promise<{ media: any }> => {

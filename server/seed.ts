@@ -96,7 +96,7 @@ const posts = [
   { user_id: 4, content: 'Working on a new open source project. Hoping to release the first version this weekend.' },
   { user_id: 5, content: 'Just adopted a rescue dog! Meet Max 🐕' },
   { user_id: 1, content: 'The new React 19 features are really impressive. Server components change everything.' },
-  { user_id: 6, content: 'Welcome to Social Site! This is a demo post from the admin account. No ads, no algorithms, just people.' },
+  { user_id: 6, content: 'Welcome to Refuge Cloud! This is a demo post from the admin account. No ads, no algorithms, just people.' },
 ];
 const insertPost = db.prepare('INSERT INTO posts (user_id, content, created_at) VALUES (?, ?, datetime(\'now\', ?))');
 for (let i = 0; i < posts.length; i++) {
@@ -177,6 +177,31 @@ const rssSources = [
   { name: 'The Changelog', url: 'https://changelog.com/podcast/feed', homepage_url: 'https://changelog.com', category: 'Podcasts / Tech' },
   { name: 'Software Engineering Daily', url: 'https://softwareengineeringdaily.com/feed/podcast/', homepage_url: 'https://softwareengineeringdaily.com', category: 'Podcasts / Tech' },
   { name: 'Linux Unplugged', url: 'https://feeds.fireside.fm/linuxunplugged/rss', homepage_url: 'https://www.jupiterbroadcasting.com/show/linux-unplugged/', category: 'Podcasts / Tech' },
+
+  // General News
+  { name: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml', homepage_url: 'https://www.npr.org', category: 'News' },
+  { name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml', homepage_url: 'https://www.bbc.com/news/world', category: 'News' },
+  { name: 'Reuters Top News', url: 'https://feeds.reuters.com/reuters/topNews', homepage_url: 'https://www.reuters.com', category: 'News' },
+  { name: 'AP News', url: 'https://rsshub.app/apnews/topics/apf-topnews', homepage_url: 'https://apnews.com', category: 'News' },
+
+  // Science & Space
+  { name: 'New Scientist', url: 'https://www.newscientist.com/feed/home/', homepage_url: 'https://www.newscientist.com', category: 'Science' },
+  { name: 'Space.com', url: 'https://www.space.com/feeds/all', homepage_url: 'https://www.space.com', category: 'Science' },
+  { name: 'Phys.org', url: 'https://phys.org/rss-feed/', homepage_url: 'https://phys.org', category: 'Science' },
+
+  // Open Source & Developer Culture
+  { name: 'LWN.net', url: 'https://lwn.net/headlines/rss', homepage_url: 'https://lwn.net', category: 'Open Source' },
+  { name: 'OSNews', url: 'https://www.osnews.com/feed/', homepage_url: 'https://www.osnews.com', category: 'Open Source' },
+  { name: 'Opensource.com', url: 'https://opensource.com/feed', homepage_url: 'https://opensource.com', category: 'Open Source' },
+
+  // Creative & Design
+  { name: 'Smashing Magazine', url: 'https://www.smashingmagazine.com/feed/', homepage_url: 'https://www.smashingmagazine.com', category: 'Design / Dev' },
+  { name: 'CSS-Tricks', url: 'https://css-tricks.com/feed/', homepage_url: 'https://css-tricks.com', category: 'Design / Dev' },
+
+  // Podcasts — General / Culture
+  { name: '99% Invisible', url: 'https://feeds.simplecast.com/BqbsxVfO', homepage_url: 'https://99percentinvisible.org', category: 'Podcasts / Culture' },
+  { name: 'Radiolab', url: 'https://feeds.feedburner.com/radiolab', homepage_url: 'https://www.wnycstudios.org/podcasts/radiolab', category: 'Podcasts / Culture' },
+  { name: 'Darknet Diaries', url: 'https://feeds.megaphone.fm/darknetdiaries', homepage_url: 'https://darknetdiaries.com', category: 'Podcasts / Tech' },
 ];
 
 const insertRss = db.prepare('INSERT OR IGNORE INTO rss_sources (name, url, homepage_url, category) VALUES (?, ?, ?, ?)');

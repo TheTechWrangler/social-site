@@ -3,6 +3,7 @@ import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { Strategy as SteamStrategy } from 'passport-steam';
 import { getDb } from './database.js';
 import { generateToken } from './auth.js';
+import { logAuthEvent, getClientIp } from './authEvents.js';
 
 const BASE_URL = process.env.APP_BASE_URL || 'http://192.168.254.181:3003';
 const WEB_URL = process.env.WEB_BASE_URL || 'http://192.168.254.181:5174';
@@ -131,9 +132,11 @@ export function configurePassport(): void {
 export function handleOAuthCallback(req: any, res: any): void {
   const user = req.user as { id: number; username: string } | undefined;
   if (!user) {
+    logAuthEvent({ eventType: 'oauth_failure', success: false, reason: 'OAUTH_PROVIDER_ERROR', ip: getClientIp(req), userAgent: req.headers?.['user-agent'] });
     res.redirect(`${WEB_URL}/login?error=oauth_failed`);
     return;
   }
+  logAuthEvent({ eventType: 'oauth_success', userId: user.id, ip: getClientIp(req), userAgent: req.headers?.['user-agent'], meta: { username: user.username } });
   const token = generateToken({
     id: user.id,
     username: user.username,

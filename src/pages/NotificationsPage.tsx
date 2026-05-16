@@ -17,6 +17,7 @@ interface Notif {
 
 interface Props {
   onMarkAllRead: () => void;
+  onMarkOneRead: () => void;
 }
 
 function notifLabel(n: Notif): string {
@@ -51,7 +52,7 @@ function notifDest(n: Notif): string {
   }
 }
 
-export default function NotificationsPage({ onMarkAllRead }: Props) {
+export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Props) {
   const [notifs, setNotifs] = useState<Notif[]>([]);
   const [marking, setMarking] = useState(false);
 
@@ -78,6 +79,7 @@ export default function NotificationsPage({ onMarkAllRead }: Props) {
     if (!n.read) {
       api.markNotificationRead(n.id).catch(() => {});
       setNotifs(prev => prev.map(x => x.id === n.id ? { ...x, read: 1 } : x));
+      onMarkOneRead();
     }
   }
 

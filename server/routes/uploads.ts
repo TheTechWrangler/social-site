@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { getDb } from '../database.js';
 import { optionalAuth, requireAuth, requireVerified } from '../middleware.js';
 import { canViewPost } from '../visibility.js';
+import { logUsage } from '../usageEvents.js';
 import type { Request, Response, NextFunction } from 'express';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -101,8 +102,10 @@ router.post('/image', requireAuth, requireVerified, handleImageUpload, (req, res
       media.post_id = postId;
     }
 
+    logUsage({ eventType: 'upload_completed', userId: (req as any).user?.id ?? null, featureArea: 'feed' });
     res.status(201).json({ media });
   } catch (err: any) {
+    logUsage({ eventType: 'upload_failed', userId: (req as any).user?.id ?? null, featureArea: 'feed', errorCode: 'SERVER_ERROR' });
     res.status(500).json({ error: err.message });
   }
 });

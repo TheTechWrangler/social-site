@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
+import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 
@@ -20,6 +21,7 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const groupId = result.lastInsertRowid as number;
   getDb().prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)')
     .run(groupId, req.user!.id, 'admin');
+  logUsage({ eventType: 'group_created', userId: req.user!.id, featureArea: 'groups' });
   res.status(201).json({ group: { id: groupId, name: trimmedName, description: trimmedDesc, ownerId: req.user!.id } });
 });
 

@@ -3,6 +3,7 @@ import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
 import { canInteractWithPost } from '../visibility.js';
+import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 
@@ -22,6 +23,7 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
     FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
   `).get(result.lastInsertRowid);
 
+  logUsage({ eventType: 'repost_created', userId: req.user!.id, featureArea: 'feed' });
   res.status(201).json({ post: enrichPost(row, req.user!.id) });
 });
 

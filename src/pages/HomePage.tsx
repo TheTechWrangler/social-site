@@ -26,6 +26,9 @@ export default function HomePage({ user }: { user: any }) {
   const [posting, setPosting] = useState(false);
   const [repopulating, setRepopulating] = useState(false);
   const [repopulateMsg, setRepopulateMsg] = useState('');
+  const [replenishing, setReplenishing] = useState(false);
+  const [replenishMsg, setReplenishMsg] = useState('');
+  const [replenishCooldown, setReplenishCooldown] = useState<string | null>(null);
   const initialLevel = ['everyone', 'extended', 'friends', 'world'].includes(user?.feed_exposure) ? user.feed_exposure : 'extended';
   const [level, setLevel] = useState(initialLevel);
   const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
@@ -155,6 +158,26 @@ export default function HomePage({ user }: { user: any }) {
     setRepopulating(false);
   }
 
+  async function handleReplenish() {
+    setReplenishing(true);
+    setReplenishMsg('');
+    try {
+      const r = await api.replenishFeed();
+      setReplenishMsg(`Done — ${r.newItems} new items added.`);
+      await loadFeed();
+    } catch (e: any) {
+      if (e.status === 429 || (e.message && e.message.includes('429'))) {
+        const data = e.data || {};
+        const next = data.nextAvailableAt ? new Date(data.nextAvailableAt).toLocaleString() : '';
+        setReplenishCooldown(next || 'tomorrow');
+        setReplenishMsg('');
+      } else {
+        setReplenishMsg('Replenish failed: ' + (e.message || 'unknown error'));
+      }
+    }
+    setReplenishing(false);
+  }
+
   function handlePostUpdate(updated: any) {
     setPosts(prev => prev.map(p => p.id === updated.id ? { ...updated, type: 'post' } : p));
     setFeedItems(prev => prev.map(item => item.type === 'post' && item.id === updated.id ? { ...updated, type: 'post' } : item));
@@ -205,12 +228,19 @@ export default function HomePage({ user }: { user: any }) {
           <div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
               <button className="btn btn-ghost btn-sm" onClick={() => loadFeed()}>↻ Refresh Feed</button>
-              {user?.role === 'admin' && (
+              {user?.role === 'admin' ? (
                 <button className="btn btn-sm" onClick={handleRepopulate} disabled={repopulating}>
                   {repopulating ? 'Fetching sources…' : '🔄 Repopulate World Feed'}
                 </button>
+              ) : isVerified && (
+                <button className="btn btn-ghost btn-sm" onClick={handleReplenish}
+                  disabled={replenishing || !!replenishCooldown}
+                  title={replenishCooldown ? `Next replenish available: ${replenishCooldown}` : 'Fetch new content from sources (once per day)'}>
+                  {replenishing ? 'Fetching…' : replenishCooldown ? `Replenish used (next: ${replenishCooldown})` : '⬇ Replenish Feed'}
+                </button>
               )}
               {repopulateMsg && <span className="muted" style={{ fontSize: '0.82rem' }}>{repopulateMsg}</span>}
+              {replenishMsg && <span className="muted" style={{ fontSize: '0.82rem' }}>{replenishMsg}</span>}
             </div>
             {worldItems.length === 0
               ? <div className="empty-state">

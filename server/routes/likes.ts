@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { canInteractWithPost, canViewPost } from '../visibility.js';
+import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 
@@ -37,6 +38,7 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 
   // Return grouped counts
   const counts = getReactionCounts(postId);
+  logUsage({ eventType: 'like_created', userId: req.user!.id, featureArea: 'feed' });
   res.json({ ok: true, reactionType, counts, userReaction: reactionType });
 });
 

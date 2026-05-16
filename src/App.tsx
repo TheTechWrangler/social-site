@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { api } from './api/client';
+import { usePageTracking } from './hooks/usePageTracking';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -19,6 +20,7 @@ import OAuthCallback from './pages/OAuthCallback';
 import LandingPage from './pages/LandingPage';
 import PostDetailPage from './pages/PostDetailPage';
 import MessagesPage from './pages/MessagesPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -27,8 +29,22 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  usePageTracking();
   const isAdminPage = location.pathname === '/admin';
   const token = localStorage.getItem('token');
+
+  useEffect(() => {
+    // Global unhandled error reporter — sends generic signal only, no stack traces or PII
+    const handler = (_event: ErrorEvent) => {
+      fetch('/api/usage/event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(localStorage.getItem('token') ? { Authorization: `Bearer ${localStorage.getItem('token')}` } : {}) },
+        body: JSON.stringify({ eventType: 'client_error', route: window.location.pathname.replace(/\/\d+/g, '/:id'), errorCode: 'UNHANDLED_ERROR' }),
+      }).catch(() => {});
+    };
+    window.addEventListener('error', handler);
+    return () => window.removeEventListener('error', handler);
+  }, []);
 
   useEffect(() => {
     if (token) {
@@ -69,7 +85,7 @@ export default function App() {
       {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
       <nav className={`sidebar-left ${mobileNavOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
-          <Link to="/">💬 Social</Link>
+          <Link to="/">☁ Refuge Cloud</Link>
           <button className="mobile-menu-btn" onClick={() => setMobileNavOpen(!mobileNavOpen)} aria-expanded={mobileNavOpen} aria-label="Toggle navigation">☰</button>
         </div>
         <div className="sidebar-links">
@@ -124,7 +140,7 @@ export default function App() {
           <Route path="/profile/:username" element={user ? <ProfilePage user={user} /> : <Navigate to="/login" />} />
           <Route path="/groups" element={user ? <GroupsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/groups/:id" element={user ? <GroupPage user={user} /> : <Navigate to="/login" />} />
-          <Route path="/notifications" element={user ? <NotificationsPage onMarkAllRead={() => setUnread(0)} /> : <Navigate to="/login" />} />
+          <Route path="/notifications" element={user ? <NotificationsPage onMarkAllRead={() => setUnread(0)} onMarkOneRead={() => setUnread(prev => Math.max(0, prev - 1))} /> : <Navigate to="/login" />} />
           <Route path="/admin" element={user?.role === 'admin' ? <AdminPage user={user} /> : <Navigate to="/" />} />
           <Route path="/world" element={<WorldPage />} />
           <Route path="/discover" element={user ? <DiscoverPage /> : <Navigate to="/login" />} />
@@ -135,6 +151,7 @@ export default function App() {
           <Route path="/messages" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/posts/:id" element={user ? <PostDetailPage user={user} /> : <Navigate to="/login" />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/oauth/callback" element={<OAuthCallback onLogin={setUser} />} />
         </Routes>
       </main>

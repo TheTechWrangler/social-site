@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
-import { optionalAuth, type AuthRequest } from '../middleware.js';
+import { optionalAuth, requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
-import { getWorldFeed } from '../rssService.js';
+import { getWorldFeed, fetchSource } from '../rssService.js';
+import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 
@@ -132,6 +133,52 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
     const items = [...posts, ...worldItems]
       .sort((a: any, b: any) => itemTime(b).localeCompare(itemTime(a)));
     res.json({ posts, worldItems, items, level });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/feed/replenish — User-triggered feed refresh, once per rolling 24 hours.
+// Fetches up to 5 sources that are most stale (oldest last_fetched_at) so one call
+// is fast and spread across categories rather than hammering everything at once.
+// Admins bypass the cooldown entirely and always get the full active source list.
+router.post('/replenish', requireAuth, requireVerified, async (req: AuthRequest, res) => {
+  try {
+    const db = getDb();
+    const userId = req.user!.id;
+    const isAdmin = req.user!.role === 'admin';
+
+    if (!isAdmin) {
+      const row = db.prepare('SELECT last_feed_refresh_at FROM users WHERE id = ?').get(userId) as any;
+      if (row?.last_feed_refresh_at) {
+        const lastMs = new Date(row.last_feed_refresh_at + 'Z').getTime();
+        const nextMs = lastMs + 24 * 60 * 60 * 1000;
+        if (Date.now() < nextMs) {
+          const nextAt = new Date(nextMs).toISOString();
+          res.status(429).json({ error: 'Daily replenish already used.', nextAvailableAt: nextAt });
+          return;
+        }
+      }
+    }
+
+    // Fetch stale sources: for regular users fetch up to 5 least-recently-fetched active sources.
+    // Admins get all active sources (same as the admin fetch-all endpoint).
+    const sources = isAdmin
+      ? db.prepare("SELECT id FROM rss_sources WHERE is_active = 1").all() as any[]
+      : db.prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetched_at ASC NULLS FIRST LIMIT 5").all() as any[];
+
+    const results = [];
+    for (const s of sources) {
+      results.push(await fetchSource(s.id));
+    }
+
+    if (!isAdmin) {
+      db.prepare("UPDATE users SET last_feed_refresh_at = datetime('now') WHERE id = ?").run(userId);
+    }
+
+    const totalNew = results.reduce((sum, r) => sum + r.itemsInserted, 0);
+    logUsage({ eventType: 'rss_replenished', userId, featureArea: 'world', metadata: { sourcesChecked: results.length, newItems: totalNew } });
+    res.json({ ok: true, sourcesChecked: results.length, newItems: totalNew, results });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

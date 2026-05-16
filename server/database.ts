@@ -318,4 +318,94 @@ export function initializeDatabase(): void {
   if (!userColumns.some(c => c.name === 'dm_privacy')) {
     db.exec("ALTER TABLE users ADD COLUMN dm_privacy TEXT DEFAULT 'friends_of_friends'");
   }
+  if (!userColumns.some(c => c.name === 'last_feed_refresh_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN last_feed_refresh_at TEXT DEFAULT NULL');
+  }
+  if (!userColumns.some(c => c.name === 'last_login_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT NULL');
+  }
+
+  // ─── auth_events table (append-only login/admin event log) ───
+  const authEventsExists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='auth_events'"
+  ).get();
+  if (!authEventsExists) {
+    db.exec(`
+      CREATE TABLE auth_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        event_type TEXT NOT NULL,
+        success INTEGER NOT NULL DEFAULT 1,
+        reason TEXT DEFAULT '',
+        ip_address TEXT DEFAULT '',
+        user_agent TEXT DEFAULT '',
+        admin_actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        meta TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_auth_events_user ON auth_events(user_id, created_at);
+      CREATE INDEX idx_auth_events_type ON auth_events(event_type, created_at);
+      CREATE INDEX idx_auth_events_created ON auth_events(created_at);
+    `);
+  }
+
+  // ─── usage_events table (privacy-respecting analytics) ───
+  const usageEventsExists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='usage_events'"
+  ).get();
+  if (!usageEventsExists) {
+    db.exec(`
+      CREATE TABLE usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        route TEXT,
+        feature_area TEXT,
+        success INTEGER NOT NULL DEFAULT 1,
+        error_code TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        metadata_json TEXT
+      );
+      CREATE INDEX idx_usage_events_event_type ON usage_events(event_type);
+      CREATE INDEX idx_usage_events_created_at ON usage_events(created_at);
+      CREATE INDEX idx_usage_events_user_id ON usage_events(user_id);
+    `);
+  }
+
+  // ─── client_errors table ───
+  const clientErrorsExists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='client_errors'"
+  ).get();
+  if (!clientErrorsExists) {
+    db.exec(`
+      CREATE TABLE client_errors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        route TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+  }
+
+  // ─── password_reset_tokens table ───
+  const prtExists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='password_reset_tokens'"
+  ).get();
+  if (!prtExists) {
+    db.exec(`
+      CREATE TABLE password_reset_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_by_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_prt_user ON password_reset_tokens(user_id);
+      CREATE INDEX idx_prt_hash ON password_reset_tokens(token_hash);
+    `);
+  }
 }

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { canViewPost } from '../visibility.js';
+import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 
@@ -84,6 +85,7 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
       FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
     `).get(result.lastInsertRowid);
 
+    logUsage({ eventType: 'post_created', userId: req.user!.id, featureArea: groupId ? 'groups' : 'feed' });
     res.status(201).json({ post: enrichPost(row, req.user!.id) });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

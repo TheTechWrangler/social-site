@@ -26,6 +26,7 @@ import worldCommentsRoutes from './routes/worldComments.js';
 import uploadRoutes, { uploadsFileRouter } from './routes/uploads.js';
 import gamesRoutes from './routes/games.js';
 import messagesRoutes from './routes/messages.js';
+import usageRoutes from './routes/usage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3003;
@@ -134,6 +135,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
   // Auth endpoints
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/register', authLimiter);
+  app.use('/api/auth/reset-password', authLimiter);
   // Upload endpoints
   app.use('/api/uploads/image', uploadLimiter);
   app.use('/api/uploads/video', uploadLimiter);
@@ -170,11 +172,51 @@ app.use('/api/uploads', uploadRoutes);               // Media uploads
 app.use('/api/games', gamesRoutes);                   // Games & LFG
 app.use('/api/messages', messagesRoutes);             // Direct messages
 app.use('/api/admin/rss', rssAdminRouter);
+app.use('/api/usage', usageRoutes);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'social-site' }));
+
+// ─── Serve React SPA (production only) ───
+// In dev, Vite handles the frontend separately via `npm run dev`.
+// In production (NODE_ENV=production), Express serves the built dist/.
+if (IS_PROD) {
+  const distPath = path.join(__dirname, '../dist');
+  // Serve static assets (hashed JS/CSS/fonts use default caching — their filenames change on rebuild).
+  // index.html gets no-cache so browsers always fetch the latest SPA shell after deployments.
+  app.use(express.static(distPath, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    },
+  }));
+  // 404 for any unmatched /api/* so they don't silently serve index.html
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Not found' });
+  });
+  // SPA fallback — every non-API path serves the React shell with no-cache headers
+  app.get('*', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
+
+// ─── Global error handler ───
+// Must be registered AFTER all routes. Catches errors passed via next(err) or
+// thrown in async middleware that have not been caught by individual route try/catch blocks.
+// Never leaks secrets, tokens, stack traces, or request bodies to clients.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[server] Unhandled error:', err.message);
+  res.status(500).json({ error: 'Internal server error.' });
+});
 
 // Start
 initializeDatabase();
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[server] Social Site running on http://0.0.0.0:${PORT}`);
+  console.log(`[server] Refuge Cloud running on http://0.0.0.0:${PORT}`);
 });

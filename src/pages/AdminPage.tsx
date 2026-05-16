@@ -1,15 +1,83 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { api } from '../api/client';
 
-type ReportFilter = 'open' | 'approved' | 'deleted' | 'all';
-const REPORT_FILTERS: ReportFilter[] = ['open', 'approved', 'deleted', 'all'];
-const REPORT_STATUS_LABELS: Record<string, string> = { open: 'Open', dismissed: 'Approved', resolved: 'Deleted' };
+type ReportFilter = 'open' | 'dismissed' | 'resolved' | 'all';
+const REPORT_FILTERS: ReportFilter[] = ['open', 'dismissed', 'resolved', 'all'];
+const REPORT_FILTER_LABELS: Record<ReportFilter, string> = { open: 'Open', dismissed: 'Dismissed', resolved: 'Resolved', all: 'All' };
+const REPORT_STATUS_LABELS: Record<string, string> = { open: 'Open', dismissed: 'Dismissed', resolved: 'Resolved (Hidden)' };
+
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  login_success: '✅ Login', login_failure: '❌ Login failed', register_success: '🆕 Register',
+  oauth_success: '✅ OAuth', oauth_failure: '❌ OAuth failed',
+  password_reset_requested: '🔑 Reset requested', password_reset_completed: '✅ Password reset',
+  admin_ban: '🚫 Banned', admin_unban: '✓ Unbanned', admin_role_change: '👑 Role changed',
+  admin_delete_user: '🗑 User deleted', admin_verify_user: '✅ Verified', admin_unverify_user: '⚠ Unverified',
+  admin_password_reset_token: '🔑 Reset token generated',
+};
+
+function UserDetailPanel({ act, resetLink, generatingReset, onGenerateReset, onDismissReset, onCopyLink }: {
+  act: any; resetLink?: { link: string; expiresAt: string }; generatingReset: boolean;
+  onGenerateReset: () => void; onDismissReset: () => void; onCopyLink: () => void;
+}) {
+  return (
+    <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 16, marginTop: 4 }}>
+      {!act ? <p className="muted">Loading…</p> : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 8, marginBottom: 14, fontSize: '0.82rem' }}>
+            <div><span className="muted">User ID</span><br /><strong>#{act.user.id}</strong></div>
+            <div><span className="muted">Email</span><br /><strong>{act.user.email || '—'}</strong></div>
+            <div><span className="muted">Joined</span><br /><strong>{act.user.created_at?.slice(0,10) || '—'}</strong></div>
+            <div><span className="muted">Last login</span><br /><strong>{act.user.last_login_at?.slice(0,16).replace('T',' ') || 'Never'}</strong></div>
+            <div><span className="muted">Posts</span><br /><strong>{act.postCount}</strong></div>
+            <div><span className="muted">Comments</span><br /><strong>{act.commentCount}</strong></div>
+            {act.providers.length > 0 && (
+              <div><span className="muted">OAuth</span><br /><strong>{act.providers.map((p: any) => p.provider).join(', ')}</strong></div>
+            )}
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            {resetLink ? (
+              <div style={{ padding: '10px 12px', background: 'var(--panel)', borderRadius: 'var(--radius-sm)', fontSize: '0.82rem' }}>
+                <strong>Reset link (expires {new Date(resetLink.expiresAt).toLocaleString()}):</strong>
+                <div style={{ marginTop: 6, wordBreak: 'break-all', fontFamily: 'monospace', color: 'var(--accent-text)' }}>{resetLink.link}</div>
+                <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={onCopyLink}>Copy Link</button>
+                <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={onDismissReset}>Dismiss</button>
+              </div>
+            ) : (
+              <button className="btn btn-sm" disabled={generatingReset} onClick={onGenerateReset}>
+                {generatingReset ? 'Generating…' : '🔑 Generate Password Reset Link'}
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: '0.82rem' }}>
+            <strong style={{ display: 'block', marginBottom: 6 }}>Recent auth events</strong>
+            {act.events.length === 0 ? <p className="muted">No events yet.</p> : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                <thead><tr style={{ textAlign: 'left', color: 'var(--text-dim)' }}>
+                  <th style={{ paddingRight: 10 }}>Event</th><th style={{ paddingRight: 10 }}>Result</th>
+                  <th style={{ paddingRight: 10 }}>IP</th><th>When</th>
+                </tr></thead>
+                <tbody>{act.events.map((ev: any) => (
+                  <tr key={ev.id} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ paddingRight: 10, paddingTop: 4 }}>{EVENT_TYPE_LABELS[ev.event_type] || ev.event_type}</td>
+                    <td style={{ paddingRight: 10, color: ev.success ? 'var(--green)' : 'var(--danger)' }}>{ev.success ? 'OK' : ev.reason || 'Fail'}</td>
+                    <td style={{ paddingRight: 10 }} className="muted">{ev.ip_address || '—'}</td>
+                    <td className="muted">{ev.created_at?.slice(0,16).replace('T',' ')}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function AdminPage({ user: currentUser }: { user: any }) {
   const [users, setUsers] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
   const [reports, setReports] = useState<any[]>([]);
-  const [tab, setTab] = useState<'users' | 'posts' | 'reports' | 'rss' | 'servers'>('users');
+  const [tab, setTab] = useState<'users' | 'posts' | 'reports' | 'rss' | 'servers' | 'auth-logs' | 'health' | 'analytics'>('users');
 
   // RSS state
   const [rssSources, setRssSources] = useState<any[]>([]);
@@ -22,6 +90,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [rssCatFilter, setRssCatFilter] = useState('');
   const [userSearch, setUserSearch] = useState('');
   const [userRoleFilter, setUserRoleFilter] = useState('');
+  const [userRoleDraft, setUserRoleDraft] = useState<Record<number, string>>({});
   const [roleMsg, setRoleMsg] = useState('');
   const [adminStats, setAdminStats] = useState<any>({});
   const [reportFilter, setReportFilter] = useState<ReportFilter>('open');
@@ -30,7 +99,36 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [serverList, setServerList] = useState<any[]>([]);
   const [srvForm, setSrvForm] = useState({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
 
-  useEffect(() => { if (tab === 'rss') loadRss(); else if (tab === 'servers') loadServers(); else loadData(); loadStats(); }, [tab, reportFilter]);
+  // Auth logs
+  const [authEvents, setAuthEvents] = useState<any[]>([]);
+  const [authEventType, setAuthEventType] = useState('');
+  const [authEventSuccess, setAuthEventSuccess] = useState('');
+  const [authEventsLoading, setAuthEventsLoading] = useState(false);
+
+  // System health
+  const [systemHealth, setSystemHealth] = useState<any>(null);
+
+  // Analytics
+  const [analyticsSummary, setAnalyticsSummary] = useState<any>(null);
+  const [analyticsPeakHours, setAnalyticsPeakHours] = useState<any>(null);
+  const [analyticsFeatureUsage, setAnalyticsFeatureUsage] = useState<any>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  // User detail expansion
+  const [expandedUser, setExpandedUser] = useState<number | null>(null);
+  const [userActivity, setUserActivity] = useState<Record<number, any>>({});
+  const [resetLinks, setResetLinks] = useState<Record<number, { link: string; expiresAt: string }>>({});
+  const [generatingReset, setGeneratingReset] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (tab === 'rss') loadRss();
+    else if (tab === 'servers') loadServers();
+    else if (tab === 'auth-logs') loadAuthEvents();
+    else if (tab === 'health') loadHealth();
+    else if (tab === 'analytics') loadAnalytics();
+    else loadData();
+    loadStats();
+  }, [tab, reportFilter, authEventType, authEventSuccess]);
 
   async function loadStats() { try { const r = await api.get<any>('/admin/stats'); setAdminStats(r); } catch (e) {} }
 
@@ -43,8 +141,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   }
 
   async function loadReports(filter: ReportFilter = reportFilter) {
-    const apiFilter = filter === 'approved' ? 'dismissed' : filter === 'deleted' ? 'resolved' : filter;
-    const qs = apiFilter === 'all' ? '' : `?status=${apiFilter}`;
+    const qs = filter === 'all' ? '' : `?status=${filter}`;
     const r = await api.get<any>(`/admin/reports${qs}`);
     setReports(r.reports);
   }
@@ -101,6 +198,40 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       const r = await api.get<any>('/admin/game-servers');
       setServerList(r.servers);
     } catch (e) { console.error(e); }
+  }
+
+  async function loadAuthEvents() {
+    setAuthEventsLoading(true);
+    try {
+      const params: any = {};
+      if (authEventType) params.eventType = authEventType;
+      if (authEventSuccess !== '') params.success = authEventSuccess;
+      const r = await api.getAuthEvents(params);
+      setAuthEvents(r.events);
+    } catch (e) { console.error(e); }
+    setAuthEventsLoading(false);
+  }
+
+  async function loadHealth() {
+    try { const r = await api.getSystemHealth(); setSystemHealth(r); } catch (e) { console.error(e); }
+  }
+
+  async function loadUserActivity(userId: number) {
+    if (userActivity[userId]) { setExpandedUser(prev => prev === userId ? null : userId); return; }
+    try {
+      const r = await api.getUserActivity(userId);
+      setUserActivity(prev => ({ ...prev, [userId]: r }));
+      setExpandedUser(userId);
+    } catch (e) { console.error(e); }
+  }
+
+  async function generateResetLink(userId: number) {
+    setGeneratingReset(userId);
+    try {
+      const r = await api.generatePasswordResetToken(userId);
+      setResetLinks(prev => ({ ...prev, [userId]: { link: r.resetLink, expiresAt: r.expiresAt } }));
+    } catch (e: any) { alert(e.message || 'Could not generate reset link.'); }
+    setGeneratingReset(null);
   }
 
   async function addServer(e: React.FormEvent) {
@@ -161,6 +292,9 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   }
 
   async function toggleBan(id: number, banned: boolean) {
+    const target = users.find(u => u.id === id);
+    const action = banned ? 'Unban' : 'Ban';
+    if (!confirm(`${action} @${target?.username}?`)) return;
     try {
       await (banned ? api.unbanUser(id) : api.banUser(id));
       setUsers(prev => prev.map(u => u.id === id ? { ...u, banned: banned ? 0 : 1 } : u));
@@ -197,6 +331,21 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     } catch (e: any) { alert(e.message || 'Could not delete user.'); }
   }
 
+  async function loadAnalytics() {
+    setAnalyticsLoading(true);
+    try {
+      const [summary, peak, feature] = await Promise.all([
+        api.getAnalyticsSummary(),
+        api.getAnalyticsPeakHours(),
+        api.getAnalyticsFeatureUsage(),
+      ]);
+      setAnalyticsSummary(summary);
+      setAnalyticsPeakHours(peak);
+      setAnalyticsFeatureUsage(feature);
+    } catch (e) { console.error(e); }
+    finally { setAnalyticsLoading(false); }
+  }
+
   return (
     <div className="admin-page">
       <h2>🛡 Admin Dashboard</h2>
@@ -206,6 +355,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
         <div className="admin-stat-card danger"><span className="admin-stat-num">{adminStats.bannedUsers || 0}</span><span>Banned</span></div>
         <div className="admin-stat-card alert"><span className="admin-stat-num">{adminStats.openReports || 0}</span><span>Open Reports</span></div>
         <div className="admin-stat-card"><span className="admin-stat-num">{adminStats.activeRssSources || 0}</span><span>RSS Sources</span></div>
+        <div className="admin-stat-card warn"><span className="admin-stat-num">{adminStats.hiddenPosts || 0}</span><span>Hidden Posts</span></div>
         <div className="admin-stat-card"><span className="admin-stat-num">{adminStats.gameCount || 0}</span><span>Games</span></div>
       </div>
       <div className="admin-tabs">
@@ -214,6 +364,9 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
         <button className={`btn ${tab === 'reports' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('reports'); setRssFetchResult(null); }}>Reports</button>
         <button className={`btn ${tab === 'rss' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('rss')}>RSS Sources</button>
         <button className={`btn ${tab === 'servers' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('servers'); loadServers(); }}>Game Servers</button>
+        <button className={`btn ${tab === 'auth-logs' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('auth-logs')}>Auth Logs</button>
+        <button className={`btn ${tab === 'health' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('health')}>System Health</button>
+        <button className={`btn ${tab === 'analytics' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('analytics')}>Analytics</button>
       </div>
 
       {/* Users tab */}
@@ -241,7 +394,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                 return true;
               })
               .map(u => (
-                <div key={u.id} className="admin-user-card">
+                <Fragment key={u.id}>
+                <div className="admin-user-card">
                   <div className="admin-user-info">
                     <div className="avatar-placeholder" style={{ width: 36, height: 36, fontSize: '1rem' }}>{u.display_name?.[0] || '?'}</div>
                     <div>
@@ -256,13 +410,25 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                     <span className="admin-badge badge-vis">{u.profile_visibility || 'public'}</span>
                   </div>
                   <div className="admin-user-actions">
-                    <select className="input" value={u.role} onChange={e => changeRole(u.id, e.target.value)}
+                    <button className="btn btn-sm" onClick={() => {
+                      if (expandedUser === u.id) { setExpandedUser(null); } else { loadUserActivity(u.id); }
+                    }}>{expandedUser === u.id ? 'Close' : 'Details'}</button>
+                    <select className="input" value={userRoleDraft[u.id] ?? u.role}
+                      onChange={e => setUserRoleDraft(prev => ({ ...prev, [u.id]: e.target.value }))}
                       style={{ width: 90, padding: '4px 8px', fontSize: '0.8rem' }}
                       disabled={u.id === currentUser?.id}>
                       <option value="user">User</option>
                       <option value="mod">Mod</option>
                       <option value="admin">Admin</option>
                     </select>
+                    {userRoleDraft[u.id] && userRoleDraft[u.id] !== u.role && u.id !== currentUser?.id && (
+                      <button className="btn btn-sm" onClick={() => {
+                        const next = userRoleDraft[u.id];
+                        if (!confirm(`Change @${u.username}'s role from ${u.role} → ${next}?`)) return;
+                        changeRole(u.id, next);
+                        setUserRoleDraft(prev => { const d = { ...prev }; delete d[u.id]; return d; });
+                      }}>Apply</button>
+                    )}
                     {u.role !== 'admin' && (u.is_verified ? (
                       <button className="btn btn-sm" onClick={() => unverifyUser(u.id)}>Unverify</button>
                     ) : (
@@ -274,6 +440,17 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                     )}
                   </div>
                 </div>
+                {expandedUser === u.id && (
+                  <UserDetailPanel
+                    act={userActivity[u.id]}
+                    resetLink={resetLinks[u.id]}
+                    generatingReset={generatingReset === u.id}
+                    onGenerateReset={() => generateResetLink(u.id)}
+                    onDismissReset={() => setResetLinks(prev => { const d = {...prev}; delete d[u.id]; return d; })}
+                    onCopyLink={() => navigator.clipboard.writeText(resetLinks[u.id]?.link || '')}
+                  />
+                )}
+                </Fragment>
               ))}
           </div>
         </div>
@@ -298,7 +475,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
             {REPORT_FILTERS.map(s => (
               <button key={s} className={`btn btn-sm ${reportFilter === s ? 'btn-primary' : 'btn-ghost'}`}
                 onClick={() => setReportFilter(s)}>
-                {s.charAt(0).toUpperCase() + s.slice(1)}
+                {REPORT_FILTER_LABELS[s]}
               </button>
             ))}
           </div>
@@ -352,8 +529,11 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
                 {r.status === 'open' && (
                   <div className="report-card-actions">
-                    <button className="btn btn-sm report-btn-approve" onClick={() => reviewReport(r, 'dismissed')}>Approve</button>
-                    <button className="btn btn-sm report-btn-delete" onClick={() => reviewReport(r, 'resolved')}>Delete</button>
+                    <button className="btn btn-sm report-btn-approve" onClick={() => reviewReport(r, 'dismissed')}>Dismiss Report</button>
+                    <button className="btn btn-sm report-btn-delete" onClick={() => {
+                      if (!confirm('Hide this content and mark the report resolved? The post will be hidden from public view.')) return;
+                      reviewReport(r, 'resolved');
+                    }}>Hide & Resolve</button>
                   </div>
                 )}
               </div>
@@ -470,6 +650,194 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
               </tr>
             ))}</tbody>
           </table></div>
+        </div>
+      )}
+
+      {/* Auth Logs tab */}
+      {tab === 'auth-logs' && (
+        <div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+            <select className="input" value={authEventType} onChange={e => setAuthEventType(e.target.value)} style={{ width: 'auto' }}>
+              <option value="">All event types</option>
+              {Object.entries(EVENT_TYPE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+            <select className="input" value={authEventSuccess} onChange={e => setAuthEventSuccess(e.target.value)} style={{ width: 'auto' }}>
+              <option value="">All outcomes</option>
+              <option value="1">Success only</option>
+              <option value="0">Failures only</option>
+            </select>
+            <button className="btn btn-sm btn-ghost" onClick={loadAuthEvents} disabled={authEventsLoading}>
+              {authEventsLoading ? 'Loading…' : '↻ Refresh'}
+            </button>
+            <span className="muted" style={{ fontSize: '0.82rem' }}>{authEvents.length} events</span>
+          </div>
+          {authEvents.length === 0 && !authEventsLoading && <p className="muted">No events match the current filter.</p>}
+          <div className="admin-table-wrap">
+            <table className="admin-table">
+              <thead><tr><th>Event</th><th>User</th><th>Result</th><th>IP</th><th>User Agent</th><th>When</th></tr></thead>
+              <tbody>{authEvents.map(ev => (
+                <tr key={ev.id} style={{ opacity: ev.success ? 1 : 0.85 }}>
+                  <td style={{ whiteSpace: 'nowrap' }}>{EVENT_TYPE_LABELS[ev.event_type] || ev.event_type}</td>
+                  <td>{ev.username ? `@${ev.username}` : ev.target_user_username ? `→@${ev.target_user_username}` : <em className="muted">—</em>}
+                    {ev.admin_actor_username && <span className="muted" style={{ fontSize: '0.78rem' }}> (by @{ev.admin_actor_username})</span>}
+                  </td>
+                  <td style={{ color: ev.success ? 'var(--green)' : 'var(--danger)', whiteSpace: 'nowrap' }}>
+                    {ev.success ? '✓ OK' : `✗ ${ev.reason || 'fail'}`}
+                  </td>
+                  <td className="muted" style={{ fontSize: '0.8rem' }}>{ev.ip_address || '—'}</td>
+                  <td className="muted" style={{ fontSize: '0.75rem', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ev.user_agent}>
+                    {ev.user_agent?.slice(0, 60) || '—'}
+                  </td>
+                  <td className="muted" style={{ whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{ev.created_at?.slice(0,16).replace('T',' ')}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* System Health tab */}
+      {tab === 'health' && (
+        <div style={{ maxWidth: 600 }}>
+          {!systemHealth ? (
+            <p className="muted">Loading…</p>
+          ) : (
+            <>
+              <div style={{ display: 'grid', gap: 10, marginBottom: 24 }}>
+                {([
+                  ['Status', systemHealth.status === 'ok' ? '✅ OK' : '⚠ Degraded'],
+                  ['Environment', systemHealth.nodeEnv],
+                  ['App version', systemHealth.appVersion],
+                  ['Database', systemHealth.dbReachable ? '✅ Reachable' : '❌ Unreachable'],
+                  ['Uploads path', systemHealth.uploadsPathOk ? '✅ Exists' : '❌ Missing'],
+                  ['Google OAuth', systemHealth.googleOAuth],
+                  ['Steam OAuth', systemHealth.steamOAuth],
+                  ['Uptime', `${Math.floor(systemHealth.uptimeSeconds / 60)}m ${systemHealth.uptimeSeconds % 60}s`],
+                  ['Total users', systemHealth.totalUsers],
+                  ['Open reports', systemHealth.openReports],
+                  ['Auth events (24h)', systemHealth.authEventsLast24h],
+                ] as [string, any][]).map(([label, value]) => (
+                  <div key={label} style={{ display: 'flex', gap: 16, borderBottom: '1px solid var(--border)', paddingBottom: 8 }}>
+                    <span className="muted" style={{ minWidth: 160, fontSize: '0.88rem' }}>{label}</span>
+                    <strong style={{ fontSize: '0.88rem' }}>{String(value)}</strong>
+                  </div>
+                ))}
+              </div>
+              <button className="btn btn-sm btn-ghost" onClick={loadHealth}>↻ Refresh</button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Analytics tab */}
+      {tab === 'analytics' && (
+        <div>
+          {analyticsLoading ? (
+            <p className="muted">Loading analytics…</p>
+          ) : (
+            <>
+              {analyticsSummary && (
+                <>
+                  <h3 style={{ marginBottom: 12 }}>Overview</h3>
+                  <p className="muted" style={{ marginBottom: 8, fontSize: '0.82rem' }}>
+                    {analyticsSummary.recentlyActive} user{analyticsSummary.recentlyActive !== 1 ? 's' : ''} active in the last 15 minutes
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(160px,1fr))', gap: 10, marginBottom: 24 }}>
+                    {([
+                      ['Active Users Today', analyticsSummary.activeUsersToday],
+                      ['Active Users 7d', analyticsSummary.activeUsers7d],
+                      ['Active Users 30d', analyticsSummary.activeUsers30d],
+                      ['Page Views Today', analyticsSummary.pageViewsToday],
+                      ['Page Views 7d', analyticsSummary.pageViews7d],
+                      ['Page Views 30d', analyticsSummary.pageViews30d],
+                      ['Posts Today', analyticsSummary.postsToday],
+                      ['Comments Today', analyticsSummary.commentsToday],
+                      ['Likes Today', analyticsSummary.likesToday],
+                      ['Login OK Today', analyticsSummary.loginSuccessToday],
+                      ['Login Fail Today', analyticsSummary.loginFailToday],
+                      ['Uploads OK Today', analyticsSummary.uploadSuccessToday],
+                      ['Uploads Fail Today', analyticsSummary.uploadFailToday],
+                    ] as [string, number][]).map(([label, val]) => (
+                      <div key={label} className="admin-stat-card" style={{ flexDirection: 'column', alignItems: 'flex-start', padding: '10px 14px' }}>
+                        <span className="admin-stat-num" style={{ fontSize: '1.5rem' }}>{val ?? 0}</span>
+                        <span className="muted" style={{ fontSize: '0.78rem' }}>{label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {analyticsPeakHours && (
+                <>
+                  <h3 style={{ marginBottom: 8 }}>Peak Hours (last 7 days)</h3>
+                  <p className="muted" style={{ fontSize: '0.82rem', marginBottom: 10 }}>
+                    Based on aggregate activity in the last 7 days. These are estimates only.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
+                    <div>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                        <thead>
+                          <tr style={{ color: 'var(--text-dim)', textAlign: 'left' }}>
+                            <th style={{ paddingBottom: 6, paddingRight: 16 }}>Hour (UTC)</th>
+                            <th style={{ paddingBottom: 6 }}>Events</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(analyticsPeakHours.peakHours || []).slice(0, 10).map((r: any) => (
+                            <tr key={r.hour} style={{ borderTop: '1px solid var(--border)' }}>
+                              <td style={{ padding: '5px 16px 5px 0' }}>{String(r.hour).padStart(2, '0')}:00</td>
+                              <td style={{ padding: '5px 0' }}>{r.count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div>
+                      <div style={{ marginBottom: 16 }}>
+                        <strong style={{ display: 'block', marginBottom: 6, fontSize: '0.88rem' }}>Suggested Announcement Windows</strong>
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: '0.85rem' }}>
+                          {(analyticsPeakHours.suggestedAnnouncementWindows || []).map((w: string) => (
+                            <li key={w} style={{ marginBottom: 4 }}>{w} UTC</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <strong style={{ display: 'block', marginBottom: 6, fontSize: '0.88rem' }}>Quiet Maintenance Windows</strong>
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: '0.85rem' }}>
+                          {(analyticsPeakHours.quietWindows || []).map((w: string) => (
+                            <li key={w} style={{ marginBottom: 4 }}>{w} UTC</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {analyticsFeatureUsage && (
+                <>
+                  <h3 style={{ marginBottom: 8 }}>Feature Area Usage (last 30 days)</h3>
+                  <table style={{ borderCollapse: 'collapse', fontSize: '0.85rem', marginBottom: 16, minWidth: 280 }}>
+                    <thead>
+                      <tr style={{ color: 'var(--text-dim)', textAlign: 'left' }}>
+                        <th style={{ paddingBottom: 6, paddingRight: 32 }}>Feature Area</th>
+                        <th style={{ paddingBottom: 6 }}>Events</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(analyticsFeatureUsage.featureAreas || []).map((r: any) => (
+                        <tr key={r.area} style={{ borderTop: '1px solid var(--border)' }}>
+                          <td style={{ padding: '5px 32px 5px 0', textTransform: 'capitalize' }}>{r.area}</td>
+                          <td style={{ padding: '5px 0' }}>{r.count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+              <button className="btn btn-sm btn-ghost" onClick={loadAnalytics}>↻ Refresh</button>
+            </>
+          )}
         </div>
       )}
     </div>
