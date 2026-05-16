@@ -15,7 +15,8 @@
     "rss:fetch": "tsx server/rssFetch.ts",
     "rss:status": "tsx server/rssStatus.ts",
     "preview": "vite preview",
-    "backup:db": "bash scripts/backup-db.sh"
+    "backup:db": "bash scripts/backup-db.sh",
+    "backup:uploads": "bash scripts/backup-uploads.sh"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

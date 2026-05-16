@@ -119,6 +119,7 @@ export const api = {
   getSystemHealth: () => request<any>('/admin/system-health'),
   getBackupStatus: () => request<any>('/admin/backups/status'),
   runBackup: () => request<any>('/admin/backups/run', { method: 'POST' }),
+  runUploadBackup: () => request<any>('/admin/backups/run-uploads', { method: 'POST' }),
   getAnalyticsSummary: () => request<any>('/admin/analytics/summary'),
   getAnalyticsPeakHours: () => request<any>('/admin/analytics/peak-hours'),
   getAnalyticsFeatureUsage: () => request<any>('/admin/analytics/feature-usage'),

@@ -22,14 +22,18 @@ function formatBackupAge(ageHours: number): string {
   return `${(ageHours / 24).toFixed(1)}d ago`;
 }
 function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  const safeBytes = Number.isFinite(bytes) ? bytes : 0;
+  if (safeBytes < 1024) return `${safeBytes} B`;
+  if (safeBytes < 1_048_576) return `${(safeBytes / 1024).toFixed(1)} KB`;
+  return `${(safeBytes / 1_048_576).toFixed(1)} MB`;
 }
 function backupHealthStatus(s: any): { label: string; color: string } {
   if (!s?.backupDirExists || s?.backupCount === 0) return { label: '❌ No Backups Found', color: 'var(--danger)' };
   if (s?.integrityCheck === 'failed')              return { label: '❌ Integrity Check Failed', color: 'var(--danger)' };
+  if (!s?.uploadBackups?.uploadsCovered)           return { label: '⚠ Upload Backups Missing', color: '#f59e0b' };
   if ((s?.latestBackup?.ageHours ?? 0) > 48)       return { label: '⚠ Backup Overdue', color: '#f59e0b' };
+  if ((s?.uploadBackups?.latestBackup?.ageHours ?? 0) > 48)
+                                                    return { label: '⚠ Upload Backup Overdue', color: '#f59e0b' };
   if (s?.timerActive && s.timerActive !== 'active' && s.timerActive !== 'unavailable')
                                                     return { label: '⚠ Timer Inactive', color: '#f59e0b' };
   return { label: '✅ Healthy', color: 'var(--green)' };
@@ -137,7 +141,9 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   // Backups
   const [backupStatus, setBackupStatus] = useState<any>(null);
   const [backupRunning, setBackupRunning] = useState(false);
+  const [uploadBackupRunning, setUploadBackupRunning] = useState(false);
   const [backupRunResult, setBackupRunResult] = useState<string | null>(null);
+  const [uploadBackupRunResult, setUploadBackupRunResult] = useState<string | null>(null);
 
   // User detail expansion
   const [expandedUser, setExpandedUser] = useState<number | null>(null);
@@ -280,6 +286,25 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       setBackupRunResult(`❌ Request error: ${e.message || 'Unknown'}`);
     }
     setBackupRunning(false);
+  }
+
+  async function runUploadBackupNow() {
+    if (!confirm('Run an uploads/media backup now? This archives the uploads directory without deleting live files.')) return;
+    setUploadBackupRunning(true);
+    setUploadBackupRunResult(null);
+    try {
+      const r = await api.runUploadBackup();
+      if (r.ok) {
+        const latest = r.latestBackup;
+        setUploadBackupRunResult(`✅ Done (${r.durationMs}ms)${latest ? `\n${latest.filename} (${formatBytes(latest.sizeBytes)})` : ''}`);
+        await loadBackupStatus();
+      } else {
+        setUploadBackupRunResult(`❌ Failed: ${r.error || 'Upload backup failed.'}`);
+      }
+    } catch (e: any) {
+      setUploadBackupRunResult(`❌ Request error: ${e.message || 'Unknown'}`);
+    }
+    setUploadBackupRunning(false);
   }
 
   async function addServer(e: React.FormEvent) {
@@ -892,12 +917,14 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
       {/* Backups tab */}
       {tab === 'backups' && (
-        <div style={{ maxWidth: 700 }}>
+        <div style={{ maxWidth: 820 }}>
           {!backupStatus ? (
             <p className="muted">Loading…</p>
           ) : (() => {
             const health = backupHealthStatus(backupStatus);
             const lb = backupStatus.latestBackup;
+            const uploads = backupStatus.uploadBackups || {};
+            const ulb = uploads.latestBackup;
             return (
               <>
                 {/* ── Status banner ── */}
@@ -906,14 +933,14 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                   <button className="btn btn-sm btn-ghost" style={{ marginLeft: 'auto' }} onClick={loadBackupStatus}>↻ Refresh</button>
                 </div>
 
-                {/* ── Info grid ── */}
+                {/* ── Database backups ── */}
+                <h3 style={{ marginBottom: 10 }}>Database Backups</h3>
                 <div style={{ display: 'grid', gap: 10, marginBottom: 20 }}>
                   {([
                     ['Backup directory',  backupStatus.backupDir],
                     ['Backup count',      `${backupStatus.backupCount} file${backupStatus.backupCount !== 1 ? 's' : ''}`],
                     ['Total stored',      formatBytes(backupStatus.totalSizeBytes)],
                     ['Retention policy',  `${backupStatus.retentionDays} days`],
-                    ['Uploads covered',   backupStatus.uploadsCovered ? 'Yes' : '⚠ No — media files not backed up yet'],
                     ...(lb ? [
                       ['Latest backup',    lb.filename],
                       ['Latest size',      formatBytes(lb.sizeBytes)],
@@ -950,15 +977,10 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                   </div>
                 )}
 
-                {/* ── Uploads warning ── */}
-                <div style={{ background: 'var(--bg-card)', border: '1px solid #f59e0b55', borderRadius: 'var(--radius-sm)', padding: '10px 14px', marginBottom: 20, fontSize: '0.85rem' }}>
-                  <strong>⚠ Media files not included.</strong> Database backups do not cover uploaded images and media in the <code>uploads/</code> directory. This is a future task.
-                </div>
-
-                {/* ── Run backup now ── */}
+                {/* ── Run database backup now ── */}
                 <div style={{ marginBottom: 24 }}>
                   <button className="btn btn-primary" disabled={backupRunning} onClick={runBackupNow}>
-                    {backupRunning ? '⏳ Running backup…' : '💾 Run Backup Now'}
+                    {backupRunning ? '⏳ Running backup…' : '💾 Run Database Backup Now'}
                   </button>
                   <span className="muted" style={{ marginLeft: 12, fontSize: '0.82rem' }}>
                     Runs <code>scripts/backup-db.sh</code> — safe, no service restart needed.
@@ -970,18 +992,97 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                   )}
                 </div>
 
+                {/* ── Uploads backups ── */}
+                <h3 style={{ marginBottom: 10 }}>Uploads / Media Backups</h3>
+                <div style={{ display: 'grid', gap: 10, marginBottom: 20 }}>
+                  {([
+                    ['Uploads covered', uploads.uploadsCovered ? '✅ Yes — local archive exists' : '⚠ No upload backup archive found yet'],
+                    ['Uploads source', uploads.sourceDir || '/home/brock/social-site/uploads'],
+                    ['Source exists', uploads.sourceDirExists ? '✅ yes' : '❌ missing'],
+                    ['Source files', `${uploads.sourceFileCount ?? 0} file${(uploads.sourceFileCount ?? 0) !== 1 ? 's' : ''}`],
+                    ['Source size', formatBytes(uploads.sourceSizeBytes ?? 0)],
+                    ['Backup directory', uploads.backupDir || '/home/brock/backups/refugecloud-uploads'],
+                    ['Backup count', `${uploads.backupCount ?? 0} archive${(uploads.backupCount ?? 0) !== 1 ? 's' : ''}`],
+                    ['Backup stored', formatBytes(uploads.totalSizeBytes ?? 0)],
+                    ['Retention policy', `${uploads.retentionDays ?? 14} days`],
+                    ...(ulb ? [
+                      ['Latest upload backup', ulb.filename],
+                      ['Latest upload size', formatBytes(ulb.sizeBytes)],
+                      ['Latest upload age', formatBackupAge(ulb.ageHours)],
+                    ] as [string, string][] : [
+                      ['Latest upload backup', '⚠ None found'],
+                    ] as [string, string][]),
+                    ['Timer', uploads.timerName || 'refugecloud-uploads-backup.timer'],
+                    ['Service', uploads.serviceName || 'refugecloud-uploads-backup.service'],
+                    ['Timer status', uploads.timerActive === 'active'
+                      ? '✅ active'
+                      : uploads.timerActive === 'inactive'
+                        ? '⚠ inactive — install/enable only after review'
+                        : `— ${uploads.timerActive || 'unavailable'}`],
+                    ['Next scheduled run', uploads.nextScheduledRun || 'unavailable'],
+                  ] as [string, string][]).map(([label, value]) => (
+                    <div key={label} style={{ display: 'flex', gap: 16, borderBottom: '1px solid var(--border)', paddingBottom: 8 }}>
+                      <span className="muted" style={{ minWidth: 170, fontSize: '0.88rem', flexShrink: 0 }}>{label}</span>
+                      <span style={{ fontSize: '0.88rem', wordBreak: 'break-all' }}>{value}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{
+                  background: 'var(--bg-card)',
+                  border: `1px solid ${uploads.uploadsCovered ? 'var(--border)' : '#f59e0b55'}`,
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '10px 14px',
+                  marginBottom: 20,
+                  fontSize: '0.85rem',
+                }}>
+                  {uploads.uploadsCovered ? (
+                    <>
+                      <strong>Media is covered locally.</strong> Upload archives now exist on this server. Offsite backup is still recommended because DB and uploads backups are on the same machine.
+                    </>
+                  ) : (
+                    <>
+                      <strong>⚠ Media files need a backup.</strong> Run an upload backup to archive uploaded images and media in the <code>uploads/</code> directory.
+                    </>
+                  )}
+                </div>
+
+                {uploads.lastServiceLog && uploads.lastServiceLog !== 'unavailable' && (
+                  <div style={{ marginBottom: 20 }}>
+                    <strong style={{ display: 'block', marginBottom: 6, fontSize: '0.88rem' }}>Last uploads backup log</strong>
+                    <pre style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: '0.75rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {uploads.lastServiceLog}
+                    </pre>
+                  </div>
+                )}
+
+                <div style={{ marginBottom: 24 }}>
+                  <button className="btn btn-primary" disabled={uploadBackupRunning} onClick={runUploadBackupNow}>
+                    {uploadBackupRunning ? '⏳ Running upload backup…' : '💾 Run Upload Backup Now'}
+                  </button>
+                  <span className="muted" style={{ marginLeft: 12, fontSize: '0.82rem' }}>
+                    Runs <code>scripts/backup-uploads.sh</code> — archives media only, no restore.
+                  </span>
+                  {uploadBackupRunResult && (
+                    <pre style={{ marginTop: 10, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 12px', fontSize: '0.75rem', overflowX: 'auto', maxHeight: 160, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                      {uploadBackupRunResult}
+                    </pre>
+                  )}
+                </div>
+
                 {/* ── Restore instructions (read-only) ── */}
                 <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '14px 16px', fontSize: '0.84rem' }}>
                   <strong style={{ display: 'block', marginBottom: 10 }}>🔴 Restore Procedure — Manual Only</strong>
                   <p className="muted" style={{ marginBottom: 10 }}>
-                    Restore requires stopping the service and copying the backup file via SSH. There is no restore button.
+                    Restore requires stopping the service and copying backup files via SSH. There is no restore button.
                   </p>
                   <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.9 }}>
-                    <li>Take a safety snapshot first: <code>npm run backup:db</code></li>
+                    <li>Take safety snapshots first: <code>npm run backup:db</code> and <code>npm run backup:uploads</code></li>
                     <li>Stop the service: <code>sudo systemctl stop refugecloud</code></li>
                     <li>Keep a copy of the live DB: <code>cp data/social.db data/social.db.pre-restore</code></li>
                     <li><strong>Delete WAL sidecar files (critical):</strong> <code>rm -f data/social.db-wal data/social.db-shm</code></li>
                     <li>Copy the backup in: <code>cp /home/brock/backups/refugecloud-db/&lt;filename&gt;.db data/social.db</code></li>
+                    <li>Restore uploads only from a verified archive: <code>tar -xzf /home/brock/backups/refugecloud-uploads/&lt;filename&gt;.tar.gz -C /home/brock/social-site</code></li>
                     <li>Verify: <code>sqlite3 data/social.db "PRAGMA integrity_check;"</code></li>
                     <li>Restart: <code>sudo systemctl start refugecloud</code></li>
                   </ol>

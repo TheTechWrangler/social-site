@@ -526,6 +526,14 @@ router.get('/analytics/feature-usage', requireAuth, requireAdmin, (_req, res) =>
 const BACKUP_DIR = '/home/brock/backups/refugecloud-db';
 const BACKUP_RETENTION_DAYS = 14;
 const BACKUP_SCRIPT = path.resolve(__dirname, '../../scripts/backup-db.sh');
+const UPLOADS_DIR = '/home/brock/social-site/uploads';
+const UPLOAD_BACKUP_DIR = '/home/brock/backups/refugecloud-uploads';
+const UPLOAD_BACKUP_RETENTION_DAYS = 14;
+const UPLOAD_BACKUP_SCRIPT = path.resolve(__dirname, '../../scripts/backup-uploads.sh');
+const UPLOAD_BACKUP_TIMER = 'refugecloud-uploads-backup.timer';
+const UPLOAD_BACKUP_SERVICE = 'refugecloud-uploads-backup.service';
+
+type BackupFileInfo = { name: string; fullPath: string; sizeBytes: number; mtime: number };
 
 /** Run a fixed command safely. Returns trimmed stdout or 'unavailable' on any error/timeout. */
 function spawnSafe(cmd: string, args: string[], timeoutMs = 5000): string {
@@ -538,24 +546,78 @@ function spawnSafe(cmd: string, args: string[], timeoutMs = 5000): string {
   }
 }
 
+function listBackupFiles(dir: string, prefix: string, suffix: string): BackupFileInfo[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter(f => f.startsWith(prefix) && f.endsWith(suffix))
+    .map(name => {
+      const fullPath = path.join(dir, name);
+      const stat = fs.statSync(fullPath);
+      return { name, fullPath, sizeBytes: stat.size, mtime: stat.mtimeMs };
+    })
+    .sort((a, b) => b.mtime - a.mtime);
+}
+
+function backupSummary(file: BackupFileInfo | undefined): any {
+  if (!file) return null;
+  const ageHours = Math.round(((Date.now() - file.mtime) / 3_600_000) * 10) / 10;
+  return { filename: file.name, sizeBytes: file.sizeBytes, mtimeMs: file.mtime, ageHours };
+}
+
+function directoryStats(dir: string): { exists: boolean; fileCount: number; totalSizeBytes: number } {
+  if (!fs.existsSync(dir)) return { exists: false, fileCount: 0, totalSizeBytes: 0 };
+  let fileCount = 0;
+  let totalSizeBytes = 0;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: string[] = [];
+    try { entries = fs.readdirSync(current); } catch { continue; }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry);
+      try {
+        const stat = fs.lstatSync(fullPath);
+        if (stat.isSymbolicLink()) continue;
+        if (stat.isDirectory()) stack.push(fullPath);
+        else if (stat.isFile()) { fileCount++; totalSizeBytes += stat.size; }
+      } catch { /* non-fatal */ }
+    }
+  }
+  return { exists: true, fileCount, totalSizeBytes };
+}
+
+function nextScheduledRunFromTimer(timerListRaw: string): string {
+  if (timerListRaw === 'unavailable') return 'unavailable';
+  const parts = timerListRaw.split(/\s+/);
+  return parts.length >= 4 ? `${parts[0]} ${parts[1]} ${parts[2]} ${parts[3]}` : 'unavailable';
+}
+
+function safeServiceLog(raw: string): string {
+  if (!raw || raw === 'unavailable') return raw || 'unavailable';
+  return raw
+    .split(/\r?\n/)
+    .slice(-20)
+    .map(line => line.slice(0, 240))
+    .join('\n')
+    .slice(0, 3000);
+}
+
 // GET /api/admin/backups/status — backup directory health, latest file info, timer status
 router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
   // ── 1. Enumerate backup files ────────────────────────────────────────────
   let backupDirExists = false;
-  let backupFiles: Array<{ name: string; fullPath: string; sizeBytes: number; mtime: number }> = [];
+  let backupFiles: BackupFileInfo[] = [];
+  let uploadBackupDirExists = false;
+  let uploadBackupFiles: BackupFileInfo[] = [];
 
   try {
     backupDirExists = fs.existsSync(BACKUP_DIR);
-    if (backupDirExists) {
-      backupFiles = fs.readdirSync(BACKUP_DIR)
-        .filter(f => f.startsWith('refugecloud-social-') && f.endsWith('.db'))
-        .map(name => {
-          const fullPath = path.join(BACKUP_DIR, name);
-          const stat = fs.statSync(fullPath);
-          return { name, fullPath, sizeBytes: stat.size, mtime: stat.mtimeMs };
-        })
-        .sort((a, b) => b.mtime - a.mtime); // newest first
-    }
+    if (backupDirExists) backupFiles = listBackupFiles(BACKUP_DIR, 'refugecloud-social-', '.db');
+  } catch { /* non-fatal */ }
+
+  try {
+    uploadBackupDirExists = fs.existsSync(UPLOAD_BACKUP_DIR);
+    if (uploadBackupDirExists) uploadBackupFiles = listBackupFiles(UPLOAD_BACKUP_DIR, 'refugecloud-uploads-', '.tar.gz');
   } catch { /* non-fatal */ }
 
   // ── 2. Latest backup metadata ─────────────────────────────────────────────
@@ -564,8 +626,7 @@ router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
 
   if (backupFiles.length > 0) {
     const latest = backupFiles[0];
-    const ageHours = Math.round(((Date.now() - latest.mtime) / 3_600_000) * 10) / 10;
-    latestBackup = { filename: latest.name, sizeBytes: latest.sizeBytes, mtimeMs: latest.mtime, ageHours };
+    latestBackup = backupSummary(latest);
 
     // Integrity check on backup file only — fixed command, no user input in path
     try {
@@ -581,18 +642,22 @@ router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
   }
 
   const totalSizeBytes = backupFiles.reduce((sum, f) => sum + f.sizeBytes, 0);
+  const uploadBackupTotalSizeBytes = uploadBackupFiles.reduce((sum, f) => sum + f.sizeBytes, 0);
+  const uploadsSourceStats = directoryStats(UPLOADS_DIR);
+  const uploadBackupScriptExists = fs.existsSync(UPLOAD_BACKUP_SCRIPT);
+  const uploadsCovered = uploadBackupScriptExists && uploadBackupFiles.length > 0;
 
   // ── 3. Systemd timer / service status (fixed commands only) ───────────────
   const timerActive     = spawnSafe('systemctl', ['is-active', 'refugecloud-db-backup.timer']);
   const timerListRaw    = spawnSafe('systemctl', ['list-timers', '--no-pager', '--no-legend', 'refugecloud-db-backup.timer']);
   const lastServiceLog  = spawnSafe('journalctl', ['-u', 'refugecloud-db-backup.service', '-n', '15', '--no-pager', '--output=cat']);
+  const uploadTimerActive    = spawnSafe('systemctl', ['is-active', UPLOAD_BACKUP_TIMER]);
+  const uploadTimerListRaw   = spawnSafe('systemctl', ['list-timers', '--no-pager', '--no-legend', UPLOAD_BACKUP_TIMER]);
+  const uploadLastServiceLog = spawnSafe('journalctl', ['-u', UPLOAD_BACKUP_SERVICE, '-n', '15', '--no-pager', '--output=cat']);
 
   // Parse "NEXT" datetime from list-timers: first 4 whitespace tokens are Day Date Time TZ
-  let nextScheduledRun = 'unavailable';
-  if (timerListRaw !== 'unavailable') {
-    const parts = timerListRaw.split(/\s+/);
-    if (parts.length >= 4) nextScheduledRun = `${parts[0]} ${parts[1]} ${parts[2]} ${parts[3]}`;
-  }
+  const nextScheduledRun = nextScheduledRunFromTimer(timerListRaw);
+  const uploadNextScheduledRun = nextScheduledRunFromTimer(uploadTimerListRaw);
 
   res.json({
     backupDirExists,
@@ -604,8 +669,27 @@ router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
     integrityCheck,
     timerActive,
     nextScheduledRun,
-    lastServiceLog,
-    uploadsCovered: false,
+    lastServiceLog: safeServiceLog(lastServiceLog),
+    uploadsCovered,
+    uploadBackups: {
+      sourceDir: UPLOADS_DIR,
+      sourceDirExists: uploadsSourceStats.exists,
+      sourceFileCount: uploadsSourceStats.fileCount,
+      sourceSizeBytes: uploadsSourceStats.totalSizeBytes,
+      backupDirExists: uploadBackupDirExists,
+      backupDir: UPLOAD_BACKUP_DIR,
+      retentionDays: UPLOAD_BACKUP_RETENTION_DAYS,
+      backupCount: uploadBackupFiles.length,
+      totalSizeBytes: uploadBackupTotalSizeBytes,
+      latestBackup: backupSummary(uploadBackupFiles[0]),
+      backupScriptExists: uploadBackupScriptExists,
+      uploadsCovered,
+      timerName: UPLOAD_BACKUP_TIMER,
+      serviceName: UPLOAD_BACKUP_SERVICE,
+      timerActive: uploadTimerActive,
+      nextScheduledRun: uploadNextScheduledRun,
+      lastServiceLog: safeServiceLog(uploadLastServiceLog),
+    },
   });
 });
 
@@ -636,6 +720,39 @@ router.post('/backups/run', requireAuth, requireAdmin, (_req, res) => {
     res.json({ ok: true, output: stdout, durationMs });
   } catch (e: any) {
     res.json({ ok: false, error: e.message || 'Unexpected error.', durationMs: Date.now() - startMs });
+  }
+});
+
+// POST /api/admin/backups/run-uploads — run the uploads backup script (fixed command, no user args)
+router.post('/backups/run-uploads', requireAuth, requireAdmin, (_req, res) => {
+  const startMs = Date.now();
+  try {
+    if (!fs.existsSync(UPLOAD_BACKUP_SCRIPT)) {
+      res.status(500).json({ ok: false, error: 'Upload backup script not found at expected path.' });
+      return;
+    }
+    const result = spawnSync('bash', [UPLOAD_BACKUP_SCRIPT], {
+      timeout: 300_000, // 5 minutes max
+      encoding: 'utf8',
+      env: { ...process.env },
+    });
+    const durationMs = Date.now() - startMs;
+    if (result.error) {
+      console.error('[backup-uploads] Script launch error:', result.error.message);
+      res.json({ ok: false, error: 'Upload backup timed out or could not start.', durationMs });
+      return;
+    }
+    if (result.status !== 0) {
+      const stderr = (result.stderr || '').trim();
+      console.error('[backup-uploads] Script failed:', stderr.slice(0, 500) || `status ${result.status}`);
+      res.json({ ok: false, error: 'Upload backup failed.', durationMs });
+      return;
+    }
+    const latest = backupSummary(listBackupFiles(UPLOAD_BACKUP_DIR, 'refugecloud-uploads-', '.tar.gz')[0]);
+    res.json({ ok: true, durationMs, latestBackup: latest });
+  } catch (e: any) {
+    console.error('[backup-uploads] Unexpected error:', e.message);
+    res.json({ ok: false, error: 'Unexpected upload backup error.', durationMs: Date.now() - startMs });
   }
 });
 

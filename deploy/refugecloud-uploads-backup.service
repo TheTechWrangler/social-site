@@ -1,0 +1,28 @@
+# RefugeCloud — one-shot uploads/media backup service
+#
+# This unit is invoked by refugecloud-uploads-backup.timer (daily at ~02:50).
+# It can also be run manually for an on-demand upload backup:
+#
+#   sudo systemctl start refugecloud-uploads-backup.service
+#
+# To enable automatic upload backups, install both files and enable the timer:
+#   sudo cp deploy/refugecloud-uploads-backup.service /etc/systemd/system/
+#   sudo cp deploy/refugecloud-uploads-backup.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now refugecloud-uploads-backup.timer
+#
+# Logs appear in journald:
+#   sudo journalctl -u refugecloud-uploads-backup -n 50 --no-pager
+
+[Unit]
+Description=RefugeCloud uploads/media backup
+After=network.target
+
+[Service]
+Type=oneshot
+User=brock
+WorkingDirectory=/home/brock/social-site
+ExecStart=/bin/bash /home/brock/social-site/scripts/backup-uploads.sh
+StandardOutput=journal
+StandardError=journal
+Restart=no

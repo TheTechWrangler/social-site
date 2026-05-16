@@ -1,0 +1,28 @@
+# RefugeCloud — daily uploads/media backup timer
+#
+# Fires the refugecloud-uploads-backup.service unit daily at ~02:50 AM, after
+# the database backup timer's normal 02:30 AM window.
+#
+# Installation (requires owner approval — do NOT run automatically):
+#   sudo cp deploy/refugecloud-uploads-backup.service /etc/systemd/system/
+#   sudo cp deploy/refugecloud-uploads-backup.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now refugecloud-uploads-backup.timer
+#
+# Verify it is scheduled:
+#   sudo systemctl list-timers refugecloud-uploads-backup.timer --no-pager
+#
+# Check last run:
+#   sudo journalctl -u refugecloud-uploads-backup -n 50 --no-pager
+
+[Unit]
+Description=RefugeCloud daily uploads/media backup timer
+
+[Timer]
+OnCalendar=*-*-* 02:50:00
+RandomizedDelaySec=600
+Persistent=true
+Unit=refugecloud-uploads-backup.service
+
+[Install]
+WantedBy=timers.target
