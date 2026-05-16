@@ -12,9 +12,22 @@ import type { Request, Response, NextFunction } from 'express';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, '..', '..', 'uploads');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
+const IMAGE_UPLOAD_ERROR = 'Invalid image file.';
 const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 const ALLOWED_IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
+const ALLOWED_EXT_BY_MIME: Record<string, Set<string>> = {
+  'image/jpeg': new Set(['.jpg', '.jpeg']),
+  'image/png': new Set(['.png']),
+  'image/gif': new Set(['.gif']),
+  'image/webp': new Set(['.webp']),
+};
+const IMAGE_CONTENT_TYPE_BY_EXT: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
 
 // ─── Feature Flags ───
 function isEnabled(flag: string, def: string): boolean {
@@ -34,10 +47,11 @@ const imageUpload = multer({
   limits: { fileSize: (parseInt(process.env.MAX_IMAGE_UPLOAD_MB || '5', 10)) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (file.mimetype === 'image/svg+xml' || ext === '.svg') {
+    const mimetype = (file.mimetype || '').toLowerCase();
+    if (mimetype === 'image/svg+xml' || ext === '.svg') {
       cb(new Error(IMAGE_UPLOAD_ERROR)); return;
     }
-    if (ALLOWED_IMAGE_MIME.has(file.mimetype) && ALLOWED_IMAGE_EXT.has(ext)) { cb(null, true); }
+    if (ALLOWED_IMAGE_MIME.has(mimetype) && ALLOWED_IMAGE_EXT.has(ext)) { cb(null, true); }
     else { cb(new Error(IMAGE_UPLOAD_ERROR)); }
   },
 });
@@ -50,6 +64,70 @@ function handleImageUpload(req: Request, res: Response, next: NextFunction): voi
     }
     next();
   });
+}
+
+function isPathInUploads(filePath: string): boolean {
+  const resolved = path.resolve(filePath);
+  return resolved.startsWith(UPLOADS_DIR + path.sep);
+}
+
+function detectImageMime(bytes: Buffer): string | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+    bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+  ) {
+    return 'image/png';
+  }
+  if (bytes.length >= 6) {
+    const gifSig = bytes.subarray(0, 6).toString('ascii');
+    if (gifSig === 'GIF87a' || gifSig === 'GIF89a') return 'image/gif';
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
+function deleteRejectedUpload(file?: Express.Multer.File): void {
+  if (!file?.path) return;
+  const filePath = path.resolve(file.path);
+  if (!isPathInUploads(filePath)) return;
+  try { fs.unlinkSync(filePath); } catch { /* best-effort cleanup for rejected temp upload */ }
+}
+
+function getValidUploadedImageMime(file: Express.Multer.File): string | null {
+  if (!file.path || !isPathInUploads(file.path)) return null;
+  const ext = path.extname(file.originalname).toLowerCase();
+  const claimedMime = (file.mimetype || '').toLowerCase();
+  if (!ALLOWED_IMAGE_MIME.has(claimedMime) || !ALLOWED_IMAGE_EXT.has(ext)) return null;
+
+  const detectedMime = detectImageMime(fs.readFileSync(file.path).subarray(0, 16));
+  if (!detectedMime || detectedMime !== claimedMime) return null;
+  return ALLOWED_EXT_BY_MIME[detectedMime]?.has(ext) ? detectedMime : null;
+}
+
+function validateUploadedImageBytes(req: Request, res: Response, next: NextFunction): void {
+  if (!req.file) { next(); return; }
+  try {
+    const detectedMime = getValidUploadedImageMime(req.file);
+    if (detectedMime) {
+      req.file.mimetype = detectedMime;
+      next();
+      return;
+    }
+  } catch (err: any) {
+    console.warn('[uploads] Image byte validation failed:', err.message);
+  }
+  deleteRejectedUpload(req.file);
+  res.status(400).json({ error: IMAGE_UPLOAD_ERROR });
 }
 
 const router = Router();
@@ -71,7 +149,7 @@ function parseYouTubeUrl(input: string): string | null {
 }
 
 // POST /api/uploads/image — upload an image for a post
-router.post('/image', requireAuth, requireVerified, handleImageUpload, (req, res) => {
+router.post('/image', requireAuth, requireVerified, handleImageUpload, validateUploadedImageBytes, (req, res) => {
   try {
     if (!isEnabled('ENABLE_IMAGE_UPLOADS', 'true')) {
       res.status(403).json({ error: 'Image uploads are currently disabled.' }); return;
@@ -196,13 +274,21 @@ uploadsFileRouter.get('/:filename', optionalAuth, (req, res) => {
     res.status(404).end(); return;
   }
 
-  const filePath = path.join(UPLOADS_DIR, filename);
+  const filePath = path.resolve(UPLOADS_DIR, filename);
   // Extra guard: resolved path must still be inside UPLOADS_DIR
-  if (!filePath.startsWith(UPLOADS_DIR + path.sep)) {
+  if (!isPathInUploads(filePath)) {
     res.status(404).end(); return;
   }
 
-  if (!fs.existsSync(filePath)) { res.status(404).end(); return; }
+  let fileStat: fs.Stats;
+  try {
+    fileStat = fs.lstatSync(filePath);
+  } catch {
+    res.status(404).end(); return;
+  }
+  if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
+    res.status(404).end(); return;
+  }
 
   const db = getDb();
   const urlKey = `/uploads/${filename}`;
@@ -210,7 +296,7 @@ uploadsFileRouter.get('/:filename', optionalAuth, (req, res) => {
 
   // 1. Is it an avatar? Avatars are public profile metadata — serve to everyone.
   const avatarRow = db.prepare('SELECT id FROM users WHERE avatar_url = ? LIMIT 1').get(urlKey);
-  if (avatarRow) { res.sendFile(filePath); return; }
+  if (avatarRow) { sendUploadFile(res, filePath, filename); return; }
 
   // 2. Is it tracked post media?
   const mediaRow = db.prepare('SELECT post_id FROM post_media WHERE url = ? LIMIT 1').get(urlKey) as any;
@@ -219,13 +305,21 @@ uploadsFileRouter.get('/:filename', optionalAuth, (req, res) => {
     if (mediaRow.post_id == null) {
       // Freshly uploaded but not yet attached to a post — require auth (uploader preview).
       if (!viewer) { res.status(404).end(); return; }
-      res.sendFile(filePath); return;
+      sendUploadFile(res, filePath, filename); return;
     }
     // Attached media: enforce post visibility.
     if (!canViewPost(viewer, mediaRow.post_id)) { res.status(404).end(); return; }
-    res.sendFile(filePath); return;
+    sendUploadFile(res, filePath, filename); return;
   }
 
   // 3. File exists on disk but isn't in the DB — don't serve it.
   res.status(404).end();
 });
+
+function sendUploadFile(res: Response, filePath: string, filename: string): void {
+  const contentType = IMAGE_CONTENT_TYPE_BY_EXT[path.extname(filename).toLowerCase()];
+  if (!contentType) { res.status(404).end(); return; }
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.type(contentType);
+  res.sendFile(filePath);
+}

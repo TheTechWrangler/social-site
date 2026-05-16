@@ -45,7 +45,20 @@ function stripHtml(html: string): string {
 /** Only allow http:// and https:// URLs; everything else (data:, javascript:, etc.) returns ''. */
 function sanitizeUrl(url: unknown): string {
   if (typeof url !== 'string' || !url) return '';
-  return /^https?:\/\//i.test(url) ? url : '';
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function firstSanitizedUrl(...urls: unknown[]): string {
+  for (const url of urls) {
+    const safe = sanitizeUrl(url);
+    if (safe) return safe;
+  }
+  return '';
 }
 
 // ─── Source CRUD ───
@@ -57,7 +70,7 @@ export function getSources(): RssSource[] {
 export function addSource(name: string, url: string, homepageUrl: string, category: string): RssSource {
   const r = getDb().prepare(
     'INSERT INTO rss_sources (name, url, homepage_url, category) VALUES (?, ?, ?, ?)'
-  ).run(name, url, homepageUrl, category || 'general');
+  ).run(name, sanitizeUrl(url), sanitizeUrl(homepageUrl), category || 'general');
   return getDb().prepare('SELECT * FROM rss_sources WHERE id = ?').get(r.lastInsertRowid) as RssSource;
 }
 
@@ -65,7 +78,10 @@ export function updateSource(id: number, updates: { name?: string; url?: string;
   const fields: string[] = [];
   const vals: any[] = [];
   for (const [k, v] of Object.entries(updates)) {
-    if (v !== undefined) { fields.push(`${k} = ?`); vals.push(v); }
+    if (v !== undefined) {
+      fields.push(`${k} = ?`);
+      vals.push(k === 'url' || k === 'homepage_url' ? sanitizeUrl(v) : v);
+    }
   }
   if (fields.length === 0) return null;
   fields.push("updated_at = datetime('now')");
@@ -99,11 +115,12 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
       const guid = item.guid || item.link || '';
       if (!guid) continue;
 
+      const feedImageUrl = firstSanitizedUrl((feed as any).image?.url, (feed as any).image, (feed as any).itunes?.image);
       const title = sanitize(item.title || '', 500);
       const summary = sanitize(item.contentSnippet || item.summary || '', 1000);
       const contentSnippet = item.content ? sanitize(stripHtml(item.content), 2000) : '';
       const author = sanitize(item.creator || item.author || '', 200);
-      const imageUrl = item.enclosure?.url || '';
+      const imageUrl = firstSanitizedUrl((item as any).image?.url, (item as any).image, (item as any).itunes?.image, item.enclosure?.url, feedImageUrl);
       const publishedAt = item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString();
 
       // Podcast detection: enclosure with audio MIME, or iTunes duration
@@ -113,7 +130,7 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
       const itunesImage = sanitizeUrl((item as any).itunes?.image || '');
       const isPodcast = encType.startsWith('audio/') || !!itunesDuration || (source.category || '').toLowerCase().includes('podcast');
       const itemType = isPodcast ? 'podcast' : 'article';
-      const podcastImage = itunesImage || sanitizeUrl((feed as any).itunes?.image || '');
+      const podcastImage = itunesImage || feedImageUrl;
 
       const r = insert.run(source.id, guid, title, summary, contentSnippet, sanitizeUrl(item.link || ''), author, imageUrl, publishedAt,
         itemType, encUrl, encType, itunesDuration, podcastImage);
