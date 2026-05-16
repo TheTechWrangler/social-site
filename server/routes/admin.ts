@@ -144,22 +144,30 @@ router.post('/posts/:id/unhide', requireAuth, requireAdmin, (req, res) => {
 
 // GET /api/admin/reports
 router.get('/reports', requireAuth, requireAdmin, (req, res) => {
+  const db = getDb();
+  const { page, limit, offset } = parsePageLimit(req.query, 50, 200);
   const statusFilter = req.query.status as string;
-  let sql = `
+  const hasFilter = statusFilter && ['open', 'resolved', 'dismissed'].includes(statusFilter);
+  const whereClause = hasFilter ? 'WHERE r.status = ?' : '';
+  const params: any[] = hasFilter ? [statusFilter] : [];
+
+  const baseSql = `
+    FROM reports r
+    JOIN users u ON r.reporter_id = u.id
+    LEFT JOIN posts p ON r.post_id = p.id
+    LEFT JOIN users pu ON p.user_id = pu.id
+    ${whereClause}
+  `;
+
+  const total = (db.prepare(`SELECT COUNT(*) as c ${baseSql}`).get(...params) as any).c as number;
+  const reports = db.prepare(`
     SELECT r.*, u.username as reporter_name, p.content as post_content, p.user_id as post_author_id,
       p.parent_id as post_parent_id, pu.username as post_author_name, p.hidden as post_hidden
-    FROM reports r JOIN users u ON r.reporter_id = u.id LEFT JOIN posts p ON r.post_id = p.id LEFT JOIN users pu ON p.user_id = pu.id
-  `;
-  if (statusFilter && ['open','resolved','dismissed'].includes(statusFilter)) {
-    sql += ' WHERE r.status = ?';
-    sql += ' ORDER BY r.created_at DESC LIMIT 50';
-    const rows = getDb().prepare(sql).all(statusFilter);
-    res.json({ reports: rows });
-  } else {
-    sql += ' ORDER BY r.created_at DESC LIMIT 50';
-    const rows = getDb().prepare(sql).all();
-    res.json({ reports: rows });
-  }
+    ${baseSql}
+    ORDER BY r.created_at DESC LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+
+  res.json({ reports, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) });
 });
 
 // PATCH /api/admin/reports/:id
@@ -199,6 +207,12 @@ router.patch('/reports/:id', requireAuth, requireAdmin, (req, res) => {
   });
 
   updateReport();
+  logAuthEvent({
+    eventType: 'admin_report_update',
+    userId: (req as any).user.id,
+    adminActorId: (req as any).user.id,
+    meta: { reportId: report.id, ...(nextStatus ? { status: nextStatus } : {}) },
+  });
   res.json({ ok: true });
 });
 
@@ -318,6 +332,7 @@ router.get('/game-servers', requireAuth, requireAdmin, (_req, res) => {
 });
 
 router.post('/game-servers', requireAuth, requireAdmin, (req, res) => {
+  const adminId = (req as any).user.id;
   const { gameId, name, description, connectionHost, connectionPort, platform, status, maxPlayers,
     currentPlayers, isFeatured, isActive, joinInstructions, rulesSummary, discordUrl, websiteUrl, serverType, playStyle, regionOrTimezone } = req.body;
   if (!gameId || !name) { res.status(400).json({ error: 'gameId and name required.' }); return; }
@@ -327,10 +342,13 @@ router.post('/game-servers', requireAuth, requireAdmin, (req, res) => {
       maxPlayers||null, currentPlayers||0, isFeatured?1:0, isActive!==undefined?isActive:1,
       joinInstructions||'', rulesSummary||'', discordUrl||'', websiteUrl||'', serverType||'', playStyle||'', regionOrTimezone||'');
   const server = getDb().prepare('SELECT * FROM game_servers WHERE id = ?').get(r.lastInsertRowid);
+  logAuthEvent({ eventType: 'admin_game_server_create', userId: adminId, adminActorId: adminId, meta: { serverId: Number(r.lastInsertRowid), name } });
   res.status(201).json({ server });
 });
 
 router.patch('/game-servers/:id', requireAuth, requireAdmin, (req, res) => {
+  const adminId = (req as any).user.id;
+  const serverId = Number(req.params.id);
   const fields = ['name','description','connection_host','connection_port','platform','status','max_players',
     'current_players','is_featured','is_active','join_instructions','rules_summary','discord_url','website_url','server_type','play_style','region_or_timezone'];
   const sets: string[] = [];
@@ -343,11 +361,15 @@ router.patch('/game-servers/:id', requireAuth, requireAdmin, (req, res) => {
   sets.push("updated_at = datetime('now')");
   vals.push(req.params.id);
   getDb().prepare(`UPDATE game_servers SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  logAuthEvent({ eventType: 'admin_game_server_update', userId: adminId, adminActorId: adminId, meta: { serverId } });
   res.json({ ok: true });
 });
 
 router.delete('/game-servers/:id', requireAuth, requireAdmin, (req, res) => {
+  const adminId = (req as any).user.id;
+  const serverId = Number(req.params.id);
   getDb().prepare('DELETE FROM game_servers WHERE id = ?').run(req.params.id);
+  logAuthEvent({ eventType: 'admin_game_server_delete', userId: adminId, adminActorId: adminId, meta: { serverId } });
   res.json({ ok: true });
 });
 
@@ -378,6 +400,7 @@ router.get('/auth-events', requireAuth, requireAdmin, (req, res) => {
 });
 
 // GET /api/admin/users/:id/activity — user detail + recent auth events + post counts
+// Supports ?page=&limit= (default 30, max 100) for auth event pagination.
 router.get('/users/:id/activity', requireAuth, requireAdmin, (req, res) => {
   const userId = Number(req.params.id);
   const db = getDb();
@@ -386,17 +409,26 @@ router.get('/users/:id/activity', requireAuth, requireAdmin, (req, res) => {
   ).get(userId) as any;
   if (!user) { res.status(404).json({ error: 'User not found.' }); return; }
 
+  const { page, limit, offset } = parsePageLimit(req.query, 30, 100);
+  const eventTotal = (db.prepare(
+    'SELECT COUNT(*) as c FROM auth_events WHERE user_id = ? OR target_user_id = ?'
+  ).get(userId, userId) as any).c as number;
+
   const events = db.prepare(`
     SELECT id, event_type, success, reason, ip_address, user_agent, admin_actor_id, created_at
     FROM auth_events WHERE user_id = ? OR target_user_id = ?
-    ORDER BY created_at DESC LIMIT 30
-  `).all(userId, userId) as any[];
+    ORDER BY created_at DESC LIMIT ? OFFSET ?
+  `).all(userId, userId, limit, offset) as any[];
 
   const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL').get(userId) as any).c;
   const commentCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NOT NULL').get(userId) as any).c;
   const providers = db.prepare('SELECT provider, provider_email, created_at FROM user_auth_providers WHERE user_id = ?').all(userId);
 
-  res.json({ user, events, postCount, commentCount, providers });
+  res.json({
+    user, events, postCount, commentCount, providers,
+    eventTotal, eventPage: page, eventLimit: limit,
+    eventTotalPages: Math.max(1, Math.ceil(eventTotal / limit)),
+  });
 });
 
 // POST /api/admin/users/:id/password-reset-token — generate a one-time admin-assisted reset link

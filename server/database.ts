@@ -106,6 +106,7 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
     CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);
     CREATE INDEX IF NOT EXISTS idx_posts_group ON posts(group_id);
+    CREATE INDEX IF NOT EXISTS idx_posts_group_created ON posts(group_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id);
     CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
     CREATE INDEX IF NOT EXISTS idx_likes_post ON likes(post_id);

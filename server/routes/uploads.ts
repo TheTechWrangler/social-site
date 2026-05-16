@@ -320,6 +320,9 @@ function sendUploadFile(res: Response, filePath: string, filename: string): void
   const contentType = IMAGE_CONTENT_TYPE_BY_EXT[path.extname(filename).toLowerCase()];
   if (!contentType) { res.status(404).end(); return; }
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  // Cache uploaded images privately for 24 h. 'private' prevents shared/CDN caching
+  // so the per-user post-visibility check is not bypassed by a proxy cache.
+  res.setHeader('Cache-Control', 'private, max-age=86400');
   res.type(contentType);
   res.sendFile(filePath);
 }

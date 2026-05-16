@@ -30,7 +30,14 @@ export type AuthEventType =
   | 'admin_unhide_post'
   | 'admin_self_ban_blocked'
   | 'admin_last_admin_ban_blocked'
-  | 'admin_last_admin_demote_blocked';
+  | 'admin_last_admin_demote_blocked'
+  | 'admin_report_update'
+  | 'admin_game_server_create'
+  | 'admin_game_server_update'
+  | 'admin_game_server_delete'
+  | 'admin_rss_source_add'
+  | 'admin_rss_source_update'
+  | 'admin_rss_source_fetch';
 
 export interface LogEventParams {
   eventType: AuthEventType;

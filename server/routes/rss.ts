@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth, requireAdmin, optionalAuth, requireVerified } from '../middleware.js';
 import { getWorldFeed, getSources, getBlockedSourceIds, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
+import { logAuthEvent } from '../authEvents.js';
 
 const publicRouter = Router();
 const adminRouter = Router();
@@ -143,6 +144,8 @@ adminRouter.post('/sources', requireAuth, requireAdmin, (req, res) => {
     const { name, url, homepageUrl, category } = req.body;
     if (!name || !url) { res.status(400).json({ error: 'Name and URL required.' }); return; }
     const source = addSource(name, url, homepageUrl || '', category || 'general');
+    const adminId = (req as any).user.id;
+    logAuthEvent({ eventType: 'admin_rss_source_add', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id, name } });
     res.status(201).json({ source });
   } catch (err: any) {
     logRssError('Admin add source error', err);
@@ -154,6 +157,8 @@ adminRouter.patch('/sources/:id', requireAuth, requireAdmin, (req, res) => {
   try {
     const source = updateSource(Number(req.params.id), req.body);
     if (!source) { res.status(404).json({ error: 'Source not found.' }); return; }
+    const adminId = (req as any).user.id;
+    logAuthEvent({ eventType: 'admin_rss_source_update', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id } });
     res.json({ source });
   } catch (err: any) {
     logRssError('Admin update source error', err);
@@ -163,7 +168,10 @@ adminRouter.patch('/sources/:id', requireAuth, requireAdmin, (req, res) => {
 
 adminRouter.post('/sources/:id/fetch', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const result = await fetchSource(Number(req.params.id));
+    const sourceId = Number(req.params.id);
+    const result = await fetchSource(sourceId);
+    const adminId = (req as any).user.id;
+    logAuthEvent({ eventType: 'admin_rss_source_fetch', userId: adminId, adminActorId: adminId, meta: { sourceId, itemsInserted: result.itemsInserted ?? 0 } });
     res.json(result);
   } catch (err: any) {
     logRssError('Admin fetch source error', err);

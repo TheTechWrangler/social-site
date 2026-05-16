@@ -76,7 +76,11 @@ function UserDetailPanel({ act, resetLink, generatingReset, onGenerateReset, onD
             )}
           </div>
           <div style={{ fontSize: '0.82rem' }}>
-            <strong style={{ display: 'block', marginBottom: 6 }}>Recent auth events</strong>
+            <strong style={{ display: 'block', marginBottom: 6 }}>
+              Recent auth events{act.eventTotal != null && act.eventTotal > act.events.length
+                ? ` (showing ${act.events.length} of ${act.eventTotal})`
+                : act.eventTotal != null ? ` (${act.eventTotal} total)` : ''}
+            </strong>
             {act.events.length === 0 ? <p className="muted">No events yet.</p> : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
                 <thead><tr style={{ textAlign: 'left', color: 'var(--text-dim)' }}>
@@ -130,6 +134,9 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [tabError, setTabError] = useState<Record<string, string>>({});
   const [adminStats, setAdminStats] = useState<any>({});
   const [reportFilter, setReportFilter] = useState<ReportFilter>('open');
+  const [reportPage, setReportPage] = useState(1);
+  const [reportTotal, setReportTotal] = useState(0);
+  const [reportTotalPages, setReportTotalPages] = useState(1);
   const [reportActionError, setReportActionError] = useState('');
   const [reportNotes, setReportNotes] = useState<Record<number, string>>({});
   const [serverList, setServerList] = useState<any[]>([]);
@@ -193,7 +200,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     else if (tab === 'backups') loadBackupStatus();
     else loadData();
     loadStats();
-  }, [tab, reportFilter, userPage, userLimit, userSearch, userRoleFilter, authEventPage, authEventLimit, authEventType, authEventSuccess]);
+  }, [tab, reportFilter, reportPage, userPage, userLimit, userSearch, userRoleFilter, authEventPage, authEventLimit, authEventType, authEventSuccess]);
 
   async function loadStats() { try { const r = await api.get<any>('/admin/stats'); setAdminStats(r); } catch (e) {} }
 
@@ -227,9 +234,14 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   }
 
   async function loadReports(filter: ReportFilter = reportFilter) {
-    const qs = filter === 'all' ? '' : `?status=${filter}`;
-    const r = await api.get<any>(`/admin/reports${qs}`);
+    const qs = new URLSearchParams();
+    if (filter !== 'all') qs.set('status', filter);
+    qs.set('page', String(reportPage));
+    qs.set('limit', '50');
+    const r = await api.get<any>(`/admin/reports?${qs.toString()}`);
     setReports(r.reports);
+    setReportTotal(r.total ?? 0);
+    setReportTotalPages(r.totalPages ?? 1);
   }
 
   async function loadRss() {
@@ -697,10 +709,20 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
           <div className="report-filters">
             {REPORT_FILTERS.map(s => (
               <button key={s} className={`btn btn-sm ${reportFilter === s ? 'btn-primary' : 'btn-ghost'}`}
-                onClick={() => setReportFilter(s)}>
+                onClick={() => { setReportFilter(s); setReportPage(1); }}>
                 {REPORT_FILTER_LABELS[s]}
               </button>
             ))}
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', margin: '8px 0 12px', flexWrap: 'wrap' }}>
+            <span className="muted" style={{ fontSize: '0.82rem' }}>{reportTotal} report{reportTotal !== 1 ? 's' : ''}</span>
+            {reportTotalPages > 1 && (
+              <>
+                <button className="btn btn-sm" disabled={reportPage <= 1} onClick={() => setReportPage(p => Math.max(1, p - 1))}>Previous</button>
+                <span className="muted" style={{ fontSize: '0.82rem' }}>Page {reportPage} of {reportTotalPages}</span>
+                <button className="btn btn-sm" disabled={reportPage >= reportTotalPages} onClick={() => setReportPage(p => p + 1)}>Next</button>
+              </>
+            )}
           </div>
           {reportActionError && <p className="error-msg">{reportActionError}</p>}
           {reports.length === 0 ? <p className="muted">No {reportFilter} reports.</p> : (
