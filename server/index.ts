@@ -167,9 +167,17 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     message: { error: 'Too many polling requests. Please slow down.' },
     standardHeaders: true, legacyHeaders: false,
   });
+  const userSearchLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_USER_SEARCH_MAX || '60', 10),
+    message: { error: 'Too many user search requests. Please slow down.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
 
   // Feed read endpoints
   app.use('/api/feed', feedReadLimiter);
+  // User search/profile endpoints
+  app.use('/api/users', userSearchLimiter);
   // Lightweight client telemetry
   app.use('/api/usage/event', usageEventLimiter);
   // Lightweight polling endpoints (generous for normal 30s polling across tabs)

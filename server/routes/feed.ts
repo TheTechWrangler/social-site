@@ -178,8 +178,11 @@ router.post('/replenish', requireAuth, requireVerified, async (req: AuthRequest,
     }
 
     const totalNew = results.reduce((sum, r) => sum + r.itemsInserted, 0);
+    const errors = results.filter(r => r.error).map(r => `${r.sourceName}: ${r.error}`);
+    if (errors.length) console.warn('[feed] Replenish source errors:', errors.join('; '));
+    console.log(`[feed] Replenish: ${results.length} sources checked, ${totalNew} new items`);
     logUsage({ eventType: 'rss_replenished', userId, featureArea: 'world', metadata: { sourcesChecked: results.length, newItems: totalNew } });
-    res.json({ ok: true, sourcesChecked: results.length, newItems: totalNew, results });
+    res.json({ ok: true, sourcesChecked: results.length, newItems: totalNew });
   } catch (err: any) {
     console.error('[feed] Replenish error:', err.message);
     res.status(500).json({ error: 'Could not replenish feed.' });

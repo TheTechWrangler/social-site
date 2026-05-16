@@ -11,6 +11,7 @@ import { getDb } from './database.js';
 export type AuthEventType =
   | 'login_success'
   | 'login_failure'
+  | 'logout'
   | 'register_success'
   | 'oauth_success'
   | 'oauth_failure'

@@ -78,6 +78,14 @@ export default function App() {
   useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
 
   function logout() {
+    // Fire-and-forget audit log — never block or error on the UI side.
+    const t = localStorage.getItem('token');
+    if (t) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${t}` },
+      }).catch(() => {});
+    }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setUser(null);

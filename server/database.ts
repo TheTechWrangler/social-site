@@ -423,16 +423,20 @@ export function initializeDatabase(): void {
 }
 
 // ─── Retention Cleanup ───
-// Deletes old rows from append-only log tables. Safe to call at startup.
-// Each table is wrapped independently so one failure never blocks the others.
-// Defaults: usage_events=90d, auth_events=180d, client_errors=30d.
+// Deletes old rows from append-only log tables and stale RSS/token rows.
+// Safe to call at startup. Each table is wrapped independently so one failure
+// never blocks the others.
+// Defaults: usage_events=90d, auth_events=180d, client_errors=30d,
+//           rss_items=180d, password_reset_tokens=30d.
 // Override via env vars (integer days).
 export function runRetentionCleanup(): void {
   const db = getDb();
 
-  const usageDays   = Math.max(1, parseInt(process.env.USAGE_EVENTS_RETENTION_DAYS  || '90',  10));
-  const authDays    = Math.max(1, parseInt(process.env.AUTH_EVENTS_RETENTION_DAYS   || '180', 10));
-  const clientDays  = Math.max(1, parseInt(process.env.CLIENT_ERRORS_RETENTION_DAYS || '30',  10));
+  const usageDays   = Math.max(1, parseInt(process.env.USAGE_EVENTS_RETENTION_DAYS      || '90',  10));
+  const authDays    = Math.max(1, parseInt(process.env.AUTH_EVENTS_RETENTION_DAYS        || '180', 10));
+  const clientDays  = Math.max(1, parseInt(process.env.CLIENT_ERRORS_RETENTION_DAYS      || '30',  10));
+  const rssItemDays = Math.max(1, parseInt(process.env.RSS_ITEMS_RETENTION_DAYS          || '180', 10));
+  const tokenDays   = Math.max(1, parseInt(process.env.PASSWORD_RESET_TOKENS_RETENTION_DAYS || '30', 10));
 
   const targets: Array<{ table: string; days: number }> = [
     { table: 'usage_events',  days: usageDays  },
@@ -453,5 +457,38 @@ export function runRetentionCleanup(): void {
       // Log but never throw — a cleanup failure must not crash startup.
       console.error(`[retention] ${table} cleanup failed:`, err.message);
     }
+  }
+
+  // RSS items: purge old articles, but spare any that have visible comments.
+  try {
+    const rssCutoff = `-${rssItemDays} days`;
+    const result = db.prepare(`
+      DELETE FROM rss_items
+      WHERE published_at < datetime('now', ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM rss_item_comments c
+          WHERE c.rss_item_id = rss_items.id AND c.is_hidden = 0
+        )
+    `).run(rssCutoff);
+    if (result.changes > 0) {
+      console.log(`[retention] rss_items: deleted ${result.changes} rows older than ${rssItemDays} days`);
+    }
+  } catch (err: any) {
+    console.error('[retention] rss_items cleanup failed:', err.message);
+  }
+
+  // Password reset tokens: purge tokens whose expiry is old enough that no
+  // valid window could ever reference them again.
+  try {
+    const tokenCutoff = `-${tokenDays} days`;
+    const result = db.prepare(`
+      DELETE FROM password_reset_tokens
+      WHERE expires_at < datetime('now', ?)
+    `).run(tokenCutoff);
+    if (result.changes > 0) {
+      console.log(`[retention] password_reset_tokens: deleted ${result.changes} rows older than ${tokenDays} days`);
+    }
+  } catch (err: any) {
+    console.error('[retention] password_reset_tokens cleanup failed:', err.message);
   }
 }

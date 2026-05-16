@@ -11,6 +11,13 @@ import { logUsage } from '../usageEvents.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Cache package version once at startup — avoids per-request disk read in system-health.
+let APP_VERSION = 'unknown';
+try {
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
+  APP_VERSION = pkg.version || 'unknown';
+} catch { /* non-fatal — version stays 'unknown' */ }
+
 const router = Router();
 const REPORT_ERROR = 'Please select a reason and briefly explain the problem.';
 const REPORT_REASONS = new Set(['Spam', 'Harassment', 'Hate or abuse', 'Sexual content', 'Violence or threats', 'Scam or unsafe link', 'Other']);
@@ -218,7 +225,7 @@ router.post('/reports', requireAuth, (req: AuthRequest, res) => {
   const reason = String(req.body.reason || '').trim().slice(0, 120);
   const details = String(req.body.details ?? req.body.report_details ?? '').trim().slice(0, 1000);
   if (!postId || !reason || details.length < 5) { res.status(400).json({ error: REPORT_ERROR }); return; }
-  if (!REPORT_REASONS.has(reason) && reason.length < 2) { res.status(400).json({ error: REPORT_ERROR }); return; }
+  if (!REPORT_REASONS.has(reason)) { res.status(400).json({ error: REPORT_ERROR }); return; }
   const post = getDb().prepare('SELECT id FROM posts WHERE id = ?').get(postId);
   if (!post) { res.status(404).json({ error: 'Content not found.' }); return; }
   getDb().prepare('INSERT INTO reports (reporter_id, post_id, reason, report_details) VALUES (?, ?, ?, ?)')
@@ -235,7 +242,7 @@ router.delete('/users/:id', requireAuth, requireAdmin, (req, res) => {
     res.status(400).json({ error: 'You cannot delete your own account.' }); return;
   }
 
-  const target = getDb().prepare('SELECT id, role, banned FROM users WHERE id = ?').get(targetId) as any;
+  const target = getDb().prepare('SELECT id, username, role, banned FROM users WHERE id = ?').get(targetId) as any;
   if (!target) { res.status(404).json({ error: 'User not found.' }); return; }
 
   if (target.role === 'admin' && !target.banned && activeAdminCount() <= 1) {
@@ -248,7 +255,7 @@ router.delete('/users/:id', requireAuth, requireAdmin, (req, res) => {
   // All other related data cascades via ON DELETE CASCADE on the users FK
   getDb().prepare('DELETE FROM users WHERE id = ?').run(targetId);
 
-  logAuthEvent({ eventType: 'admin_delete_user', adminActorId: viewerId, targetUserId: targetId });
+  logAuthEvent({ eventType: 'admin_delete_user', adminActorId: viewerId, targetUserId: targetId, meta: { username: target.username, role: target.role } });
   res.json({ ok: true });
 });
 
@@ -432,11 +439,7 @@ router.get('/system-health', requireAuth, requireAdmin, (_req, res) => {
   const uploadsPath = path.resolve(__dirname, '../../uploads');
   const uploadsStats = directoryStats(uploadsPath);
 
-  let appVersion = 'unknown';
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
-    appVersion = pkg.version || 'unknown';
-  } catch {}
+  const appVersion = APP_VERSION;
 
   const googleConfigured = !!(
     process.env.GOOGLE_CLIENT_ID &&

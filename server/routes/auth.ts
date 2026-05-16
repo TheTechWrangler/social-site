@@ -98,6 +98,9 @@ router.post('/reset-password', (req, res) => {
     res.status(400).json({ error: 'A valid token and password (min 8 characters) are required.' }); return;
   }
   const hash = createHash('sha256').update(token).digest('hex');
+  // Compute hash outside the transaction — bcrypt is ~100ms and holding the
+  // SQLite write lock for that long would block all concurrent DB operations.
+  const newPasswordHash = hashPassword(String(newPassword));
   const db = getDb();
   try {
     const result = db.transaction((): { ok: true; user: { id: number; username: string } } | { ok: false } => {
@@ -110,7 +113,6 @@ router.post('/reset-password', (req, res) => {
       const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(row.user_id) as any;
       if (!user) return { ok: false };
 
-      const newPasswordHash = hashPassword(String(newPassword));
       const tokenUpdate = db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL").run(row.id);
       if (tokenUpdate.changes !== 1) return { ok: false };
 
@@ -154,6 +156,20 @@ router.get('/oauth-token', (req, res) => {
   session.save(() => {});
 
   res.json({ token, username });
+});
+
+// POST /api/auth/logout — audit-log the logout; client clears its own token.
+// JWTs are stateless so we can't invalidate them server-side, but we record
+// the event for security audit purposes.
+router.post('/logout', requireAuth, (req: AuthRequest, res) => {
+  logAuthEvent({
+    eventType: 'logout',
+    userId: req.user!.id,
+    ip: getClientIp(req),
+    userAgent: req.headers['user-agent'],
+    meta: { username: req.user!.username },
+  });
+  res.json({ ok: true });
 });
 
 // GET /api/auth/me
