@@ -37,7 +37,10 @@ export type AuthEventType =
   | 'admin_game_server_delete'
   | 'admin_rss_source_add'
   | 'admin_rss_source_update'
-  | 'admin_rss_source_fetch';
+  | 'admin_rss_source_fetch'
+  | 'email_verification_sent'
+  | 'email_verification_completed'
+  | 'email_verification_resent';
 
 export interface LogEventParams {
   eventType: AuthEventType;

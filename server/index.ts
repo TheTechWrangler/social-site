@@ -28,6 +28,7 @@ import gamesRoutes from './routes/games.js';
 import messagesRoutes from './routes/messages.js';
 import usageRoutes from './routes/usage.js';
 import { SQLiteSessionStore } from './sessionStore.js';
+import { isEmailConfigured } from './email.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3003;
@@ -105,6 +106,13 @@ app.use(session({
     sameSite: 'lax',
   },
 }));
+
+// Email
+if (isEmailConfigured()) {
+  console.log('[email] Resend: configured');
+} else {
+  console.warn('[email] RESEND_API_KEY not set — email verification disabled. Users can still register; verification emails will not be sent until RESEND_API_KEY is configured.');
+}
 
 // Passport
 configurePassport();
@@ -189,6 +197,8 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
   app.use('/api/auth/register', authLimiter);
   app.use('/api/auth/reset-password', authLimiter);
   app.use('/api/auth/oauth-token', authLimiter);
+  app.use('/api/auth/resend-verification', authLimiter);
+  app.use('/api/auth/verify-email', authLimiter);
   // Upload endpoints
   app.use('/api/uploads/image', uploadLimiter);
   app.use('/api/uploads/video', uploadLimiter);

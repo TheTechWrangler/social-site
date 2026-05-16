@@ -31,11 +31,15 @@ export const api = {
   get: <T>(url: string) => request<T>(url),
   post: <T>(url: string, body?: any) => request<T>(url, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   register: (data: { username: string; displayName: string; email: string; password: string }) =>
-    request<{ user: any }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+    request<{ user: any; needsEmailVerification?: boolean }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
   login: (data: { username: string; password: string }) =>
     request<{ user: any }>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
   me: () => request<{ user: any }>('/auth/me'),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+  verifyEmail: (token: string) =>
+    request<{ ok: boolean }>(`/auth/verify-email?token=${encodeURIComponent(token)}`),
+  resendVerification: () =>
+    request<{ ok: boolean; message: string }>('/auth/resend-verification', { method: 'POST' }),
 
   // Feed
   feed: (params?: { mode?: string; limit?: number; offset?: number; level?: string; exposure?: string }) => {

@@ -12,6 +12,10 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
   const [params] = useSearchParams();
   const oauthError = params.get('error');
   const [providers, setProviders] = useState<{ google: boolean; steam: boolean } | null>(null);
+  // Unverified-account state: show after a successful login for an unverified user.
+  const [unverifiedUser, setUnverifiedUser] = useState<any>(null);
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendMsg, setResendMsg] = useState('');
 
   useEffect(() => {
     fetch(`${API_BASE}/api/auth/providers`)
@@ -23,12 +27,27 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
     setLoading(true); setError('');
     try {
       const r = await api.login({ username, password });
-      // Token is now an HttpOnly cookie set by the server — not in the response body.
-      onLogin(r.user);
+      if (r.user && !r.user.is_verified) {
+        // Logged in but not yet verified — show resend guidance before continuing.
+        setUnverifiedUser(r.user);
+      } else {
+        onLogin(r.user);
+      }
     } catch (err: any) {
       setError(err.message);
     }
     setLoading(false);
+  }
+
+  async function handleResend() {
+    setResendLoading(true); setResendMsg('');
+    try {
+      await api.resendVerification();
+      setResendMsg('Verification email sent! Check your inbox.');
+    } catch {
+      setResendMsg('Could not send email. Please try again later.');
+    }
+    setResendLoading(false);
   }
 
   const displayError = error
@@ -37,6 +56,32 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
     : oauthError === 'google_not_configured' ? 'Google login is not configured yet. Add GOOGLE_CLIENT_ID to .env'
     : oauthError === 'steam_not_configured' ? 'Steam login is not configured yet. Add STEAM_RETURN_URL to .env'
     : oauthError === 'oauth_failed' ? 'Social login failed. Please try again.' : '');
+
+  // ─── Post-login: unverified account guidance ───
+  if (unverifiedUser) {
+    return (
+      <div className="auth-page">
+        <h2>Email not verified</h2>
+        <p>
+          You're logged in, but your email address hasn't been verified yet.
+          Some features (posting, comments, likes) require a verified account.
+        </p>
+        {resendMsg && <p className="muted" style={{ marginBottom: '8px' }}>{resendMsg}</p>}
+        <button
+          className="btn btn-secondary"
+          onClick={handleResend}
+          disabled={resendLoading}
+          style={{ marginBottom: '12px' }}
+        >
+          {resendLoading ? 'Sending…' : 'Resend verification email'}
+        </button>
+        <br />
+        <button className="btn btn-primary" onClick={() => onLogin(unverifiedUser)}>
+          Continue anyway
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="auth-page">
@@ -70,7 +115,7 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
         <input className="input" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} required autoComplete="username" />
         <input className="input" type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" />
         {displayError && <p className="error-msg" role="alert">{displayError}</p>}
-        <button className="btn btn-primary" disabled={loading}>{loading ? 'Logging in...' : 'Log In'}</button>
+        <button className="btn btn-primary" disabled={loading}>{loading ? 'Logging in…' : 'Log In'}</button>
       </form>
       <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>Forgot your password? Contact an admin for a reset link.</p>
       <p className="muted">Don't have an account? <Link to="/register">Register</Link></p>

@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { Response } from 'express';
 import { getDb } from '../database.js';
 import { registerUser, generateToken, verifyToken, verifyPassword, getUserByUsername, getUserById, hashPassword } from '../auth.js';
 import { requireAuth, getAuthCookieValue, AUTH_COOKIE_NAME, type AuthRequest } from '../middleware.js';
 import { logAuthEvent, getClientIp } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
+import { sendEmail, buildVerificationEmail, isEmailConfigured } from '../email.js';
 
 const router = Router();
 
@@ -14,6 +15,54 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const IS_PROD = process.env.NODE_ENV === 'production';
 // Cookie maxAge must match or be shorter than the JWT TOKEN_EXPIRY ('7d') in auth.ts.
 const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// ─── Email verification helpers ───
+
+/** Default TTL for verification tokens in hours. Override via EMAIL_VERIFICATION_TTL_HOURS. */
+function getVerifTtlHours(): number {
+  return Math.max(1, parseInt(process.env.EMAIL_VERIFICATION_TTL_HOURS || '24', 10));
+}
+
+/**
+ * Generate a raw verification token, invalidate any prior unused tokens for the user,
+ * store only the SHA-256 hash. Returns the raw (unhashed) token for use in the email link.
+ */
+function generateAndStoreVerifToken(userId: number): string {
+  const ttlHours = getVerifTtlHours();
+  const rawToken = randomBytes(32).toString('hex');
+  const hash = createHash('sha256').update(rawToken).digest('hex');
+  const db = getDb();
+  // Invalidate previous unused tokens so only the latest link works.
+  db.prepare("UPDATE email_verification_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(userId);
+  db.prepare(
+    "INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', ?))"
+  ).run(userId, hash, `+${ttlHours} hours`);
+  return rawToken;
+}
+
+/**
+ * Build the verification URL pointing to the frontend /verify-email route.
+ * Never puts the token in the API URL — it goes to the frontend page which then calls the API.
+ */
+function buildVerifyUrl(rawToken: string): string {
+  const webBase = (process.env.WEB_BASE_URL || 'http://localhost:5174').replace(/\/$/, '');
+  return `${webBase}/verify-email?token=${encodeURIComponent(rawToken)}`;
+}
+
+/**
+ * Send a verification email. Fire-and-forget safe — never throws; logs failures.
+ * Returns true if the email was dispatched, false if email is not configured or send failed.
+ */
+async function sendVerificationEmail(email: string, rawToken: string): Promise<boolean> {
+  const verifyUrl = buildVerifyUrl(rawToken);
+  const ttlHours = getVerifTtlHours();
+  const result = await sendEmail({
+    to: email,
+    subject: 'Verify your RefugeCloud email address',
+    html: buildVerificationEmail(verifyUrl, ttlHours),
+  });
+  return result.ok;
+}
 
 // ─── Cookie helpers (exported so other auth-adjacent routes can reuse) ───
 
@@ -37,7 +86,7 @@ export function clearAuthCookie(res: Response): void {
 }
 
 // POST /api/auth/register
-router.post('/register', (req, res) => {
+router.post('/register', async (req, res) => {
   try {
     const { username, displayName, email, password } = req.body;
     if (!username || !displayName || !email || !password) {
@@ -57,8 +106,26 @@ router.post('/register', (req, res) => {
     setAuthCookie(res, token);
     logAuthEvent({ eventType: 'register_success', userId: user.id, ip: getClientIp(req), userAgent: req.headers['user-agent'], meta: { username: user.username } });
     logUsage({ eventType: 'register_success', userId: user.id, featureArea: 'account' });
+
+    // Generate verification token and send email — fire-and-forget.
+    // Failure must not block registration; user is already logged in via cookie.
+    const rawVerifToken = generateAndStoreVerifToken(user.id);
+    sendVerificationEmail(user.email, rawVerifToken)
+      .then(sent => {
+        logAuthEvent({
+          eventType: 'email_verification_sent',
+          userId: user.id,
+          success: sent,
+          ip: getClientIp(req),
+          userAgent: req.headers['user-agent'],
+          meta: { triggered_by: 'register', email_configured: isEmailConfigured() },
+        });
+      })
+      .catch(err => console.error('[auth] Verification email error on register:', err.message));
+
     // Token is set as HttpOnly cookie — not returned in JSON body.
-    res.status(201).json({ user });
+    // needsEmailVerification signals the frontend to show the "check your email" state.
+    res.status(201).json({ user, needsEmailVerification: true });
   } catch (err: any) {
     const message = err.message === 'Username or email already taken.'
       ? err.message
@@ -159,6 +226,94 @@ router.post('/reset-password', (req, res) => {
   } catch (err: any) {
     console.error('[auth] Password reset error:', err.message);
     res.status(500).json({ error: 'Could not reset password.' });
+  }
+});
+
+// GET /api/auth/verify-email?token=<raw-token>
+// No auth required — user clicks the link from their email.
+// Validates token, marks it used in a transaction, sets is_verified=1 on the user.
+router.get('/verify-email', (req, res) => {
+  const { token } = req.query;
+  if (!token || typeof token !== 'string' || token.length < 10) {
+    res.status(400).json({ error: 'Invalid verification link.' }); return;
+  }
+  const hash = createHash('sha256').update(token).digest('hex');
+  const db = getDb();
+  try {
+    const result = db.transaction((): { ok: true; userId: number } | { ok: false } => {
+      const row = db.prepare(
+        'SELECT id, user_id, expires_at, used_at FROM email_verification_tokens WHERE token_hash = ?'
+      ).get(hash) as any;
+      if (!row || row.used_at || new Date(row.expires_at + 'Z') < new Date()) {
+        return { ok: false };
+      }
+      const user = db.prepare('SELECT id, is_verified FROM users WHERE id = ?').get(row.user_id) as any;
+      if (!user) return { ok: false };
+
+      // Mark token used.
+      const tokenUpdate = db.prepare(
+        "UPDATE email_verification_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL"
+      ).run(row.id);
+      if (tokenUpdate.changes !== 1) return { ok: false };
+
+      // Set verified (idempotent if already verified).
+      db.prepare(
+        "UPDATE users SET is_verified = 1, verified_at = datetime('now') WHERE id = ?"
+      ).run(user.id);
+
+      return { ok: true, userId: user.id };
+    })();
+
+    if (!result.ok) {
+      res.status(400).json({ error: 'Invalid or expired verification link.' }); return;
+    }
+
+    logAuthEvent({
+      eventType: 'email_verification_completed',
+      userId: result.userId,
+      ip: getClientIp(req),
+      userAgent: req.headers['user-agent'],
+    });
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('[auth] Verify email error:', err.message);
+    res.status(500).json({ error: 'Could not verify email.' });
+  }
+});
+
+// POST /api/auth/resend-verification
+// Requires auth. Rate-limited in index.ts alongside other auth endpoints.
+// Generates a fresh token and sends a new verification email.
+// Always returns a generic success so the response doesn't reveal verification state to third parties.
+router.post('/resend-verification', requireAuth, async (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+  try {
+    const user = getUserById(userId);
+    if (!user) { res.status(404).json({ error: 'User not found.' }); return; }
+
+    // If already verified, return success silently — no token generated.
+    if (user.is_verified) {
+      res.json({ ok: true, message: 'If verification is needed, a new email has been sent.' });
+      return;
+    }
+
+    const rawToken = generateAndStoreVerifToken(userId);
+    const sent = await sendVerificationEmail(user.email, rawToken);
+
+    logAuthEvent({
+      eventType: 'email_verification_resent',
+      userId,
+      success: sent,
+      ip: getClientIp(req),
+      userAgent: req.headers['user-agent'],
+      meta: { email_configured: isEmailConfigured() },
+    });
+
+    res.json({ ok: true, message: 'If verification is needed, a new email has been sent.' });
+  } catch (err: any) {
+    console.error('[auth] Resend verification error:', err.message);
+    // Return generic success even on error to prevent enumeration.
+    res.json({ ok: true, message: 'If verification is needed, a new email has been sent.' });
   }
 });
 

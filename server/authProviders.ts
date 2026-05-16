@@ -110,8 +110,9 @@ function findOrCreateUser(provider: string, providerId: string, email: string, d
     username = safeName.replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 16) + '_' + suffix;
   }
 
+  // OAuth-created users are pre-verified via their provider identity — mark as verified immediately.
   const result = db.prepare(
-    'INSERT INTO users (username, display_name, email, password_hash, avatar_url) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO users (username, display_name, email, password_hash, avatar_url, is_verified, verified_at) VALUES (?, ?, ?, ?, ?, 1, datetime(\'now\'))'
   ).run(username, displayName || username, email || `${username}@${provider}.local`, '', avatarUrl || '');
 
   const userId = result.lastInsertRowid as number;

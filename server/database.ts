@@ -417,6 +417,40 @@ export function initializeDatabase(): void {
     `);
   }
 
+  // ─── email_verification_tokens table ───
+  const evtExists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='email_verification_tokens'"
+  ).get();
+  if (!evtExists) {
+    db.exec(`
+      CREATE TABLE email_verification_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX idx_evt_user ON email_verification_tokens(user_id);
+      CREATE INDEX idx_evt_hash ON email_verification_tokens(token_hash);
+    `);
+  }
+
+  // ─── Back-fill is_verified for existing OAuth-only users ───
+  // Any user linked to a Google or Steam account is considered email-verified via
+  // their provider. This is safe to run repeatedly — verified_at guard prevents
+  // double-updates, and it only touches users who were created before the
+  // is_verified=1 default was added to the OAuth registration path.
+  try {
+    db.prepare(`
+      UPDATE users
+      SET is_verified = 1, verified_at = datetime('now')
+      WHERE is_verified = 0
+        AND verified_at IS NULL
+        AND id IN (SELECT DISTINCT user_id FROM user_auth_providers)
+    `).run();
+  } catch { /* non-fatal — table may not exist yet on a brand-new install */ }
+
   // ─── sessions table (used by SQLiteSessionStore / express-session) ───
   // IF NOT EXISTS is safe for both fresh installs and existing databases.
   // Stored in the same social.db for a single backup target and unified WAL journal.
@@ -440,11 +474,12 @@ export function initializeDatabase(): void {
 export function runRetentionCleanup(): void {
   const db = getDb();
 
-  const usageDays   = Math.max(1, parseInt(process.env.USAGE_EVENTS_RETENTION_DAYS      || '90',  10));
-  const authDays    = Math.max(1, parseInt(process.env.AUTH_EVENTS_RETENTION_DAYS        || '180', 10));
-  const clientDays  = Math.max(1, parseInt(process.env.CLIENT_ERRORS_RETENTION_DAYS      || '30',  10));
-  const rssItemDays = Math.max(1, parseInt(process.env.RSS_ITEMS_RETENTION_DAYS          || '180', 10));
-  const tokenDays   = Math.max(1, parseInt(process.env.PASSWORD_RESET_TOKENS_RETENTION_DAYS || '30', 10));
+  const usageDays   = Math.max(1, parseInt(process.env.USAGE_EVENTS_RETENTION_DAYS           || '90',  10));
+  const authDays    = Math.max(1, parseInt(process.env.AUTH_EVENTS_RETENTION_DAYS             || '180', 10));
+  const clientDays  = Math.max(1, parseInt(process.env.CLIENT_ERRORS_RETENTION_DAYS           || '30',  10));
+  const rssItemDays = Math.max(1, parseInt(process.env.RSS_ITEMS_RETENTION_DAYS               || '180', 10));
+  const tokenDays   = Math.max(1, parseInt(process.env.PASSWORD_RESET_TOKENS_RETENTION_DAYS   || '30', 10));
+  const evtDays     = Math.max(1, parseInt(process.env.EMAIL_VERIFICATION_TOKENS_RETENTION_DAYS || '7', 10));
 
   const targets: Array<{ table: string; days: number }> = [
     { table: 'usage_events',  days: usageDays  },
@@ -485,8 +520,7 @@ export function runRetentionCleanup(): void {
     console.error('[retention] rss_items cleanup failed:', err.message);
   }
 
-  // Password reset tokens: purge tokens whose expiry is old enough that no
-  // valid window could ever reference them again.
+  // Password reset tokens: purge expired tokens.
   try {
     const tokenCutoff = `-${tokenDays} days`;
     const result = db.prepare(`
@@ -498,5 +532,19 @@ export function runRetentionCleanup(): void {
     }
   } catch (err: any) {
     console.error('[retention] password_reset_tokens cleanup failed:', err.message);
+  }
+
+  // Email verification tokens: purge expired tokens.
+  try {
+    const evtCutoff = `-${evtDays} days`;
+    const result = db.prepare(`
+      DELETE FROM email_verification_tokens
+      WHERE expires_at < datetime('now', ?)
+    `).run(evtCutoff);
+    if (result.changes > 0) {
+      console.log(`[retention] email_verification_tokens: deleted ${result.changes} rows older than ${evtDays} days`);
+    }
+  } catch (err: any) {
+    console.error('[retention] email_verification_tokens cleanup failed:', err.message);
   }
 }

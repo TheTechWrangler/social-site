@@ -21,6 +21,7 @@ import LandingPage from './pages/LandingPage';
 import PostDetailPage from './pages/PostDetailPage';
 import MessagesPage from './pages/MessagesPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
+import VerifyEmailPage from './pages/VerifyEmailPage';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -162,6 +163,7 @@ export default function App() {
           <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/posts/:id" element={user ? <PostDetailPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
           <Route path="/oauth/callback" element={<OAuthCallback onLogin={setUser} />} />
         </Routes>
       </main>
