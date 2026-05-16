@@ -15,6 +15,21 @@ const router = Router();
 const REPORT_ERROR = 'Please select a reason and briefly explain the problem.';
 const REPORT_REASONS = new Set(['Spam', 'Harassment', 'Hate or abuse', 'Sexual content', 'Violence or threats', 'Scam or unsafe link', 'Other']);
 
+function activeAdminCount(): number {
+  return (getDb().prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND banned = 0").get() as any).c;
+}
+
+function logBlockedAdminGuard(eventType: 'admin_self_ban_blocked' | 'admin_last_admin_ban_blocked' | 'admin_last_admin_demote_blocked', adminId: number, targetUserId: number, reason: string): void {
+  logAuthEvent({
+    eventType,
+    userId: targetUserId,
+    success: false,
+    reason,
+    adminActorId: adminId,
+    targetUserId,
+  });
+}
+
 // GET /api/admin/users
 router.get('/users', requireAuth, requireAdmin, (_req, res) => {
   const rows = getDb().prepare('SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, created_at FROM users ORDER BY id').all();
@@ -25,7 +40,22 @@ router.get('/users', requireAuth, requireAdmin, (_req, res) => {
 router.post('/users/:id/ban', requireAuth, requireAdmin, (req, res) => {
   const adminId = (req as any).user.id;
   const targetId = Number(req.params.id);
-  getDb().prepare('UPDATE users SET banned = 1 WHERE id = ?').run(targetId);
+  const db = getDb();
+
+  if (targetId === adminId) {
+    logBlockedAdminGuard('admin_self_ban_blocked', adminId, targetId, 'self_ban_blocked');
+    res.status(400).json({ error: 'You cannot ban your own account.' }); return;
+  }
+
+  const target = db.prepare('SELECT id, role, banned FROM users WHERE id = ?').get(targetId) as any;
+  if (!target) { res.status(404).json({ error: 'User not found.' }); return; }
+
+  if (target.role === 'admin' && !target.banned && activeAdminCount() <= 1) {
+    logBlockedAdminGuard('admin_last_admin_ban_blocked', adminId, targetId, 'last_active_admin');
+    res.status(400).json({ error: 'Cannot ban the last active admin.' }); return;
+  }
+
+  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(targetId);
   logAuthEvent({ eventType: 'admin_ban', userId: targetId, adminActorId: adminId, targetUserId: targetId });
   res.json({ ok: true });
 });
@@ -49,14 +79,21 @@ router.get('/posts', requireAuth, requireAdmin, (_req, res) => {
 
 // POST /api/admin/posts/:id/hide
 router.post('/posts/:id/hide', requireAuth, requireAdmin, (req, res) => {
-  const result = getDb().prepare('UPDATE posts SET hidden = 1 WHERE id = ?').run(req.params.id);
+  const adminId = (req as any).user.id;
+  const postId = Number(req.params.id);
+  const result = getDb().prepare('UPDATE posts SET hidden = 1 WHERE id = ?').run(postId);
   if (result.changes === 0) { res.status(404).json({ error: 'Content not found.' }); return; }
+  logAuthEvent({ eventType: 'admin_hide_post', userId: adminId, adminActorId: adminId, meta: { postId } });
   res.json({ ok: true });
 });
 
 // POST /api/admin/posts/:id/unhide
 router.post('/posts/:id/unhide', requireAuth, requireAdmin, (req, res) => {
-  getDb().prepare('UPDATE posts SET hidden = 0 WHERE id = ?').run(req.params.id);
+  const adminId = (req as any).user.id;
+  const postId = Number(req.params.id);
+  const result = getDb().prepare('UPDATE posts SET hidden = 0 WHERE id = ?').run(postId);
+  if (result.changes === 0) { res.status(404).json({ error: 'Content not found.' }); return; }
+  logAuthEvent({ eventType: 'admin_unhide_post', userId: adminId, adminActorId: adminId, meta: { postId } });
   res.json({ ok: true });
 });
 
@@ -160,14 +197,11 @@ router.delete('/users/:id', requireAuth, requireAdmin, (req, res) => {
     res.status(400).json({ error: 'You cannot delete your own account.' }); return;
   }
 
-  const target = getDb().prepare('SELECT id, role FROM users WHERE id = ?').get(targetId) as any;
+  const target = getDb().prepare('SELECT id, role, banned FROM users WHERE id = ?').get(targetId) as any;
   if (!target) { res.status(404).json({ error: 'User not found.' }); return; }
 
-  if (target.role === 'admin') {
-    const adminCount = (getDb().prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
-    if (adminCount <= 1) {
-      res.status(400).json({ error: 'Cannot delete the last admin account.' }); return;
-    }
+  if (target.role === 'admin' && !target.banned && activeAdminCount() <= 1) {
+    res.status(400).json({ error: 'Cannot delete the last active admin.' }); return;
   }
 
   // reports.resolved_by has no cascade — null it first to avoid dangling FK
@@ -208,16 +242,22 @@ router.post('/users/:id/role', requireAuth, requireAdmin, (req, res) => {
   }
   const targetId = Number(req.params.id);
   const adminId = (req as any).user.id;
+  const db = getDb();
+  const target = db.prepare('SELECT id, role, banned FROM users WHERE id = ?').get(targetId) as any;
+  if (!target) { res.status(404).json({ error: 'User not found.' }); return; }
 
-  // Safety: don't demote yourself if you're the only admin
-  if (targetId === adminId && role !== 'admin') {
-    const adminCount = (getDb().prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin'").get() as any).c;
-    if (adminCount <= 1) {
-      res.status(400).json({ error: 'Cannot remove the last admin.' }); return;
+  if (target.role === 'admin' && role !== 'admin') {
+    if (targetId === adminId) {
+      logBlockedAdminGuard('admin_last_admin_demote_blocked', adminId, targetId, 'self_demotion_blocked');
+      res.status(400).json({ error: 'You cannot demote your own admin account.' }); return;
+    }
+    if (!target.banned && activeAdminCount() <= 1) {
+      logBlockedAdminGuard('admin_last_admin_demote_blocked', adminId, targetId, 'last_active_admin');
+      res.status(400).json({ error: 'Cannot demote the last active admin.' }); return;
     }
   }
 
-  getDb().prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
+  db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
   logAuthEvent({ eventType: 'admin_role_change', userId: targetId, adminActorId: adminId, targetUserId: targetId, meta: { newRole: role } });
   res.json({ ok: true, role });
 });
@@ -352,8 +392,7 @@ router.get('/system-health', requireAuth, requireAdmin, (_req, res) => {
   try { db.prepare('SELECT 1').get(); dbReachable = true; } catch {}
 
   const uploadsPath = path.resolve(__dirname, '../../uploads');
-  let uploadsOk = false;
-  try { uploadsOk = fs.existsSync(uploadsPath); } catch {}
+  const uploadsStats = directoryStats(uploadsPath);
 
   let appVersion = 'unknown';
   try {
@@ -378,7 +417,9 @@ router.get('/system-health', requireAuth, requireAdmin, (_req, res) => {
     googleOAuth: googleConfigured ? 'Configured' : 'Not configured',
     steamOAuth: steamConfigured ? 'Configured' : 'Not configured',
     dbReachable,
-    uploadsPathOk: uploadsOk,
+    uploadsPathOk: uploadsStats.exists,
+    uploadsFileCount: uploadsStats.fileCount,
+    uploadsSizeBytes: uploadsStats.totalSizeBytes,
     uptimeSeconds: Math.floor(process.uptime()),
     totalUsers: (db.prepare('SELECT COUNT(*) as c FROM users').get() as any).c,
     openReports: (db.prepare("SELECT COUNT(*) as c FROM reports WHERE status = 'open'").get() as any).c,
@@ -602,6 +643,23 @@ function safeServiceLog(raw: string): string {
     .slice(0, 3000);
 }
 
+function logAdminBackupRun(
+  eventType: 'admin_backup_run' | 'admin_upload_backup_run',
+  adminId: number,
+  success: boolean,
+  reason: string,
+  durationMs: number,
+): void {
+  logAuthEvent({
+    eventType,
+    userId: adminId,
+    success,
+    reason,
+    adminActorId: adminId,
+    meta: { durationMs },
+  });
+}
+
 // GET /api/admin/backups/status — backup directory health, latest file info, timer status
 router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
   // ── 1. Enumerate backup files ────────────────────────────────────────────
@@ -694,10 +752,12 @@ router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
 });
 
 // POST /api/admin/backups/run — run the backup script (fixed command, no user args)
-router.post('/backups/run', requireAuth, requireAdmin, (_req, res) => {
+router.post('/backups/run', requireAuth, requireAdmin, (req, res) => {
   const startMs = Date.now();
+  const adminId = (req as any).user.id;
   try {
     if (!fs.existsSync(BACKUP_SCRIPT)) {
+      logAdminBackupRun('admin_backup_run', adminId, false, 'script_missing', Date.now() - startMs);
       res.status(500).json({ ok: false, error: 'Backup script not found at expected path.' });
       return;
     }
@@ -708,26 +768,32 @@ router.post('/backups/run', requireAuth, requireAdmin, (_req, res) => {
     });
     const durationMs = Date.now() - startMs;
     if (result.error) {
+      logAdminBackupRun('admin_backup_run', adminId, false, 'launch_failed', durationMs);
       res.json({ ok: false, error: result.error.message, durationMs });
       return;
     }
     const stdout = (result.stdout || '').trim();
     const stderr = (result.stderr || '').trim();
     if (result.status !== 0) {
+      logAdminBackupRun('admin_backup_run', adminId, false, 'script_failed', durationMs);
       res.json({ ok: false, error: stderr || 'Script exited with non-zero status.', output: stdout, durationMs });
       return;
     }
+    logAdminBackupRun('admin_backup_run', adminId, true, 'completed', durationMs);
     res.json({ ok: true, output: stdout, durationMs });
   } catch (e: any) {
+    logAdminBackupRun('admin_backup_run', adminId, false, 'unexpected_error', Date.now() - startMs);
     res.json({ ok: false, error: e.message || 'Unexpected error.', durationMs: Date.now() - startMs });
   }
 });
 
 // POST /api/admin/backups/run-uploads — run the uploads backup script (fixed command, no user args)
-router.post('/backups/run-uploads', requireAuth, requireAdmin, (_req, res) => {
+router.post('/backups/run-uploads', requireAuth, requireAdmin, (req, res) => {
   const startMs = Date.now();
+  const adminId = (req as any).user.id;
   try {
     if (!fs.existsSync(UPLOAD_BACKUP_SCRIPT)) {
+      logAdminBackupRun('admin_upload_backup_run', adminId, false, 'script_missing', Date.now() - startMs);
       res.status(500).json({ ok: false, error: 'Upload backup script not found at expected path.' });
       return;
     }
@@ -739,19 +805,23 @@ router.post('/backups/run-uploads', requireAuth, requireAdmin, (_req, res) => {
     const durationMs = Date.now() - startMs;
     if (result.error) {
       console.error('[backup-uploads] Script launch error:', result.error.message);
+      logAdminBackupRun('admin_upload_backup_run', adminId, false, 'launch_failed', durationMs);
       res.json({ ok: false, error: 'Upload backup timed out or could not start.', durationMs });
       return;
     }
     if (result.status !== 0) {
       const stderr = (result.stderr || '').trim();
       console.error('[backup-uploads] Script failed:', stderr.slice(0, 500) || `status ${result.status}`);
+      logAdminBackupRun('admin_upload_backup_run', adminId, false, 'script_failed', durationMs);
       res.json({ ok: false, error: 'Upload backup failed.', durationMs });
       return;
     }
     const latest = backupSummary(listBackupFiles(UPLOAD_BACKUP_DIR, 'refugecloud-uploads-', '.tar.gz')[0]);
+    logAdminBackupRun('admin_upload_backup_run', adminId, true, 'completed', durationMs);
     res.json({ ok: true, durationMs, latestBackup: latest });
   } catch (e: any) {
     console.error('[backup-uploads] Unexpected error:', e.message);
+    logAdminBackupRun('admin_upload_backup_run', adminId, false, 'unexpected_error', Date.now() - startMs);
     res.json({ ok: false, error: 'Unexpected upload backup error.', durationMs: Date.now() - startMs });
   }
 });

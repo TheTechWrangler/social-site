@@ -13,6 +13,9 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   admin_ban: '🚫 Banned', admin_unban: '✓ Unbanned', admin_role_change: '👑 Role changed',
   admin_delete_user: '🗑 User deleted', admin_verify_user: '✅ Verified', admin_unverify_user: '⚠ Unverified',
   admin_password_reset_token: '🔑 Reset token generated',
+  admin_self_ban_blocked: '🚫 Self-ban blocked',
+  admin_last_admin_ban_blocked: '🚫 Last admin ban blocked',
+  admin_last_admin_demote_blocked: '👑 Last admin demotion blocked',
 };
 
 // ── Backup tab helpers ────────────────────────────────────────────────────────
@@ -351,6 +354,15 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   async function changeRole(id: number, role: string) {
     setRoleMsg('');
+    const target = users.find(u => u.id === id);
+    if (target && isSelfAdmin(target) && role !== 'admin') {
+      setRoleMsg('You cannot demote your own admin account.');
+      return;
+    }
+    if (target && isLastActiveAdmin(target) && role !== 'admin') {
+      setRoleMsg('Cannot demote the last active admin.');
+      return;
+    }
     try {
       const r = await fetch(`/api/admin/users/${id}/role`, {
         method: 'POST',
@@ -365,13 +377,22 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   }
 
   async function toggleBan(id: number, banned: boolean) {
+    setRoleMsg('');
     const target = users.find(u => u.id === id);
+    if (target && isSelfAdmin(target) && !banned) {
+      setRoleMsg('You cannot ban your own admin account.');
+      return;
+    }
+    if (target && isLastActiveAdmin(target) && !banned) {
+      setRoleMsg('Cannot ban the last active admin.');
+      return;
+    }
     const action = banned ? 'Unban' : 'Ban';
     if (!confirm(`${action} @${target?.username}?`)) return;
     try {
       await (banned ? api.unbanUser(id) : api.banUser(id));
       setUsers(prev => prev.map(u => u.id === id ? { ...u, banned: banned ? 0 : 1 } : u));
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setRoleMsg(e.message || 'Could not update ban status.'); }
   }
 
   async function toggleHide(id: number, hidden: boolean) {
@@ -396,6 +417,10 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   }
 
   async function deleteUser(u: any) {
+    if (isLastActiveAdmin(u)) {
+      alert('Cannot delete the last active admin.');
+      return;
+    }
     if (!confirm(`Delete @${u.username}? This removes the user and their related content. This cannot be undone.`)) return;
     try {
       await api.deleteUser(u.id);
@@ -418,6 +443,24 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     } catch (e) { console.error(e); }
     finally { setAnalyticsLoading(false); }
   }
+
+  const currentUserId = Number(currentUser?.id ?? 0);
+  const activeAdminCount = users.filter(u => u.role === 'admin' && !u.banned).length;
+  const isSelfAdmin = (u: any) => Number(u.id) === currentUserId && u.role === 'admin';
+  const isLastActiveAdmin = (u: any) => u.role === 'admin' && !u.banned && activeAdminCount <= 1;
+  const adminRoleChangeDisabled = (u: any) => isSelfAdmin(u) || isLastActiveAdmin(u);
+  const adminRoleChangeTitle = (u: any) => {
+    if (isSelfAdmin(u)) return 'You cannot demote your own admin account.';
+    if (isLastActiveAdmin(u)) return 'Cannot demote the last active admin.';
+    return undefined;
+  };
+  const adminBanDisabled = (u: any) => !u.banned && (isSelfAdmin(u) || isLastActiveAdmin(u));
+  const adminBanTitle = (u: any) => {
+    if (u.banned) return undefined;
+    if (isSelfAdmin(u)) return 'You cannot ban your own admin account.';
+    if (isLastActiveAdmin(u)) return 'Cannot ban the last active admin.';
+    return undefined;
+  };
 
   return (
     <div className="admin-page">
@@ -490,12 +533,13 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                     <select className="input" value={userRoleDraft[u.id] ?? u.role}
                       onChange={e => setUserRoleDraft(prev => ({ ...prev, [u.id]: e.target.value }))}
                       style={{ width: 90, padding: '4px 8px', fontSize: '0.8rem' }}
-                      disabled={u.id === currentUser?.id}>
+                      disabled={adminRoleChangeDisabled(u)}
+                      title={adminRoleChangeTitle(u)}>
                       <option value="user">User</option>
                       <option value="mod">Mod</option>
                       <option value="admin">Admin</option>
                     </select>
-                    {userRoleDraft[u.id] && userRoleDraft[u.id] !== u.role && u.id !== currentUser?.id && (
+                    {userRoleDraft[u.id] && userRoleDraft[u.id] !== u.role && !adminRoleChangeDisabled(u) && (
                       <button className="btn btn-sm" onClick={() => {
                         const next = userRoleDraft[u.id];
                         if (!confirm(`Change @${u.username}'s role from ${u.role} → ${next}?`)) return;
@@ -508,10 +552,12 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                     ) : (
                       <button className="btn btn-sm" onClick={() => verifyUser(u.id)}>Verify</button>
                     ))}
-                    <button className="btn btn-sm" onClick={() => toggleBan(u.id, !!u.banned)}>{u.banned ? 'Unban' : 'Ban'}</button>
+                    <button className="btn btn-sm" disabled={adminBanDisabled(u)} title={adminBanTitle(u)} onClick={() => toggleBan(u.id, !!u.banned)}>{u.banned ? 'Unban' : 'Ban'}</button>
                     {u.id !== currentUser?.id && (
-                      <button className="btn btn-sm btn-danger" onClick={() => deleteUser(u)}>Delete</button>
+                      <button className="btn btn-sm btn-danger" disabled={isLastActiveAdmin(u)} title={isLastActiveAdmin(u) ? 'Cannot delete the last active admin.' : undefined} onClick={() => deleteUser(u)}>Delete</button>
                     )}
+                    {isSelfAdmin(u) && !u.banned && <span className="muted" style={{ fontSize: '0.76rem' }}>You cannot ban your own admin account.</span>}
+                    {isLastActiveAdmin(u) && !isSelfAdmin(u) && <span className="muted" style={{ fontSize: '0.76rem' }}>Cannot remove the last active admin.</span>}
                   </div>
                 </div>
                 {expandedUser === u.id && (

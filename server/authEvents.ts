@@ -22,7 +22,14 @@ export type AuthEventType =
   | 'admin_delete_user'
   | 'admin_verify_user'
   | 'admin_unverify_user'
-  | 'admin_password_reset_token';
+  | 'admin_password_reset_token'
+  | 'admin_backup_run'
+  | 'admin_upload_backup_run'
+  | 'admin_hide_post'
+  | 'admin_unhide_post'
+  | 'admin_self_ban_blocked'
+  | 'admin_last_admin_ban_blocked'
+  | 'admin_last_admin_demote_blocked';
 
 export interface LogEventParams {
   eventType: AuthEventType;
