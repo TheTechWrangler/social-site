@@ -59,11 +59,11 @@ export default function RegisterPage({ onLogin }: { onLogin: (u: any) => void })
       <div className="divider"><span>or</span></div>
 
       <form onSubmit={handleSubmit}>
-        <input className="input" placeholder="Username" value={form.username} onChange={set('username')} required />
-        <input className="input" placeholder="Display Name" value={form.displayName} onChange={set('displayName')} required />
-        <input className="input" type="email" placeholder="Email" value={form.email} onChange={set('email')} required />
-        <input className="input" type="password" placeholder="Password (8+ characters)" value={form.password} onChange={set('password')} required minLength={8} />
-        {error && <p className="error-msg">{error}</p>}
+        <input className="input" placeholder="Username" value={form.username} onChange={set('username')} required autoComplete="username" />
+        <input className="input" placeholder="Display Name" value={form.displayName} onChange={set('displayName')} required autoComplete="name" />
+        <input className="input" type="email" placeholder="Email" value={form.email} onChange={set('email')} required autoComplete="email" />
+        <input className="input" type="password" placeholder="Password (8+ characters)" value={form.password} onChange={set('password')} required minLength={8} autoComplete="new-password" />
+        {error && <p className="error-msg" role="alert">{error}</p>}
         <button className="btn btn-primary" disabled={loading}>{loading ? 'Creating...' : 'Register'}</button>
       </form>
       <p className="muted">Already have an account? <Link to="/login">Log in</Link></p>

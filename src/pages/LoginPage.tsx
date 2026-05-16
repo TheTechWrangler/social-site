@@ -68,11 +68,12 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
       <div className="divider"><span>or</span></div>
 
       <form onSubmit={handleSubmit}>
-        <input className="input" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} required />
-        <input className="input" type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required />
-        {displayError && <p className="error-msg">{displayError}</p>}
+        <input className="input" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} required autoComplete="username" />
+        <input className="input" type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" />
+        {displayError && <p className="error-msg" role="alert">{displayError}</p>}
         <button className="btn btn-primary" disabled={loading}>{loading ? 'Logging in...' : 'Log In'}</button>
       </form>
+      <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>Forgot your password? Contact an admin for a reset link.</p>
       <p className="muted">Don't have an account? <Link to="/register">Register</Link></p>
     </div>
   );

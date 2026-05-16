@@ -83,7 +83,7 @@ export default function ResetPasswordPage() {
             onChange={e => setConfirm(e.target.value)}
             required
           />
-          {errorMsg && <p style={{ color: 'var(--danger)', margin: 0 }}>{errorMsg}</p>}
+          {errorMsg && <p role="alert" style={{ color: 'var(--danger)', margin: 0 }}>{errorMsg}</p>}
           <button className="btn-gold" type="submit" disabled={submitting}>
             {submitting ? 'Saving…' : 'Set New Password'}
           </button>

@@ -5,8 +5,8 @@ import { getDb } from './database.js';
 import { generateToken } from './auth.js';
 import { logAuthEvent, getClientIp } from './authEvents.js';
 
-const BASE_URL = process.env.APP_BASE_URL || 'http://192.168.254.181:3003';
-const WEB_URL = process.env.WEB_BASE_URL || 'http://192.168.254.181:5174';
+const BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3003';
+const WEB_URL = process.env.WEB_BASE_URL || 'http://localhost:5174';
 
 // ─── Config Checks ───
 

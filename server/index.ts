@@ -110,8 +110,19 @@ configurePassport();
 app.use(passport.initialize());
 app.use(passport.session());
 
+// ─── CORS ───
+const corsOrigin = process.env.WEB_BASE_URL || 'http://localhost:5174';
+if (!process.env.WEB_BASE_URL) {
+  console.warn('[cors] WEB_BASE_URL is not set — falling back to http://localhost:5174 (dev only)');
+} else if (corsOrigin.endsWith('/')) {
+  console.warn(`[cors] WEB_BASE_URL has a trailing slash ("${corsOrigin}") — CORS may fail; remove the trailing slash`);
+} else if (!/^https?:\/\//i.test(corsOrigin)) {
+  console.warn(`[cors] WEB_BASE_URL does not start with http:// or https:// ("${corsOrigin}") — CORS may fail`);
+} else {
+  console.log(`[cors] Origin: ${corsOrigin}`);
+}
 app.use(cors({
-  origin: process.env.WEB_BASE_URL || 'http://localhost:5174',
+  origin: corsOrigin,
   credentials: true,
 }));
 app.use(express.json());
