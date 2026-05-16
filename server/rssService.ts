@@ -42,6 +42,12 @@ function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, '').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/** Only allow http:// and https:// URLs; everything else (data:, javascript:, etc.) returns ''. */
+function sanitizeUrl(url: unknown): string {
+  if (typeof url !== 'string' || !url) return '';
+  return /^https?:\/\//i.test(url) ? url : '';
+}
+
 // ─── Source CRUD ───
 
 export function getSources(): RssSource[] {
@@ -101,15 +107,15 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
       const publishedAt = item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString();
 
       // Podcast detection: enclosure with audio MIME, or iTunes duration
-      const encUrl = (item.enclosure?.url as string) || '';
+      const encUrl = sanitizeUrl((item.enclosure?.url as string) || '');
       const encType = (item.enclosure?.type as string) || '';
       const itunesDuration = (item as any).itunes?.duration || '';
-      const itunesImage = (item as any).itunes?.image || '';
+      const itunesImage = sanitizeUrl((item as any).itunes?.image || '');
       const isPodcast = encType.startsWith('audio/') || !!itunesDuration || (source.category || '').toLowerCase().includes('podcast');
       const itemType = isPodcast ? 'podcast' : 'article';
-      const podcastImage = itunesImage || (feed as any).itunes?.image || '';
+      const podcastImage = itunesImage || sanitizeUrl((feed as any).itunes?.image || '');
 
-      const r = insert.run(source.id, guid, title, summary, contentSnippet, item.link || '', author, imageUrl, publishedAt,
+      const r = insert.run(source.id, guid, title, summary, contentSnippet, sanitizeUrl(item.link || ''), author, imageUrl, publishedAt,
         itemType, encUrl, encType, itunesDuration, podcastImage);
       if (r.changes > 0) inserted++; else dupes++;
     }

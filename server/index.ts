@@ -185,6 +185,12 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, app: 'social-site' })
 // ─── Serve React SPA (production only) ───
 // In dev, Vite handles the frontend separately via `npm run dev`.
 // In production (NODE_ENV=production), Express serves the built dist/.
+// Return JSON 404 for any unmatched /api/* route — applies in both dev and prod
+// so unknown API paths never silently return HTML (index.html or Vite dev 404 page).
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
+
 if (IS_PROD) {
   const distPath = path.join(__dirname, '../dist');
   // Serve static assets (hashed JS/CSS/fonts use default caching — their filenames change on rebuild).
@@ -198,10 +204,6 @@ if (IS_PROD) {
       }
     },
   }));
-  // 404 for any unmatched /api/* so they don't silently serve index.html
-  app.use('/api', (_req, res) => {
-    res.status(404).json({ error: 'Not found' });
-  });
   // SPA fallback — every non-API path serves the React shell with no-cache headers
   app.get('*', (_req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
