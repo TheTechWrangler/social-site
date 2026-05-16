@@ -111,8 +111,9 @@ function findOrCreateUser(provider: string, providerId: string, email: string, d
   }
 
   // OAuth-created users are pre-verified via their provider identity — mark as verified immediately.
+  // feed_exposure is explicitly 'everyone' so new users see the full public community feed on first login.
   const result = db.prepare(
-    'INSERT INTO users (username, display_name, email, password_hash, avatar_url, is_verified, verified_at) VALUES (?, ?, ?, ?, ?, 1, datetime(\'now\'))'
+    "INSERT INTO users (username, display_name, email, password_hash, avatar_url, is_verified, verified_at, feed_exposure) VALUES (?, ?, ?, ?, ?, 1, datetime('now'), 'everyone')"
   ).run(username, displayName || username, email || `${username}@${provider}.local`, '', avatarUrl || '');
 
   const userId = result.lastInsertRowid as number;

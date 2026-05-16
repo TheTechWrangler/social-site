@@ -74,7 +74,9 @@ export function registerUser(username: string, displayName: string, email: strin
 
   const hash = hashPassword(password);
   const result = getDb().prepare(
-    'INSERT INTO users (username, display_name, email, password_hash) VALUES (?, ?, ?, ?)'
+    // feed_exposure is explicitly 'everyone' so new users immediately see the full
+    // public community feed rather than an empty "extended" (follows-only) feed.
+    "INSERT INTO users (username, display_name, email, password_hash, feed_exposure) VALUES (?, ?, ?, ?, 'everyone')"
   ).run(username, displayName, email, hash);
 
   return getUserById(result.lastInsertRowid as number)!;

@@ -4,7 +4,7 @@ import PostCard from '../components/PostCard';
 import WorldCard from '../components/WorldCard';
 
 const LEVELS = [
-  { key: 'everyone', label: 'Everyone', help: 'Public native posts from verified users, chronological only.' },
+  { key: 'everyone', label: 'Community', help: 'All public posts from verified members. Mute, block, or follow to shape what you see.' },
   { key: 'extended', label: 'Friends of Friends', help: 'Your circle plus your extended circle. No random public posts.' },
   { key: 'friends', label: 'Just Friends', help: 'Only your posts and people you follow.' },
   { key: 'world', label: 'Approved World Feeds', help: 'Approved RSS and podcast sources. External content stays clearly labeled.' },
@@ -29,7 +29,9 @@ export default function HomePage({ user }: { user: any }) {
   const [replenishing, setReplenishing] = useState(false);
   const [replenishMsg, setReplenishMsg] = useState('');
   const [replenishCooldown, setReplenishCooldown] = useState<string | null>(null);
-  const initialLevel = ['everyone', 'extended', 'friends', 'world'].includes(user?.feed_exposure) ? user.feed_exposure : 'extended';
+  // Default to 'everyone' (Community) so new users see the full public feed immediately.
+  // Existing users who previously picked a level keep that stored preference.
+  const initialLevel = ['everyone', 'extended', 'friends', 'world'].includes(user?.feed_exposure) ? user.feed_exposure : 'everyone';
   const [level, setLevel] = useState(initialLevel);
   const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -263,7 +265,14 @@ export default function HomePage({ user }: { user: any }) {
             }
           </div>
         ) : feedItems.length === 0 ? (
-          <div className="empty-state"><p>No posts yet.</p><p className="muted">Follow some users or create your first post!</p></div>
+          <div className="empty-state">
+            <p>No posts yet.</p>
+            <p className="muted">
+              {level === 'everyone'
+                ? 'The community feed will show public posts as members start posting. Check back soon, or create the first post!'
+                : 'Switch to Community to see all public posts, or follow some members to populate this feed.'}
+            </p>
+          </div>
         ) : (
           <div className="feed-list">
             {feedItems.map(item => item.type === 'world_item'

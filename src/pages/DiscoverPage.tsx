@@ -1,14 +1,28 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 
 export default function DiscoverPage({ user }: { user?: any }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
+  const [suggestions, setSuggestions] = useState<any[]>([]);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const isVerified = !!user?.is_verified;
+
+  // Load public members on mount so new users see people immediately — no search required.
+  useEffect(() => {
+    api.get<{ users: any[] }>('/users?q=&limit=20')
+      .then(r => {
+        setSuggestions(
+          (r.users || [])
+            .filter((u: any) => u.profile_visibility === 'public' && u.id !== user?.id)
+            .slice(0, 12)
+        );
+      })
+      .catch(() => {});
+  }, []);
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -24,8 +38,10 @@ export default function DiscoverPage({ user }: { user?: any }) {
 
   async function handleFollow(userId: number) {
     try {
-      const r = await api.follow(userId);
-      setResults(prev => prev.map(u => u.id === userId ? { ...u, isFollowing: true } : u));
+      await api.follow(userId);
+      const update = (arr: any[]) => arr.map(u => u.id === userId ? { ...u, isFollowing: true } : u);
+      setResults(update);
+      setSuggestions(update);
     } catch (e: any) {
       if (e.message?.includes('verification')) alert('Account verification required before you can follow.');
       else console.error(e);
@@ -35,8 +51,32 @@ export default function DiscoverPage({ user }: { user?: any }) {
   async function handleUnfollow(userId: number) {
     try {
       await api.unfollow(userId);
-      setResults(prev => prev.map(u => u.id === userId ? { ...u, isFollowing: false } : u));
+      const update = (arr: any[]) => arr.map(u => u.id === userId ? { ...u, isFollowing: false } : u);
+      setResults(update);
+      setSuggestions(update);
     } catch (e) { console.error(e); }
+  }
+
+  function renderCard(u: any) {
+    return (
+      <div key={u.id} className="discover-card">
+        <div className="avatar-placeholder">{u.display_name?.[0] || '?'}</div>
+        <div className="discover-info">
+          <Link to={`/profile/${u.username}`} className="discover-name">
+            <strong>{u.display_name}</strong>
+            <span className="muted">@{u.username}</span>
+          </Link>
+          {u.bio && <p className="discover-bio">{u.bio.slice(0, 100)}</p>}
+          {u.is_verified ? <span className="verified-badge">✅ Verified</span> : <span className="muted">⚠ Unverified</span>}
+        </div>
+        {isVerified && user && user.id !== u.id && (
+          <button className={`btn ${u.isFollowing ? 'btn-ghost' : 'btn-primary'}`}
+            onClick={() => u.isFollowing ? handleUnfollow(u.id) : handleFollow(u.id)}>
+            {u.isFollowing ? 'Following' : 'Follow'}
+          </button>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -48,36 +88,31 @@ export default function DiscoverPage({ user }: { user?: any }) {
         <button className="btn btn-primary" disabled={query.trim().length < 2 || loading}>Search</button>
       </form>
 
-      {!searched && <p className="muted" style={{ marginTop: 16 }}>Search for people by name or username.</p>}
-
       {loading && <p className="muted">Searching...</p>}
 
       {searched && !loading && results.length === 0 && (
         <p className="muted" style={{ marginTop: 16 }}>No users found matching "{query}".</p>
       )}
 
-      {results.length > 0 && (
+      {searched && results.length > 0 && (
         <div className="discover-results">
-          {results.map((u: any) => (
-            <div key={u.id} className="discover-card">
-              <div className="avatar-placeholder">{u.display_name?.[0] || '?'}</div>
-              <div className="discover-info">
-                <Link to={`/profile/${u.username}`} className="discover-name">
-                  <strong>{u.display_name}</strong>
-                  <span className="muted">@{u.username}</span>
-                </Link>
-                {u.bio && <p className="discover-bio">{u.bio.slice(0, 100)}</p>}
-                {u.is_verified ? <span className="verified-badge">✅ Verified</span> : <span className="muted">⚠ Unverified</span>}
-              </div>
-              {isVerified && user && user.id !== u.id && (
-                <button className={`btn ${u.isFollowing ? 'btn-ghost' : 'btn-primary'}`}
-                  onClick={() => u.isFollowing ? handleUnfollow(u.id) : handleFollow(u.id)}>
-                  {u.isFollowing ? 'Following' : 'Follow'}
-                </button>
-              )}
-            </div>
-          ))}
+          {results.map(u => renderCard(u))}
         </div>
+      )}
+
+      {!searched && suggestions.length > 0 && (
+        <>
+          <p className="muted" style={{ marginTop: 16 }}>
+            People on RefugeCloud — follow to add them to your feed:
+          </p>
+          <div className="discover-results">
+            {suggestions.map(u => renderCard(u))}
+          </div>
+        </>
+      )}
+
+      {!searched && suggestions.length === 0 && (
+        <p className="muted" style={{ marginTop: 16 }}>Search for people by name or username.</p>
       )}
     </div>
   );
