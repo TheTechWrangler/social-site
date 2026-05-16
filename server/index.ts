@@ -73,7 +73,8 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
+      // Cloudflare Web Analytics beacon — only this exact static host is permitted.
+      scriptSrc: ["'self'", 'https://static.cloudflareinsights.com'],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:', 'https:'],
       mediaSrc: ["'self'", 'https:'],
@@ -205,30 +206,57 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
 
 app.use('/uploads', uploadsFileRouter);
 
-// ─── CSRF Origin Check ───
+// ─── CSRF Origin / Referer Check ───
 // Now that auth uses HttpOnly cookies, cross-origin state-changing requests could
 // carry the cookie automatically (CSRF). SameSite=Lax on the cookie already blocks
-// cross-site POST from being sent with cookies, but we add an Origin header check
+// cross-site POST from being sent with cookies, but we add an Origin/Referer check
 // as defence-in-depth for all state-changing /api routes.
-// - GET/HEAD/OPTIONS are always allowed (no state change).
-// - Requests WITH an Origin header: must match an allowed frontend origin.
-// - Requests WITHOUT an Origin header (curl, server tools): allowed through.
-// Allowed origins: production + WEB_BASE_URL + localhost dev variants.
+//
+// Decision tree (non-GET/HEAD/OPTIONS only):
+//   Origin present              → must match an allowed frontend origin
+//   Origin absent, Referer set  → Referer's origin must match an allowed frontend origin
+//   Both absent                 → allowed in dev (NODE_ENV≠production) or from localhost
+//
+// Allowed origins: production + WEB_BASE_URL + localhost dev variants (both name forms).
 const CSRF_ALLOWED_ORIGINS = new Set<string>([
   'https://refugecloud.com',
   'https://www.refugecloud.com',
   'http://localhost:5174',
+  'http://127.0.0.1:5174',
   'http://localhost:3003',
+  'http://127.0.0.1:3003',
   ...(process.env.WEB_BASE_URL
     ? [process.env.WEB_BASE_URL.replace(/\/$/, '')]
     : []),
 ]);
+
+function extractOriginFromUrl(url: string): string | null {
+  try { return new URL(url).origin; } catch { return null; }
+}
+
 app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) { next(); return; }
+
   const origin = req.headers.origin;
-  if (!origin) { next(); return; }  // No Origin header — tools/curl pass through
-  if (CSRF_ALLOWED_ORIGINS.has(origin)) { next(); return; }
-  res.status(403).json({ error: 'Request origin not allowed.' });
+  if (origin) {
+    if (CSRF_ALLOWED_ORIGINS.has(origin)) { next(); return; }
+    res.status(403).json({ error: 'Invalid request origin.' });
+    return;
+  }
+
+  const referer = req.headers.referer;
+  if (referer) {
+    const refOrigin = extractOriginFromUrl(referer);
+    if (refOrigin && CSRF_ALLOWED_ORIGINS.has(refOrigin)) { next(); return; }
+    res.status(403).json({ error: 'Invalid request origin.' });
+    return;
+  }
+
+  // No Origin or Referer — tools/curl. Allow in dev or from localhost/127.0.0.1.
+  if (!IS_PROD) { next(); return; }
+  const host = (req.headers.host || '').split(':')[0];
+  if (host === 'localhost' || host === '127.0.0.1') { next(); return; }
+  res.status(403).json({ error: 'Invalid request origin.' });
 });
 
 // API routes
