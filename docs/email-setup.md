@@ -1,6 +1,6 @@
 # Email Setup — RefugeCloud (Resend)
 
-This guide covers everything needed to enable transactional email (verification emails) via [Resend](https://resend.com). No real API keys are stored here.
+This guide covers everything needed to enable transactional email (email verification and password reset) via [Resend](https://resend.com). No real API keys are stored here.
 
 ---
 
@@ -110,6 +110,8 @@ sudo journalctl -u refugecloud -n 30 --no-pager | grep '\[email\]'
 
 After adding real credentials and restarting:
 
+### Email verification
+
 - [ ] Register a new local account at `https://refugecloud.com/register`.
 - [ ] RegisterPage shows "Check your email" state (not the main feed).
 - [ ] Check the registered email inbox — verification email arrives within 1–2 minutes.
@@ -121,11 +123,31 @@ After adding real credentials and restarting:
 - [ ] Navigate to home — user can now post/comment/like.
 - [ ] In admin → User Detail: user's `is_verified` field is 1.
 
-**Resend test:**
+**Resend verification test:**
 - [ ] Log in as an unverified user → "Email not verified" page appears.
 - [ ] Click "Resend verification email" → "Verification email sent!"
 - [ ] Check inbox — new email arrives.
 - [ ] Old verification link (if used before) shows "Invalid or expired" — only the latest link works.
+
+### Password reset (self-serve)
+
+- [ ] Go to `https://refugecloud.com/login`.
+- [ ] Click "Forgot your password?" — an email/username input appears.
+- [ ] Enter a **registered** email or username. Click "Send reset email".
+- [ ] See generic message: "If an account matches, a password reset email has been sent."
+- [ ] Enter a **non-existent** email. Click "Send reset email".
+- [ ] See the **same** generic message (anti-enumeration).
+- [ ] Check inbox — reset email arrives with subject "Reset your RefugeCloud password".
+- [ ] Email contains a "Reset Password" button and an expiry note (1 hour).
+- [ ] Click the reset link → `https://refugecloud.com/reset-password?token=...`
+- [ ] Page shows "Setting new password for @username".
+- [ ] Enter new password (8+ chars). Submit.
+- [ ] See "Password updated successfully." and redirect to login after 3 seconds.
+- [ ] Log in with the **new** password — succeeds.
+- [ ] Log in with the **old** password — fails.
+- [ ] Any existing auth session (old cookie) is rejected — `password_changed_at` revocation invalidates old JWTs.
+- [ ] Click the reset link a second time → "This reset link is invalid or has expired." (one-time use).
+- [ ] Check Resend dashboard → Emails — sent event visible with delivery status.
 
 ---
 
@@ -158,6 +180,33 @@ After adding real credentials and restarting:
 - The user already requested a new token (previous tokens are invalidated when a new one is generated).
 - **Fix**: log in and click "Resend verification email".
 
+### Password reset link shows "Invalid or has expired"
+
+- The self-serve token expired (default: 1 hour after generation).
+- Admin-generated tokens expire after 2 hours.
+- The link was already used (one-time use).
+- A new reset was requested — only the most recent link is valid.
+- **Fix**: go to `/login` → "Forgot your password?" → request a new link.
+
+### Generic response on forgot-password (anti-enumeration by design)
+
+The `POST /api/auth/forgot-password` endpoint always returns:
+```json
+{ "ok": true, "message": "If an account matches, a password reset email has been sent." }
+```
+This is intentional — it does not reveal whether an account exists, is banned, or is OAuth-only. Check Resend dashboard → Emails to confirm a send was actually attempted.
+
+### Password reset for OAuth-only accounts
+
+Users who registered via Google or Steam with no local password cannot use the self-serve reset flow (there is no password to reset). The server silently returns the generic response without sending an email. Admins can use "Generate Password Reset Link" in the admin panel to create a reset link that sets a local password for the user.
+
+### Rate limit hit on forgot-password
+
+```
+{ "error": "Too many password reset requests. Please wait before trying again." }
+```
+The forgot-password endpoint is limited to 5 requests per IP per 15 minutes (configurable via `RATE_LIMIT_FORGOT_PASSWORD_MAX`). This is separate from the general auth limiter.
+
 ### Verification email not arriving
 
 1. Check spam/junk folder.
@@ -187,19 +236,31 @@ After adding real credentials and restarting:
 
 ## API reference
 
-| Endpoint | Method | Auth | Description |
-|---|---|---|---|
-| `/api/auth/verify-email?token=...` | GET | None | Validate and consume verification token |
-| `/api/auth/resend-verification` | POST | Required | Generate new token and resend email |
-
-Both endpoints are rate-limited to 10 requests / 15 minutes per IP.
+| Endpoint | Method | Auth | Rate limit | Description |
+|---|---|---|---|---|
+| `/api/auth/verify-email?token=...` | GET | None | 10/15min | Validate and consume email verification token |
+| `/api/auth/resend-verification` | POST | Required | 10/15min | Generate new verification token and resend email |
+| `/api/auth/forgot-password` | POST | None | **5/15min** | Self-serve password reset — send reset email |
+| `/api/auth/reset-password` | GET | None | 10/15min | Validate a password reset token |
+| `/api/auth/reset-password` | POST | None | 10/15min | Apply new password using a reset token |
 
 ---
 
 ## Token lifecycle
+
+### Email verification tokens
 
 - **Generated**: at registration and each resend request.
 - **Stored**: only the SHA-256 hash (raw token is never stored or logged).
 - **Invalidated**: all previous unused tokens for the user are marked `used_at = now()` when a new one is generated.
 - **Expires**: after `EMAIL_VERIFICATION_TTL_HOURS` hours (default 24).
 - **Cleaned up**: `runRetentionCleanup()` deletes expired tokens after `EMAIL_VERIFICATION_TOKENS_RETENTION_DAYS` days (default 7).
+
+### Password reset tokens
+
+- **Generated**: on `POST /api/auth/forgot-password` (self-serve, 1-hour TTL) or admin panel (2-hour TTL).
+- **Stored**: only the SHA-256 hash. Raw token goes into the email link only, never stored, never logged.
+- **Invalidated**: all previous unused tokens for the user are marked used when a new one is generated.
+- **Expires**: after `PASSWORD_RESET_TTL_HOURS` hours (default 1 for self-serve; admin tokens always 2 hours).
+- **Revocation**: applying a reset also sets `password_changed_at = datetime('now')` on the user, which invalidates all existing JWTs (the `iat < password_changed_at` check in `requireAuth`).
+- **Cleaned up**: `runRetentionCleanup()` deletes expired `password_reset_tokens` rows after `PASSWORD_RESET_TOKENS_RETENTION_DAYS` days (default 30).

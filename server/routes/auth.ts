@@ -6,7 +6,7 @@ import { registerUser, generateToken, verifyToken, verifyPassword, getUserByUser
 import { requireAuth, getAuthCookieValue, AUTH_COOKIE_NAME, type AuthRequest } from '../middleware.js';
 import { logAuthEvent, getClientIp } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
-import { sendEmail, buildVerificationEmail, isEmailConfigured } from '../email.js';
+import { sendEmail, buildVerificationEmail, buildPasswordResetEmail, isEmailConfigured } from '../email.js';
 
 const router = Router();
 
@@ -166,6 +166,76 @@ router.post('/login', (req, res) => {
     console.error('[auth] Login error:', err.message);
     res.status(500).json({ error: 'Login failed.' });
   }
+});
+
+// POST /api/auth/forgot-password — self-serve password reset request (no auth required).
+// Anti-enumeration: always returns the same generic message whether the account exists or not.
+// Rate-limited in index.ts (5 req / 15 min — tighter than general authLimiter).
+router.post('/forgot-password', async (req, res) => {
+  // Generic message used for ALL responses — success, not-found, banned, OAuth-only.
+  const GENERIC_MSG = 'If an account matches, a password reset email has been sent.';
+
+  const rawInput = (req.body?.emailOrUsername || '').toString().trim();
+  const input = rawInput.toLowerCase();
+
+  // Always respond with the same shape — validate format silently, not publicly.
+  if (!input || input.length < 3 || input.length > 254) {
+    res.json({ ok: true, message: GENERIC_MSG }); return;
+  }
+
+  const db = getDb();
+  // Look up by email if input contains '@', otherwise by username.
+  // Both lookups include banned=0 and non-empty password_hash so OAuth-only or
+  // banned accounts never receive a reset email without revealing their existence.
+  const user = (input.includes('@')
+    ? db.prepare('SELECT id, email, password_hash FROM users WHERE email = ? AND banned = 0').get(input)
+    : db.prepare('SELECT id, email, password_hash FROM users WHERE LOWER(username) = ? AND banned = 0').get(input)
+  ) as { id: number; email: string; password_hash: string } | undefined;
+
+  // No account, banned, or OAuth-only (empty password_hash) — generic success, no email.
+  if (!user || !user.password_hash) {
+    res.json({ ok: true, message: GENERIC_MSG }); return;
+  }
+
+  // Determine TTL — default 1 hour (shorter than admin-generated 2-hour links).
+  const ttlHours = Math.max(1, parseInt(process.env.PASSWORD_RESET_TTL_HOURS || '1', 10));
+
+  try {
+    // Invalidate any existing unused tokens to ensure only the newest link works.
+    db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(user.id);
+
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    db.prepare(
+      "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', ?))"
+    ).run(user.id, tokenHash, `+${ttlHours} hours`);
+
+    // Build the reset URL pointing to the frontend route (not the API).
+    const webBase = (process.env.WEB_BASE_URL || 'http://localhost:5174').replace(/\/$/, '');
+    const resetUrl = `${webBase}/reset-password?token=${rawToken}`;
+
+    // Send email — fire-and-forget. Failure must not block the response or reveal account state.
+    const emailResult = await sendEmail({
+      to: user.email,
+      subject: 'Reset your RefugeCloud password',
+      html: buildPasswordResetEmail(resetUrl, ttlHours),
+    });
+
+    // Audit log — only logged when we know the user_id (never for not-found cases).
+    logAuthEvent({
+      eventType: 'password_reset_requested',
+      userId: user.id,
+      success: emailResult.ok,
+      ip: getClientIp(req),
+      userAgent: req.headers['user-agent'],
+      meta: { email_configured: isEmailConfigured(), self_serve: true },
+    });
+  } catch (err: any) {
+    // Log the error internally but still return the generic message.
+    console.error('[auth] Forgot password error:', err.message);
+  }
+
+  res.json({ ok: true, message: GENERIC_MSG });
 });
 
 // GET /api/auth/reset-password?token=<token> — validate a reset token (no auth required)

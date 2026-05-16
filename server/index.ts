@@ -145,6 +145,13 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     message: { error: 'Too many attempts. Please try again later.' },
     standardHeaders: true, legacyHeaders: false,
   });
+  // Tighter limiter for forgot-password — prevents email spam / account enumeration at scale.
+  const forgotPasswordLimiter = rateLimit({
+    windowMs: (parseInt(process.env.RATE_LIMIT_AUTH_WINDOW_MINUTES || '15', 10)) * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_FORGOT_PASSWORD_MAX || '5', 10),
+    message: { error: 'Too many password reset requests. Please wait before trying again.' },
+    standardHeaders: true, legacyHeaders: false,
+  });
   const writeLimiter = rateLimit({
     windowMs: (parseInt(process.env.RATE_LIMIT_WRITE_WINDOW_MINUTES || '15', 10)) * 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_WRITE_MAX || '60', 10),
@@ -196,6 +203,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
   app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/register', authLimiter);
   app.use('/api/auth/reset-password', authLimiter);
+  app.use('/api/auth/forgot-password', forgotPasswordLimiter);
   app.use('/api/auth/oauth-token', authLimiter);
   app.use('/api/auth/resend-verification', authLimiter);
   app.use('/api/auth/verify-email', authLimiter);

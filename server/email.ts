@@ -74,6 +74,38 @@ export async function sendEmail(opts: SendEmailOptions): Promise<SendEmailResult
 
 // ─── Email templates ───
 
+export function buildPasswordResetEmail(resetUrl: string, ttlHours: number): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:24px;background:#f3f4f6;font-family:sans-serif">
+  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:32px;border:1px solid #e5e7eb">
+    <h2 style="margin:0 0 16px;color:#1f2937;font-size:1.25rem">Reset your RefugeCloud password</h2>
+    <p style="color:#374151;margin:0 0 24px;line-height:1.6">
+      We received a request to reset the password for your account.
+      Click the button below to choose a new password.
+    </p>
+    <p style="margin:0 0 24px">
+      <a href="${resetUrl}"
+         style="display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;padding:12px 28px;border-radius:6px;font-weight:600;font-size:15px">
+        Reset Password
+      </a>
+    </p>
+    <p style="color:#6b7280;font-size:0.85rem;margin:0 0 16px">
+      This link expires in ${ttlHours} hour${ttlHours !== 1 ? 's' : ''} and can only be used once.
+      If you did not request a password reset, you can safely ignore this email —
+      your password will not be changed.
+    </p>
+    <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+    <p style="color:#9ca3af;font-size:0.78rem;margin:0;word-break:break-all">
+      If the button doesn't work, paste this link into your browser:<br>
+      <a href="${resetUrl}" style="color:#6366f1">${resetUrl}</a>
+    </p>
+  </div>
+</body>
+</html>`;
+}
+
 export function buildVerificationEmail(verifyUrl: string, ttlHours: number): string {
   return `<!DOCTYPE html>
 <html lang="en">

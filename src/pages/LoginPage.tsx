@@ -57,6 +57,25 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
     : oauthError === 'steam_not_configured' ? 'Steam login is not configured yet. Add STEAM_RETURN_URL to .env'
     : oauthError === 'oauth_failed' ? 'Social login failed. Please try again.' : '');
 
+  // ─── Forgot-password inline form state ───
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotInput, setForgotInput] = useState('');
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotMsg, setForgotMsg] = useState('');
+
+  async function handleForgotSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setForgotLoading(true);
+    try {
+      const r = await api.forgotPassword(forgotInput.trim());
+      setForgotMsg(r.message);
+    } catch {
+      // Always show generic message — never reveal whether account exists.
+      setForgotMsg('If an account matches, a password reset email has been sent.');
+    }
+    setForgotLoading(false);
+  }
+
   // ─── Post-login: unverified account guidance ───
   if (unverifiedUser) {
     return (
@@ -117,7 +136,40 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
         {displayError && <p className="error-msg" role="alert">{displayError}</p>}
         <button className="btn btn-primary" disabled={loading}>{loading ? 'Logging in…' : 'Log In'}</button>
       </form>
-      <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>Forgot your password? Contact an admin for a reset link.</p>
+      {/* ─── Forgot-password inline section ─── */}
+      {!showForgot && !forgotMsg && (
+        <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>
+          <button type="button" className="btn-link" onClick={() => setShowForgot(true)}>
+            Forgot your password?
+          </button>
+        </p>
+      )}
+      {showForgot && !forgotMsg && (
+        <form onSubmit={handleForgotSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <input
+            className="input"
+            placeholder="Email or username"
+            value={forgotInput}
+            onChange={e => setForgotInput(e.target.value)}
+            required
+            autoComplete="email"
+          />
+          <button className="btn btn-secondary" disabled={forgotLoading} type="submit">
+            {forgotLoading ? 'Sending…' : 'Send reset email'}
+          </button>
+          <button
+            type="button"
+            className="btn-link"
+            onClick={() => { setShowForgot(false); setForgotInput(''); }}
+            style={{ fontSize: '0.85rem', textAlign: 'center' }}
+          >
+            Cancel
+          </button>
+        </form>
+      )}
+      {forgotMsg && (
+        <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>{forgotMsg}</p>
+      )}
       <p className="muted">Don't have an account? <Link to="/register">Register</Link></p>
     </div>
   );

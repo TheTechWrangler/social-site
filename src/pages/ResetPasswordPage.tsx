@@ -54,8 +54,8 @@ export default function ResetPasswordPage() {
             ⚠ This reset link is invalid or has expired.
           </p>
           <p className="muted" style={{ marginBottom: 16 }}>
-            Reset links expire after 2 hours and can only be used once.<br />
-            Contact an admin to request a new link.
+            Reset links are time-limited and can only be used once.<br />
+            Request a new link from the login page.
           </p>
           <Link to="/login" className="btn-outline">Back to login</Link>
         </div>

@@ -40,6 +40,8 @@ export const api = {
     request<{ ok: boolean }>(`/auth/verify-email?token=${encodeURIComponent(token)}`),
   resendVerification: () =>
     request<{ ok: boolean; message: string }>('/auth/resend-verification', { method: 'POST' }),
+  forgotPassword: (emailOrUsername: string) =>
+    request<{ ok: boolean; message: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ emailOrUsername }) }),
 
   // Feed
   feed: (params?: { mode?: string; limit?: number; offset?: number; level?: string; exposure?: string }) => {
