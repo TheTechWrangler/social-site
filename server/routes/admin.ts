@@ -8,6 +8,7 @@ import { getDb } from '../database.js';
 import { requireAuth, requireAdmin, type AuthRequest } from '../middleware.js';
 import { logAuthEvent } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
+import { isGoogleConfigured, isSteamConfigured } from '../authProviders.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -473,22 +474,24 @@ router.get('/system-health', requireAuth, requireAdmin, (_req, res) => {
 
   const appVersion = APP_VERSION;
 
-  const googleConfigured = !!(
-    process.env.GOOGLE_CLIENT_ID &&
-    process.env.GOOGLE_CLIENT_ID.trim().length > 10 &&
-    process.env.GOOGLE_CLIENT_ID !== 'placeholder'
-  );
-  const steamConfigured = !!(
-    process.env.STEAM_RETURN_URL &&
-    process.env.STEAM_RETURN_URL.startsWith('http')
-  );
+  const googleConfigured = isGoogleConfigured();
+  const steamConfigured = isSteamConfigured();
+
+  // Safe: these are not secrets — they're expected public redirect URIs.
+  const appBase = (process.env.APP_BASE_URL || 'http://localhost:3003').replace(/\/$/, '');
+  const googleCallbackUrl = process.env.GOOGLE_CALLBACK_URL || `${appBase}/api/auth/google/callback`;
+  const steamReturnUrl = process.env.STEAM_RETURN_URL || `${appBase}/api/auth/steam/callback`;
+  const steamRealm = process.env.STEAM_REALM || appBase;
 
   res.json({
     status: 'ok',
     nodeEnv: process.env.NODE_ENV || 'development',
     appVersion,
     googleOAuth: googleConfigured ? 'Configured' : 'Not configured',
+    googleCallbackUrl,
     steamOAuth: steamConfigured ? 'Configured' : 'Not configured',
+    steamReturnUrl,
+    steamRealm,
     dbReachable,
     uploadsPathOk: uploadsStats.exists,
     uploadsFileCount: uploadsStats.fileCount,

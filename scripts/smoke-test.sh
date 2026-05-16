@@ -81,6 +81,11 @@ run_check admin_backups_unauth /api/admin/backups/status
 expect_status admin_backups_unauth 401
 expect_body_contains admin_backups_unauth '"error":"Authentication required."'
 
+run_check oauth_providers /api/auth/providers
+expect_status oauth_providers 200
+expect_body_contains oauth_providers '"google":'
+expect_body_contains oauth_providers '"steam":'
+
 run_check oauth_token_no_session /api/auth/oauth-token
 expect_status oauth_token_no_session 401
 expect_body_contains oauth_token_no_session '"error":"No OAuth session found. Please try logging in again."'

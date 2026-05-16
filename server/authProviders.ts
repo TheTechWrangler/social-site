@@ -63,8 +63,14 @@ export function isGoogleConfigured(): boolean {
 }
 
 export function isSteamConfigured(): boolean {
+  const apiKey = (process.env.STEAM_API_KEY || '').trim();
   const returnUrl = (process.env.STEAM_RETURN_URL || '').trim();
-  return returnUrl.length > 10 && returnUrl.startsWith('http');
+  return (
+    apiKey.length > 5 &&
+    apiKey !== 'placeholder' &&
+    returnUrl.length > 10 &&
+    returnUrl.startsWith('http')
+  );
 }
 
 // ─── Find or Create User by Provider ───
@@ -159,7 +165,14 @@ export function configurePassport(): void {
       done(err as Error);
     }
   }));
-  console.log('[auth] Google OAuth registered' + (process.env.GOOGLE_CLIENT_ID ? ' (configured)' : ' (not configured)'));
+  if (isGoogleConfigured()) {
+    console.log('[auth] Google OAuth: configured');
+  } else {
+    const missing = [];
+    if (!process.env.GOOGLE_CLIENT_ID) missing.push('GOOGLE_CLIENT_ID');
+    if (!process.env.GOOGLE_CLIENT_SECRET) missing.push('GOOGLE_CLIENT_SECRET');
+    console.warn('[auth] Google OAuth: not configured' + (missing.length ? ` (missing: ${missing.join(', ')})` : ''));
+  }
 
   // Steam Strategy — always register name
   passport.use('steam', new SteamStrategy({
@@ -180,7 +193,14 @@ export function configurePassport(): void {
       done(err);
     }
   }));
-  console.log('[auth] Steam OpenID registered' + ((process.env.STEAM_RETURN_URL || process.env.APP_BASE_URL) ? ' (configured)' : ' (not configured)'));
+  if (isSteamConfigured()) {
+    console.log('[auth] Steam OpenID: configured');
+  } else {
+    const missing = [];
+    if (!process.env.STEAM_API_KEY) missing.push('STEAM_API_KEY');
+    if (!process.env.STEAM_RETURN_URL) missing.push('STEAM_RETURN_URL');
+    console.warn('[auth] Steam OpenID: not configured' + (missing.length ? ` (missing: ${missing.join(', ')})` : ''));
+  }
 }
 
 // ─── OAuth Callback Handler ───
