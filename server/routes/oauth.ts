@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import passport from 'passport';
-import { handleOAuthCallback, isGoogleConfigured, isSteamConfigured } from '../authProviders.js';
+import { getSafeWebBaseUrl, handleOAuthCallback, isGoogleConfigured, isSteamConfigured } from '../authProviders.js';
 
 const router = Router();
-const WEB_URL = process.env.WEB_BASE_URL || 'http://192.168.254.181:5174';
+const WEB_URL = getSafeWebBaseUrl();
 
 // GET /api/auth/providers — check which providers are configured
 router.get('/providers', (_req, res) => {
@@ -48,7 +48,8 @@ router.get('/steam/callback', passport.authenticate('steam', {
 
 // GET /api/auth/oauth-error
 router.get('/oauth-error', (req, res) => {
-  const provider = req.query.provider || 'provider';
+  const rawProvider = typeof req.query.provider === 'string' ? req.query.provider : '';
+  const provider = ['google', 'steam'].includes(rawProvider) ? rawProvider : 'provider';
   res.redirect(`${WEB_URL}/login?error=${provider}_failed`);
 });
 

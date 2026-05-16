@@ -31,15 +31,22 @@ export function verifyPassword(password: string, hash: string): boolean {
 
 export function generateToken(user: AuthUser): string {
   return jwt.sign(
-    { id: user.id, username: user.username, role: user.role },
+    {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      is_verified: user.is_verified,
+      isVerified: !!user.is_verified,
+      banned: user.banned,
+    },
     JWT_SECRET,
     { expiresIn: TOKEN_EXPIRY }
   );
 }
 
-export function verifyToken(token: string): { id: number; username: string; role: string } | null {
+export function verifyToken(token: string): { id: number; username: string; role: string; is_verified?: number; isVerified?: boolean; banned?: number } | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as { id: number; username: string; role: string };
+    return jwt.verify(token, JWT_SECRET) as { id: number; username: string; role: string; is_verified?: number; isVerified?: boolean; banned?: number };
   } catch {
     return null;
   }

@@ -87,7 +87,7 @@ router.get('/reset-password', (req, res) => {
     res.status(400).json({ error: 'This reset link is invalid or has expired.' }); return;
   }
   const user = getDb().prepare('SELECT id, username FROM users WHERE id = ?').get(row.user_id) as any;
-  if (!user) { res.status(400).json({ error: 'User not found.' }); return; }
+  if (!user) { res.status(400).json({ error: 'This reset link is invalid or has expired.' }); return; }
   res.json({ ok: true, username: user.username });
 });
 
@@ -99,21 +99,37 @@ router.post('/reset-password', (req, res) => {
   }
   const hash = createHash('sha256').update(token).digest('hex');
   const db = getDb();
-  const row = db.prepare(
-    'SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash = ?'
-  ).get(hash) as any;
-  if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
-    res.status(400).json({ error: 'This reset link is invalid or has expired.' }); return;
+  try {
+    const result = db.transaction((): { ok: true; user: { id: number; username: string } } | { ok: false } => {
+      const row = db.prepare(
+        'SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash = ?'
+      ).get(hash) as any;
+      if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
+        return { ok: false };
+      }
+      const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(row.user_id) as any;
+      if (!user) return { ok: false };
+
+      const newPasswordHash = hashPassword(String(newPassword));
+      const tokenUpdate = db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL").run(row.id);
+      if (tokenUpdate.changes !== 1) return { ok: false };
+
+      const passwordUpdate = db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newPasswordHash, user.id);
+      if (passwordUpdate.changes !== 1) throw new Error('PASSWORD_UPDATE_FAILED');
+
+      return { ok: true, user: { id: user.id, username: user.username } };
+    })();
+
+    if (!result.ok) {
+      res.status(400).json({ error: 'This reset link is invalid or has expired.' }); return;
+    }
+
+    logAuthEvent({ eventType: 'password_reset_completed', userId: result.user.id, ip: getClientIp(req), userAgent: req.headers['user-agent'], meta: { username: result.user.username } });
+    res.json({ ok: true, message: 'Password updated. You can now log in with your new password.' });
+  } catch (err: any) {
+    console.error('[auth] Password reset error:', err.message);
+    res.status(500).json({ error: 'Could not reset password.' });
   }
-  const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(row.user_id) as any;
-  if (!user) { res.status(400).json({ error: 'User not found.' }); return; }
-
-  // Mark used FIRST — prevents race condition where password update fails but token stays valid
-  db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?").run(row.id);
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(String(newPassword)), user.id);
-
-  logAuthEvent({ eventType: 'password_reset_completed', userId: user.id, ip: getClientIp(req), userAgent: req.headers['user-agent'], meta: { username: user.username } });
-  res.json({ ok: true, message: 'Password updated. You can now log in with your new password.' });
 });
 
 // GET /api/auth/oauth-token — one-time JWT exchange after OAuth login (no prior auth required)

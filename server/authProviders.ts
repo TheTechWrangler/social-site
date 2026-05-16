@@ -2,11 +2,57 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { Strategy as SteamStrategy } from 'passport-steam';
 import { getDb } from './database.js';
-import { generateToken } from './auth.js';
+import { generateToken, getUserById, type AuthUser } from './auth.js';
 import { logAuthEvent, getClientIp } from './authEvents.js';
 
 const BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3003';
-const WEB_URL = process.env.WEB_BASE_URL || 'http://localhost:5174';
+const DEFAULT_PROD_WEB_URL = 'https://refugecloud.com';
+const DEFAULT_DEV_WEB_URL = 'http://localhost:5174';
+const PROD_WEB_ORIGINS = new Set(['https://refugecloud.com', 'https://www.refugecloud.com']);
+let cachedSafeWebBaseUrl: string | null = null;
+
+export function getSafeWebBaseUrl(): string {
+  if (cachedSafeWebBaseUrl) return cachedSafeWebBaseUrl;
+  const isProd = process.env.NODE_ENV === 'production';
+  const fallback = isProd ? DEFAULT_PROD_WEB_URL : DEFAULT_DEV_WEB_URL;
+  const raw = (process.env.WEB_BASE_URL || fallback).trim();
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error('unsupported protocol');
+    }
+    if (isProd && !PROD_WEB_ORIGINS.has(parsed.origin)) {
+      console.warn('[auth] WEB_BASE_URL is not an allowed production frontend origin; falling back to refugecloud.com.');
+      cachedSafeWebBaseUrl = DEFAULT_PROD_WEB_URL;
+      return cachedSafeWebBaseUrl;
+    }
+    cachedSafeWebBaseUrl = parsed.origin;
+    return cachedSafeWebBaseUrl;
+  } catch {
+    console.warn('[auth] WEB_BASE_URL is invalid; using the default frontend origin.');
+    cachedSafeWebBaseUrl = fallback;
+    return cachedSafeWebBaseUrl;
+  }
+}
+
+const WEB_URL = getSafeWebBaseUrl();
+
+function toPassportUser(user: AuthUser): Express.User {
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    is_verified: user.is_verified,
+    profile_visibility: user.profile_visibility,
+    game_discovery_enabled: user.game_discovery_enabled,
+  };
+}
+
+function getActiveCanonicalUser(userId: number): AuthUser | null {
+  const user = getUserById(userId);
+  if (!user || user.banned) return null;
+  return user;
+}
 
 // ─── Config Checks ───
 
@@ -76,11 +122,19 @@ function findOrCreateUser(provider: string, providerId: string, email: string, d
 export function configurePassport(): void {
   // Serialize minimal user info into session
   passport.serializeUser((user: any, done) => {
-    done(null, { id: user.id, username: user.username, role: user.role || 'user', is_verified: user.is_verified ?? 0, profile_visibility: user.profile_visibility || 'public' });
+    done(null, { id: user.id });
   });
 
   passport.deserializeUser((obj: any, done) => {
-    done(null, obj);
+    try {
+      const userId = Number(obj?.id);
+      if (!userId) { done(null, false); return; }
+      const user = getActiveCanonicalUser(userId);
+      if (!user) { done(null, false); return; }
+      done(null, toPassportUser(user));
+    } catch (err) {
+      done(err as Error);
+    }
   });
 
   // Google Strategy — always register name, verify config at runtime
@@ -99,7 +153,8 @@ export function configurePassport(): void {
       const displayName = profile.displayName || profile.name?.givenName || '';
       const avatarUrl = profile.photos?.[0]?.value || '';
       const result = findOrCreateUser('google', profile.id, safeEmail, displayName, avatarUrl);
-      done(null, { id: result.userId, username: result.username, role: 'user', is_verified: 0, profile_visibility: 'public', game_discovery_enabled: 0 });
+      const user = getActiveCanonicalUser(result.userId);
+      done(null, user ? toPassportUser(user) : false);
     } catch (err) {
       done(err as Error);
     }
@@ -119,7 +174,8 @@ export function configurePassport(): void {
       const displayName = profile?.displayName || profile?.personaname || '';
       const avatarUrl = profile?.photos?.[2]?.value || profile?.avatarfull || '';
       const result = findOrCreateUser('steam', profile.id || _identifier, '', displayName, avatarUrl);
-      done(null, { id: result.userId, username: result.username, role: 'user', is_verified: 0, profile_visibility: 'public', game_discovery_enabled: 0 });
+      const user = getActiveCanonicalUser(result.userId);
+      done(null, user ? toPassportUser(user) : false);
     } catch (err) {
       done(err);
     }
@@ -136,22 +192,21 @@ export function handleOAuthCallback(req: any, res: any): void {
     res.redirect(`${WEB_URL}/login?error=oauth_failed`);
     return;
   }
-  logAuthEvent({ eventType: 'oauth_success', userId: user.id, ip: getClientIp(req), userAgent: req.headers?.['user-agent'], meta: { username: user.username } });
-  const token = generateToken({
-    id: user.id,
-    username: user.username,
-    display_name: user.username,
-    email: '',
-    role: 'user', is_verified: 0, profile_visibility: "public", feed_exposure: "extended", world_home_injection: "world_home_few", game_discovery_enabled: 0, dm_privacy: "friends_of_friends",
-    banned: 0,
-  });
+  const canonicalUser = getActiveCanonicalUser(user.id);
+  if (!canonicalUser) {
+    logAuthEvent({ eventType: 'oauth_failure', userId: user.id, success: false, reason: 'ACCOUNT_UNAVAILABLE', ip: getClientIp(req), userAgent: req.headers?.['user-agent'] });
+    res.redirect(`${WEB_URL}/login?error=oauth_failed`);
+    return;
+  }
+  logAuthEvent({ eventType: 'oauth_success', userId: canonicalUser.id, ip: getClientIp(req), userAgent: req.headers?.['user-agent'], meta: { username: canonicalUser.username } });
+  const token = generateToken(canonicalUser);
 
   // Store the JWT in the server-side session for one-time retrieval by the frontend.
   // This keeps the token out of the redirect URL, which would expose it via browser
   // history, proxy/server logs, and Referer headers.
   // The frontend calls GET /api/auth/oauth-token (with credentials) to claim it.
   req.session.oauthHandoffToken = token;
-  req.session.oauthHandoffUsername = user.username;
+  req.session.oauthHandoffUsername = canonicalUser.username;
   req.session.save((err: any) => {
     if (err) {
       console.error('[auth] Failed to save OAuth handoff session:', err.message);
