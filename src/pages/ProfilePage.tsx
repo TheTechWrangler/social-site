@@ -40,11 +40,9 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   const [editingGameSlug, setEditingGameSlug] = useState<string | null>(null);
   const [gameForm, setGameForm] = useState(emptyGameForm);
   const [gameMessage, setGameMessage] = useState('');
-  const storedUser = JSON.parse(localStorage.getItem('user') || 'null');
   const gameDiscoveryEnabled =
     currentUser?.game_discovery_enabled === 1 ||
-    currentUser?.gameDiscoveryEnabled === true ||
-    storedUser?.game_discovery_enabled === 1;
+    currentUser?.gameDiscoveryEnabled === true;
 
   useEffect(() => { loadProfile(); }, [username]);
 
@@ -71,7 +69,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   async function handleMute() {
     if (!confirm(`Mute @${profile.username}? You will stop seeing their posts.`)) return;
     try {
-      await fetch(`/api/users/${profile.id}/mute`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/users/${profile.id}/mute`, { method: 'POST', credentials: 'include' });
       alert('User muted.');
     } catch (e: any) { alert(e.message || 'Failed'); }
   }
@@ -88,7 +86,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   async function handleBlock() {
     if (!confirm(`Block @${profile.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
     try {
-      await fetch(`/api/users/${profile.id}/block`, { method: 'POST', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/users/${profile.id}/block`, { method: 'POST', credentials: 'include' });
       window.location.reload();
     } catch (e: any) { alert(e.message || 'Failed'); }
   }
@@ -190,7 +188,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   async function removeGame(gameId: number, slug: string) {
     if (!confirm('Remove this game from your profile?')) return;
     try {
-      await fetch(`/api/games/${slug}/profile`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } });
+      await fetch(`/api/games/${slug}/profile`, { method: 'DELETE', credentials: 'include' });
       setGameMessage('Game removed.');
       await loadProfile();
     } catch (e: any) { setGameMessage(e.message || 'Could not remove game.'); }
