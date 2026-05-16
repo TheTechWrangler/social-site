@@ -240,6 +240,8 @@ Admin actions available:
 
 If you need to disable OAuth login buttons in the UI during an outage, unset `GOOGLE_CLIENT_ID` (or `STEAM_RETURN_URL`) in `.env` and restart the service. The local login form will still work.
 
+**Note on self-serve password reset:** OAuth-only accounts cannot use the "Forgot your password?" flow on the login page — that flow only sends emails to accounts with a local password. If an OAuth-only user asks why they didn't receive a reset email, direct them to reset through Google or Steam. If they need a local password added, use "Generate Password Reset Link" in Admin → Users.
+
 ---
 
 ## Useful systemctl / journalctl commands

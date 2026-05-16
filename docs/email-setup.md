@@ -198,7 +198,17 @@ This is intentional — it does not reveal whether an account exists, is banned,
 
 ### Password reset for OAuth-only accounts
 
-Users who registered via Google or Steam with no local password cannot use the self-serve reset flow (there is no password to reset). The server silently returns the generic response without sending an email. Admins can use "Generate Password Reset Link" in the admin panel to create a reset link that sets a local password for the user.
+Users who registered exclusively via Google or Steam have no local RefugeCloud password — there is nothing to reset here. The server silently returns the generic response without sending an email (no account existence is revealed).
+
+**What OAuth-only users should do:**
+- **Google accounts** — reset the password at [myaccount.google.com](https://myaccount.google.com).
+- **Steam accounts** — reset the Steam account password at [help.steampowered.com](https://help.steampowered.com).
+- RefugeCloud login will continue to work once the provider password is updated, because the login does not use a local password.
+
+**If an OAuth-only user wants a local RefugeCloud password as well:**
+An admin can use "Generate Password Reset Link" in the admin panel. This creates a time-limited link that lets the user set a local password, enabling both OAuth and local login. This is opt-in and not automatic.
+
+The login page already shows this guidance above the forgot-password input field.
 
 ### Rate limit hit on forgot-password
 

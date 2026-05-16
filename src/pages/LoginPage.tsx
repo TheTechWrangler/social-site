@@ -67,11 +67,11 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
     e.preventDefault();
     setForgotLoading(true);
     try {
-      const r = await api.forgotPassword(forgotInput.trim());
-      setForgotMsg(r.message);
+      await api.forgotPassword(forgotInput.trim());
+      setForgotMsg('If an account with a local password matches, a password reset email has been sent.');
     } catch {
       // Always show generic message — never reveal whether account exists.
-      setForgotMsg('If an account matches, a password reset email has been sent.');
+      setForgotMsg('If an account with a local password matches, a password reset email has been sent.');
     }
     setForgotLoading(false);
   }
@@ -146,6 +146,10 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
       )}
       {showForgot && !forgotMsg && (
         <form onSubmit={handleForgotSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <p className="muted" style={{ fontSize: '0.82rem', margin: '0 0 4px' }}>
+            Password reset emails are only sent for accounts created with an email and password.
+            If you log in with Google or Steam, reset your password through Google or Steam instead.
+          </p>
           <input
             className="input"
             placeholder="Email or username"
