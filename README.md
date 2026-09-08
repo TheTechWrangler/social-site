@@ -25,6 +25,22 @@ npm install
 npm run dev
 ```
 
+### npm lifecycle-script policy
+
+npm 12 blocks dependency lifecycle scripts unless the project explicitly
+approves them. The version-pinned `allowScripts` entries in `package.json`
+approve only the native tooling required by this lockfile:
+
+- `better-sqlite3@11.10.0` downloads and verifies a compatible prebuilt SQLite
+  binding, or builds the binding from source with `node-gyp` when necessary.
+- `esbuild@0.21.5` and `esbuild@0.28.2` select, prepare, and version-check the
+  platform-specific esbuild executables used by Vite and `tsx`.
+
+When one of these packages changes version, review its lifecycle script and
+update the pinned approval instead of adding an unversioned or blanket
+approval. `npm install-scripts ls` should report no blocked required scripts
+after installation.
+
 Opens:
 - Frontend: http://localhost:5174
 - API: http://localhost:3003 (proxied through Vite)
