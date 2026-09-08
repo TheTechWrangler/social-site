@@ -24,7 +24,7 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
   `).get(result.lastInsertRowid);
 
   logUsage({ eventType: 'repost_created', userId: req.user!.id, featureArea: 'feed' });
-  res.status(201).json({ post: enrichPost(row, req.user!.id) });
+  res.status(201).json({ post: enrichPost(row, req.user as any) });
 });
 
 export default router;

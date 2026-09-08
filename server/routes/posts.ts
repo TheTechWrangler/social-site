@@ -1,27 +1,42 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
-import { canViewPost } from '../visibility.js';
+import { canViewPost, userVisibilitySql, type Viewer } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 
-function enrichPost(row: any, userId?: number): any {
-  const comments = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE parent_id = ? AND hidden = 0').get(row.id) as any;
-  const reposts = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE repost_of = ?').get(row.id) as any;
+function enrichPost(row: any, viewer?: Viewer | null): any {
+  const commentAuthor = userVisibilitySql(viewer, 'cu', 'public-context');
+  const comments = getDb().prepare(`
+    SELECT COUNT(*) as c
+    FROM posts cp JOIN users cu ON cp.user_id = cu.id
+    WHERE cp.parent_id = ? AND cp.hidden = 0 AND ${commentAuthor.sql}
+  `).get(row.id, ...commentAuthor.params) as any;
+
+  const repostAuthor = userVisibilitySql(viewer, 'ru', 'profile');
+  const reposts = getDb().prepare(`
+    SELECT COUNT(*) as c
+    FROM posts rp JOIN users ru ON rp.user_id = ru.id
+    WHERE rp.repost_of = ? AND rp.hidden = 0 AND ${repostAuthor.sql}
+  `).get(row.id, ...repostAuthor.params) as any;
 
   // Get reaction counts grouped by type
-  const reactionRows = getDb().prepare(
-    'SELECT reaction_type, COUNT(*) as c FROM likes WHERE post_id = ? GROUP BY reaction_type'
-  ).all(row.id) as any[];
+  const reactionUser = userVisibilitySql(viewer, 'lu', 'identity');
+  const reactionRows = getDb().prepare(`
+    SELECT l.reaction_type, COUNT(*) as c
+    FROM likes l JOIN users lu ON l.user_id = lu.id
+    WHERE l.post_id = ? AND ${reactionUser.sql}
+    GROUP BY l.reaction_type
+  `).all(row.id, ...reactionUser.params) as any[];
   const reactions: Record<string, number> = { like: 0, love: 0, laugh: 0, wow: 0, support: 0, thoughtful: 0 };
   for (const r of reactionRows) { reactions[r.reaction_type] = r.c; }
 
   // Get current user's reaction
   let userReaction: string | null = null;
   let liked = false;
-  if (userId) {
-    const ur = getDb().prepare('SELECT reaction_type FROM likes WHERE user_id = ? AND post_id = ?').get(userId, row.id) as any;
+  if (viewer?.id) {
+    const ur = getDb().prepare('SELECT reaction_type FROM likes WHERE user_id = ? AND post_id = ?').get(viewer.id, row.id) as any;
     if (ur) { userReaction = ur.reaction_type; liked = true; }
   }
 
@@ -31,7 +46,7 @@ function enrichPost(row: any, userId?: number): any {
       SELECT p.*, u.username, u.display_name, u.avatar_url
       FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
     `).get(row.repost_of) as any;
-    if (rp && canViewPost(userId ? { id: userId, role: 'user' } : null, rp.id)) repostedPost = enrichPost(rp, userId);
+    if (rp && canViewPost(viewer, rp.id)) repostedPost = enrichPost(rp, viewer);
   }
 
   return {
@@ -86,7 +101,7 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
     `).get(result.lastInsertRowid);
 
     logUsage({ eventType: 'post_created', userId: req.user!.id, featureArea: groupId ? 'groups' : 'feed' });
-    res.status(201).json({ post: enrichPost(row, req.user!.id) });
+    res.status(201).json({ post: enrichPost(row, req.user as any) });
   } catch (err: any) {
     console.error('[posts] Create post error:', err.message);
     res.status(500).json({ error: 'Could not create post.' });
@@ -102,7 +117,7 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
     FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
   `).get(postId);
   if (!row) { res.status(404).json({ error: 'Post not found.' }); return; }
-  res.json({ post: enrichPost(row, req.user?.id) });
+  res.json({ post: enrichPost(row, req.user as any) });
 });
 
 // DELETE /api/posts/:id

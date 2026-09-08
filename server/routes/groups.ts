@@ -3,6 +3,10 @@ import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
 import { logUsage } from '../usageEvents.js';
+import {
+  notMutedByViewerSql,
+  userVisibilitySql,
+} from '../visibility.js';
 
 const router = Router();
 
@@ -29,47 +33,91 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
 router.get('/', optionalAuth, (req: AuthRequest, res) => {
   const q = (req.query.q as string || '').trim();
   const viewerId = req.user?.id ?? 0;
+  const ownerVisibility = userVisibilitySql(req.user as any, 'u', 'public-context');
+  const memberVisibility = userVisibilitySql(req.user as any, 'mu', 'identity');
   const sql = `
     SELECT g.*, u.username as owner_username, u.display_name as owner_name,
-      (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count,
+      (
+        SELECT COUNT(*) FROM group_members mg
+        JOIN users mu ON mg.user_id = mu.id
+        WHERE mg.group_id = g.id AND ${memberVisibility.sql}
+      ) as member_count,
       (SELECT 1 FROM group_members WHERE group_id = g.id AND user_id = ?) as is_member
     FROM groups_table g JOIN users u ON g.owner_id = u.id
-    ${q ? 'WHERE g.name LIKE ? OR g.description LIKE ?' : ''}
+    WHERE ${ownerVisibility.sql}
+      ${q ? 'AND (g.name LIKE ? OR g.description LIKE ?)' : ''}
     ORDER BY g.created_at DESC LIMIT 50
   `;
   const rows = q
-    ? getDb().prepare(sql).all(viewerId, `%${q}%`, `%${q}%`)
-    : getDb().prepare(sql).all(viewerId);
+    ? getDb().prepare(sql).all(
+        ...memberVisibility.params,
+        viewerId,
+        ...ownerVisibility.params,
+        `%${q}%`,
+        `%${q}%`,
+      )
+    : getDb().prepare(sql).all(
+        ...memberVisibility.params,
+        viewerId,
+        ...ownerVisibility.params,
+      );
   res.json({ groups: rows });
 });
 
 // GET /api/groups/:id
 router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
+  const ownerVisibility = userVisibilitySql(req.user as any, 'u', 'public-context');
   const group = getDb().prepare(`
     SELECT g.*, u.username as owner_username, u.display_name as owner_name
-    FROM groups_table g JOIN users u ON g.owner_id = u.id WHERE g.id = ?
-  `).get(req.params.id) as any;
+    FROM groups_table g JOIN users u ON g.owner_id = u.id
+    WHERE g.id = ? AND ${ownerVisibility.sql}
+  `).get(req.params.id, ...ownerVisibility.params) as any;
   if (!group) { res.status(404).json({ error: 'Not found.' }); return; }
 
+  const memberIdentity = userVisibilitySql(req.user as any, 'u', 'identity');
+  const memberFull = userVisibilitySql(req.user as any, 'u', 'profile');
   const members = getDb().prepare(`
     SELECT u.id, u.username, u.display_name, u.avatar_url, gm.role,
-      (u.id = ?) as is_self
+      (u.id = ?) as is_self,
+      CASE WHEN (${memberFull.sql}) THEN 1 ELSE 0 END AS can_view_full
     FROM group_members gm JOIN users u ON gm.user_id = u.id
-    WHERE gm.group_id = ? AND u.banned = 0
+    WHERE gm.group_id = ? AND ${memberIdentity.sql}
     ORDER BY gm.role DESC, u.display_name COLLATE NOCASE
-  `).all(req.user?.id ?? 0, req.params.id);
+  `).all(
+    req.user?.id ?? 0,
+    ...memberFull.params,
+    req.params.id,
+    ...memberIdentity.params,
+  ) as any[];
 
+  const postAuthor = userVisibilitySql(req.user as any, 'u', 'public-context');
+  const notMuted = notMutedByViewerSql(req.user as any, 'u');
   const posts = getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url
     FROM posts p JOIN users u ON p.user_id = u.id
     WHERE p.group_id = ? AND p.parent_id IS NULL AND p.hidden = 0
+      AND ${postAuthor.sql}
+      AND ${notMuted.sql}
     ORDER BY p.created_at DESC LIMIT 50
-  `).all(req.params.id);
+  `).all(req.params.id, ...postAuthor.params, ...notMuted.params);
 
   res.json({
     group: { ...group, memberCount: members.length },
-    members,
-    posts: posts.map((r: any) => enrichPost(r, req.user?.id)),
+    members: members.map(member => member.can_view_full ? {
+      id: member.id,
+      username: member.username,
+      display_name: member.display_name,
+      avatar_url: member.avatar_url,
+      role: member.role,
+      is_self: member.is_self,
+    } : {
+      id: member.id,
+      username: member.username,
+      display_name: member.display_name,
+      avatar_url: member.avatar_url,
+      limited: true,
+    }),
+    posts: posts.map((r: any) => enrichPost(r, req.user as any)),
   });
 });
 

@@ -59,6 +59,7 @@ export const api = {
 
   // Users
   getUser: (username: string) => request<{ user: any }>(`/users/${username}`),
+  getUserPosts: (username: string) => request<{ posts: any[] }>(`/users/${username}/posts`),
   updateProfile: (data: {
     displayName?: string; bio?: string; profileVisibility?: string;
     feedExposure?: string; worldHomeInjection?: string; gameDiscoveryEnabled?: boolean;

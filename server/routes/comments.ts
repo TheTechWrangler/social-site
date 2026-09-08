@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPost } from './posts.js';
-import { canInteractWithPost, canViewPost } from '../visibility.js';
+import { canInteractWithPost, canViewPost, userVisibilitySql } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
 
 const router = Router();
@@ -37,20 +37,22 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
   `).get(result.lastInsertRowid);
 
   logUsage({ eventType: 'comment_created', userId: req.user!.id, featureArea: 'feed' });
-  res.status(201).json({ comment: enrichPost(row, req.user!.id) });
+  res.status(201).json({ comment: enrichPost(row, req.user as any) });
 });
 
 // GET /api/comments/:postId
 router.get('/:postId', optionalAuth, (req: AuthRequest, res) => {
   const parentId = Number(req.params.postId);
   if (!canViewPost(req.user as any, parentId)) { res.status(404).json({ error: 'Post not found.' }); return; }
+  const authorVisibility = userVisibilitySql(req.user as any, 'u', 'public-context');
   const rows = getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url
     FROM posts p JOIN users u ON p.user_id = u.id
-    WHERE p.parent_id = ? AND p.hidden = 0 ORDER BY p.created_at ASC
-  `).all(parentId);
+    WHERE p.parent_id = ? AND p.hidden = 0 AND ${authorVisibility.sql}
+    ORDER BY p.created_at ASC
+  `).all(parentId, ...authorVisibility.params);
 
-  res.json({ comments: rows.filter((r: any) => canViewPost(req.user as any, r.id)).map((r: any) => enrichPost(r, req.user?.id)) });
+  res.json({ comments: rows.map((r: any) => enrichPost(r, req.user as any)) });
 });
 
 export default router;

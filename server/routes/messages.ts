@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
-import { isBlockedBetween, canUserMessageRecipient } from '../visibility.js';
+import {
+  canUserMessageRecipient,
+  getUserVisibility,
+  isBlockedBetween,
+  userVisibilitySql,
+} from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
 
 const router = Router();
@@ -29,6 +34,7 @@ function findExisting1on1(userA: number, userB: number): number | null {
 // GET /api/messages/unread-count  (must be before /:conversationId)
 router.get('/unread-count', requireAuth, (req: AuthRequest, res) => {
   const userId = req.user!.id;
+  const visibleOther = userVisibilitySql(req.user, 'u', 'identity');
   const rows = getDb().prepare(`
     SELECT m.conversation_id, m.last_read_message_id,
       (SELECT COUNT(*) FROM dm_messages
@@ -39,7 +45,15 @@ router.get('/unread-count', requireAuth, (req: AuthRequest, res) => {
       ) as unread
     FROM dm_conversation_members m
     WHERE m.user_id = ? AND m.deleted_at IS NULL
-  `).all(userId, userId) as any[];
+      AND EXISTS (
+        SELECT 1 FROM dm_conversation_members other_m
+        JOIN users u ON u.id = other_m.user_id
+        WHERE other_m.conversation_id = m.conversation_id
+          AND other_m.user_id != ?
+          AND other_m.deleted_at IS NULL
+          AND ${visibleOther.sql}
+      )
+  `).all(userId, userId, userId, ...visibleOther.params) as any[];
   const total = rows.reduce((sum, r) => sum + (r.unread > 0 ? 1 : 0), 0);
   res.json({ count: total });
 });
@@ -59,12 +73,13 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
     ).get(cid, userId) as any;
 
     const other = db.prepare(`
-      SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified
+      SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified,
+        u.profile_visibility, u.banned
       FROM dm_conversation_members m JOIN users u ON m.user_id = u.id
       WHERE m.conversation_id = ? AND m.user_id != ? AND m.deleted_at IS NULL
       LIMIT 1
     `).get(cid, userId) as any;
-    if (!other) return null;
+    if (!other || getUserVisibility(req.user, other) === 'hidden') return null;
 
     const lastMsg = db.prepare(
       'SELECT id, sender_id, body, created_at FROM dm_messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1'
@@ -157,11 +172,15 @@ router.get('/:conversationId', requireAuth, (req: AuthRequest, res) => {
 
   const db = getDb();
   const other = db.prepare(`
-    SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified, u.dm_privacy
+    SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified, u.dm_privacy,
+      u.profile_visibility, u.banned
     FROM dm_conversation_members m JOIN users u ON m.user_id = u.id
     WHERE m.conversation_id = ? AND m.user_id != ? AND m.deleted_at IS NULL
     LIMIT 1
   `).get(conversationId, userId) as any;
+  if (!other || getUserVisibility(req.user, other) === 'hidden') {
+    res.status(404).json({ error: 'Conversation not found.' }); return;
+  }
 
   const msgs = before
     ? db.prepare(`
@@ -187,14 +206,14 @@ router.get('/:conversationId', requireAuth, (req: AuthRequest, res) => {
   res.json({
     messages,
     hasMore: msgs.length === limit,
-    otherUser: other ? {
+    otherUser: {
       id: other.id,
       username: other.username,
       displayName: other.display_name,
       avatarUrl: other.avatar_url,
       isVerified: !!other.is_verified,
       dmPrivacy: other.dm_privacy,
-    } : null,
+    },
     lastReadMessageId: membership.last_read_message_id ?? null,
   });
 });

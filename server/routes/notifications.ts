@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, type AuthRequest } from '../middleware.js';
+import { canViewPost, userVisibilitySql } from '../visibility.js';
 
 const router = Router();
 
 // GET /api/notifications
 router.get('/', requireAuth, (req: AuthRequest, res) => {
+  const actorVisibility = userVisibilitySql(req.user as any, 'u', 'identity');
   const rows = getDb().prepare(`
     SELECT n.*,
       u.username as actor_username, u.display_name as actor_name, u.avatar_url as actor_avatar,
@@ -14,14 +16,27 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
     FROM notifications n
     JOIN users u ON n.actor_id = u.id
     LEFT JOIN posts p ON n.post_id = p.id
-    WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 50
-  `).all(req.user!.id);
-  res.json({ notifications: rows });
+    WHERE n.user_id = ? AND ${actorVisibility.sql}
+    ORDER BY n.created_at DESC LIMIT 50
+  `).all(req.user!.id, ...actorVisibility.params) as any[];
+  res.json({
+    notifications: rows.map(row => {
+      if (row.post_id && !canViewPost(req.user as any, row.post_id)) {
+        return { ...row, post_id: null, post_parent_id: null, post_snippet: null };
+      }
+      return row;
+    }),
+  });
 });
 
 // GET /api/notifications/unread-count
 router.get('/unread-count', requireAuth, (req: AuthRequest, res) => {
-  const row = getDb().prepare('SELECT COUNT(*) as c FROM notifications WHERE user_id = ? AND read = 0').get(req.user!.id) as any;
+  const actorVisibility = userVisibilitySql(req.user as any, 'u', 'identity');
+  const row = getDb().prepare(`
+    SELECT COUNT(*) as c
+    FROM notifications n JOIN users u ON n.actor_id = u.id
+    WHERE n.user_id = ? AND n.read = 0 AND ${actorVisibility.sql}
+  `).get(req.user!.id, ...actorVisibility.params) as any;
   res.json({ count: row?.c ?? 0 });
 });
 

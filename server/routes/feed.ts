@@ -4,6 +4,7 @@ import { optionalAuth, requireAuth, requireVerified, type AuthRequest } from '..
 import { enrichPost } from './posts.js';
 import { getWorldFeed, fetchSource } from '../rssService.js';
 import { logUsage } from '../usageEvents.js';
+import { notMutedByViewerSql, postAuthorVisibilitySql } from '../visibility.js';
 
 const router = Router();
 
@@ -32,6 +33,8 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
     const limit = Math.min(Number(req.query.limit) || 50, 100);
     const offset = Number(req.query.offset) || 0;
     const db = getDb();
+    const postVisibility = postAuthorVisibilitySql(req.user as any, 'p', 'u');
+    const notMuted = notMutedByViewerSql(req.user as any, 'u');
 
     // Map old exposure values to new levels
     const levelMap: Record<string, string> = {
@@ -65,16 +68,19 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
-        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0
+        WHERE p.parent_id IS NULL AND p.hidden = 0
           AND (p.user_id = ? OR p.user_id IN (SELECT following_id FROM follows WHERE follower_id = ?))
-          AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
-          AND NOT EXISTS (
-            SELECT 1 FROM user_relationship_blocks b
-            WHERE b.relationship_type = 'block'
-              AND ((b.blocker_user_id = p.user_id AND b.blocked_user_id = ?) OR (b.blocker_user_id = ? AND b.blocked_user_id = p.user_id))
-          )
+          AND ${postVisibility.sql}
+          AND ${notMuted.sql}
         ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(req.user.id, req.user.id, req.user.id, req.user.id, req.user.id, friendLimit, offset);
+      `).all(
+        req.user.id,
+        req.user.id,
+        ...postVisibility.params,
+        ...notMuted.params,
+        friendLimit,
+        offset,
+      );
 
       if (level === 'extended') {
         const extLimit = limit - rows.length;
@@ -82,21 +88,23 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
           const extRows = db.prepare(`
             SELECT DISTINCT p.*, u.username, u.display_name, u.avatar_url
             FROM posts p JOIN users u ON p.user_id = u.id
-            WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1
-              AND u.profile_visibility = 'public'
+            WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.is_verified = 1
               AND p.user_id != ?
               AND p.user_id NOT IN (SELECT following_id FROM follows WHERE follower_id = ?)
-              AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
-              AND NOT EXISTS (
-                SELECT 1 FROM user_relationship_blocks b
-                WHERE b.relationship_type = 'block'
-                  AND ((b.blocker_user_id = p.user_id AND b.blocked_user_id = ?) OR (b.blocker_user_id = ? AND b.blocked_user_id = p.user_id))
-              )
+              AND ${postVisibility.sql}
+              AND ${notMuted.sql}
               AND p.user_id IN (
                 SELECT following_id FROM follows WHERE follower_id IN (SELECT following_id FROM follows WHERE follower_id = ?)
               )
             ORDER BY p.created_at DESC LIMIT ?
-          `).all(req.user.id, req.user.id, req.user.id, req.user.id, req.user.id, req.user.id, extLimit);
+          `).all(
+            req.user.id,
+            req.user.id,
+            ...postVisibility.params,
+            ...notMuted.params,
+            req.user.id,
+            extLimit,
+          );
           rows = [...rows, ...extRows].sort((a: any, b: any) => b.created_at.localeCompare(a.created_at));
         }
       }
@@ -104,25 +112,22 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
-        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1 AND u.profile_visibility = 'public'
-          AND p.user_id NOT IN (SELECT blocked_user_id FROM user_relationship_blocks WHERE blocker_user_id = ?)
-          AND NOT EXISTS (
-            SELECT 1 FROM user_relationship_blocks b
-            WHERE b.relationship_type = 'block'
-              AND ((b.blocker_user_id = p.user_id AND b.blocked_user_id = ?) OR (b.blocker_user_id = ? AND b.blocked_user_id = p.user_id))
-          )
+        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.is_verified = 1
+          AND ${postVisibility.sql}
+          AND ${notMuted.sql}
         ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(req.user.id, req.user.id, req.user.id, limit, offset);
+      `).all(...postVisibility.params, ...notMuted.params, limit, offset);
     } else {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
-        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.banned = 0 AND u.is_verified = 1 AND u.profile_visibility = 'public'
+        WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.is_verified = 1
+          AND ${postVisibility.sql}
         ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(limit, offset);
+      `).all(...postVisibility.params, limit, offset);
     }
 
-    const posts = rows.map((r: any) => ({ ...enrichPost(r, req.user?.id), type: 'post' }));
+    const posts = rows.map((r: any) => ({ ...enrichPost(r, req.user as any), type: 'post' }));
     let worldItems: any[] = [];
 
     if (req.user) {

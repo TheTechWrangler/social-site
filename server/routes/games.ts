@@ -1,39 +1,40 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, optionalAuth } from '../middleware.js';
-import { isBlockedBetween } from '../visibility.js';
+import { notMutedByViewerSql, userVisibilitySql } from '../visibility.js';
 
 const router = Router();
 
-function canDiscoverProfile(viewer: any, player: any): boolean {
-  if (!viewer) return player.profile_visibility !== 'private';
-  if (viewer.role === 'admin' || viewer.id === player.id) return true;
-  if (isBlockedBetween(viewer.id, player.id)) return false;
-  if (player.profile_visibility !== 'private') return true;
-  return !!getDb().prepare('SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?').get(viewer.id, player.id);
-}
-
 // GET /api/games — with optional search
-router.get('/', (req, res) => {
+router.get('/', optionalAuth, (req, res) => {
   const q = (req.query.q as string || '').trim();
-  let games;
-  if (q) {
-    games = getDb().prepare(`
-      SELECT g.*, 
-        (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as lfg_count,
-        (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
-        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
-      FROM games g WHERE g.is_active = 1 AND g.name LIKE ? ORDER BY g.name LIMIT 20
-    `).all(`%${q}%`);
-  } else {
-    games = getDb().prepare(`
-      SELECT g.*, 
-        (SELECT COUNT(*) FROM game_lfg_posts WHERE game_id = g.id AND is_active = 1 AND expires_at > datetime('now')) as lfg_count,
-        (SELECT COUNT(*) FROM user_game_preferences WHERE game_id = g.id) as player_count,
-        (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
-      FROM games g WHERE g.is_active = 1 ORDER BY g.name
-    `).all();
-  }
+  const lfgAuthor = userVisibilitySql((req as any).user, 'lu', 'public-context');
+  const playerProfile = userVisibilitySql((req as any).user, 'pu', 'profile');
+  const sql = `
+    SELECT g.*,
+      (
+        SELECT COUNT(*) FROM game_lfg_posts gl
+        JOIN users lu ON gl.user_id = lu.id
+        WHERE gl.game_id = g.id AND gl.is_active = 1
+          AND gl.expires_at > datetime('now') AND ${lfgAuthor.sql}
+      ) as lfg_count,
+      (
+        SELECT COUNT(*) FROM user_game_preferences up
+        JOIN users pu ON up.user_id = pu.id
+        WHERE up.game_id = g.id AND up.display_on_profile = 1
+          AND pu.game_discovery_enabled = 1 AND pu.is_verified = 1
+          AND ${playerProfile.sql}
+      ) as player_count,
+      (SELECT COUNT(*) FROM game_servers WHERE game_id = g.id AND is_active = 1) as server_count
+    FROM games g
+    WHERE g.is_active = 1 ${q ? 'AND g.name LIKE ?' : ''}
+    ORDER BY g.name ${q ? 'LIMIT 20' : ''}
+  `;
+  const games = getDb().prepare(sql).all(
+    ...lfgAuthor.params,
+    ...playerProfile.params,
+    ...(q ? [`%${q}%`] : []),
+  );
   res.json({ games });
 });
 
@@ -44,15 +45,21 @@ router.get('/:slug', optionalAuth, (req, res) => {
   const viewer = (req as any).user || null;
   const viewerDiscoveryEnabled = !!viewer?.game_discovery_enabled;
 
+  const lfgAuthor = userVisibilitySql(viewer, 'u', 'public-context');
+  const lfgNotMuted = notMutedByViewerSql(viewer, 'u');
   const lfgPosts = getDb().prepare(`
-    SELECT l.*, u.username, u.display_name, u.avatar_url, u.is_verified, u.profile_visibility
+    SELECT l.*, u.username, u.display_name, u.avatar_url
     FROM game_lfg_posts l JOIN users u ON l.user_id = u.id
     WHERE l.game_id = ? AND l.is_active = 1 AND l.expires_at > datetime('now')
+      AND ${lfgAuthor.sql}
+      AND ${lfgNotMuted.sql}
     ORDER BY l.created_at DESC LIMIT 50
-  `).all(game.id);
+  `).all(game.id, ...lfgAuthor.params, ...lfgNotMuted.params);
 
+  const playerProfile = userVisibilitySql(viewer, 'u', 'profile');
+  const playerNotMuted = notMutedByViewerSql(viewer, 'u');
   const rawPlayers = viewerDiscoveryEnabled ? getDb().prepare(`
-    SELECT p.*, u.username, u.display_name, u.avatar_url, u.is_verified, u.profile_visibility,
+    SELECT p.*, u.username, u.display_name, u.avatar_url, u.is_verified,
       EXISTS (
         SELECT 1 FROM follows f
         WHERE f.follower_id = ? AND f.following_id = u.id
@@ -61,12 +68,18 @@ router.get('/:slug', optionalAuth, (req, res) => {
     WHERE p.game_id = ?
       AND p.display_on_profile = 1
       AND u.game_discovery_enabled = 1
-      AND u.banned = 0
       AND u.is_verified = 1
+      AND ${playerProfile.sql}
+      AND ${playerNotMuted.sql}
     ORDER BY p.looking_for_group DESC, p.is_favorite DESC, p.updated_at DESC
-    LIMIT 60
-  `).all(viewer?.id || 0, game.id) : [];
-  const players = rawPlayers.filter((p: any) => canDiscoverProfile(viewer, p)).slice(0, 30);
+    LIMIT 30
+  `).all(
+    viewer?.id || 0,
+    game.id,
+    ...playerProfile.params,
+    ...playerNotMuted.params,
+  ) : [];
+  const players = rawPlayers;
 
   const servers = getDb().prepare(
     'SELECT * FROM game_servers WHERE game_id = ? AND is_active = 1 ORDER BY is_featured DESC, name'
@@ -87,14 +100,19 @@ router.get('/:slug/servers', (req, res) => {
 
 // ─── LFG Posts ───
 
-router.get('/:slug/lfg', (req, res) => {
+router.get('/:slug/lfg', optionalAuth, (req, res) => {
   const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
   if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
+  const authorVisibility = userVisibilitySql((req as any).user, 'u', 'public-context');
+  const notMuted = notMutedByViewerSql((req as any).user, 'u');
   const posts = getDb().prepare(`
-    SELECT l.*, u.username, u.display_name, u.avatar_url, u.is_verified
+    SELECT l.*, u.username, u.display_name, u.avatar_url
     FROM game_lfg_posts l JOIN users u ON l.user_id = u.id
-    WHERE l.game_id = ? AND l.is_active = 1 AND l.expires_at > datetime('now') ORDER BY l.created_at DESC LIMIT 50
-  `).all(game.id);
+    WHERE l.game_id = ? AND l.is_active = 1 AND l.expires_at > datetime('now')
+      AND ${authorVisibility.sql}
+      AND ${notMuted.sql}
+    ORDER BY l.created_at DESC LIMIT 50
+  `).all(game.id, ...authorVisibility.params, ...notMuted.params);
   res.json({ posts });
 });
 

@@ -2,48 +2,67 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, type AuthRequest } from '../middleware.js';
 import { getUserById } from '../auth.js';
+import {
+  getUserVisibility,
+  userVisibilitySql,
+  type Viewer,
+} from '../visibility.js';
+import { enrichPost } from './posts.js';
 
 const router = Router();
 
-function connectionUserRows(userId: number, mode: 'following' | 'followers' | 'friends') {
+function connectionUserRows(viewer: Viewer, mode: 'following' | 'followers' | 'friends') {
+  const userId = viewer.id;
   const relationWhere = mode === 'following'
     ? 'f.follower_id = ? AND u.id = f.following_id'
     : mode === 'followers'
       ? 'f.following_id = ? AND u.id = f.follower_id'
       : `f.follower_id = ? AND u.id = f.following_id
         AND EXISTS (SELECT 1 FROM follows mf WHERE mf.follower_id = u.id AND mf.following_id = ?)`;
-  const params = mode === 'friends'
-    ? [userId, userId, userId, userId, userId, userId, userId]
-    : [userId, userId, userId, userId, userId, userId];
+  const relationParams = mode === 'friends' ? [userId, userId] : [userId];
+  const identity = userVisibilitySql(viewer, 'u', 'identity');
+  const fullProfile = userVisibilitySql(viewer, 'u', 'profile');
   return getDb().prepare(`
     SELECT
       u.id,
       u.username,
       u.display_name,
       u.avatar_url,
-      CASE
-        WHEN u.profile_visibility = 'public'
-          OR EXISTS (SELECT 1 FROM follows vf WHERE vf.follower_id = ? AND vf.following_id = u.id)
-        THEN substr(u.bio, 1, 160)
-        ELSE ''
-      END as bio_snippet,
+      CASE WHEN (${fullProfile.sql}) THEN substr(u.bio, 1, 160) ELSE '' END as bio_snippet,
+      CASE WHEN (${fullProfile.sql}) THEN 1 ELSE 0 END as can_view_full,
       u.is_verified,
       u.profile_visibility,
       EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = ? AND cf.following_id = u.id) as is_following,
       EXISTS (SELECT 1 FROM follows cm WHERE cm.follower_id = u.id AND cm.following_id = ?) as follows_me
     FROM follows f
     JOIN users u ON (${relationWhere})
-    WHERE u.banned = 0
-      AND NOT EXISTS (
-        SELECT 1 FROM user_relationship_blocks b
-        WHERE b.relationship_type = 'block'
-          AND ((b.blocker_user_id = ? AND b.blocked_user_id = u.id) OR (b.blocker_user_id = u.id AND b.blocked_user_id = ?))
-      )
+    WHERE ${identity.sql}
     ORDER BY u.display_name COLLATE NOCASE, u.username COLLATE NOCASE
-  `).all(...params);
+  `).all(
+    ...fullProfile.params,
+    ...fullProfile.params,
+    userId,
+    userId,
+    ...relationParams,
+    ...identity.params,
+  );
 }
 
 function formatConnectionUser(row: any) {
+  if (!row.can_view_full) {
+    return {
+      id: row.id,
+      username: row.username,
+      display_name: row.display_name,
+      displayName: row.display_name,
+      avatar_url: row.avatar_url,
+      avatarUrl: row.avatar_url,
+      isFollowing: !!row.is_following,
+      followsMe: !!row.follows_me,
+      isPrivate: true,
+      limited: true,
+    };
+  }
   return {
     id: row.id,
     username: row.username,
@@ -85,17 +104,17 @@ router.get('/muted/list', requireAuth, (req, res) => {
 // ─── Current User Connections ───
 
 router.get('/me/following', requireAuth, (req, res) => {
-  const users = connectionUserRows((req as any).user.id, 'following').map(formatConnectionUser);
+  const users = connectionUserRows((req as any).user, 'following').map(formatConnectionUser);
   res.json({ users });
 });
 
 router.get('/me/followers', requireAuth, (req, res) => {
-  const users = connectionUserRows((req as any).user.id, 'followers').map(formatConnectionUser);
+  const users = connectionUserRows((req as any).user, 'followers').map(formatConnectionUser);
   res.json({ users });
 });
 
 router.get('/me/friends', requireAuth, (req, res) => {
-  const users = connectionUserRows((req as any).user.id, 'friends').map(formatConnectionUser);
+  const users = connectionUserRows((req as any).user, 'friends').map(formatConnectionUser);
   res.json({ users });
 });
 
@@ -109,28 +128,61 @@ router.get('/me/games', requireAuth, (req: AuthRequest, res) => {
   res.json({ gamePrefs });
 });
 
+// GET /api/users/:username/posts — profile-scoped posts only
+router.get('/:username/posts', optionalAuth, (req: AuthRequest, res) => {
+  const target = getDb().prepare(`
+    SELECT id, profile_visibility, banned FROM users WHERE username = ?
+  `).get(req.params.username) as any;
+  if (!target || getUserVisibility(req.user as any, target) !== 'full') {
+    res.status(404).json({ error: 'User not found.' });
+    return;
+  }
+
+  const rows = getDb().prepare(`
+    SELECT p.*, u.username, u.display_name, u.avatar_url
+    FROM posts p JOIN users u ON p.user_id = u.id
+    WHERE p.user_id = ? AND p.parent_id IS NULL AND p.group_id IS NULL AND p.hidden = 0
+    ORDER BY p.created_at DESC LIMIT 100
+  `).all(target.id);
+  res.json({ posts: rows.map((row: any) => enrichPost(row, req.user as any)) });
+});
+
 // GET /api/users/:username
 router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
   const row = getDb().prepare(`
-    SELECT id, username, display_name, email, bio, avatar_url, role, is_verified, profile_visibility, created_at, profile_data
+    SELECT id, username, display_name, email, bio, avatar_url, role, banned,
+      is_verified, profile_visibility, created_at, profile_data
     FROM users WHERE username = ?
   `).get(req.params.username) as any;
   if (!row) { res.status(404).json({ error: 'User not found.' }); return; }
 
   const isOwner = req.user?.id === row.id;
-  const isAdmin = req.user?.role === 'admin';
   const isFollowing = isOwner ? false : req.user ? !!(getDb().prepare('SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?').get(req.user.id, row.id)) : false;
   const isPrivate = row.profile_visibility === 'private';
-  const canViewFull = isOwner || isAdmin || isFollowing || !isPrivate;
+  const visibility = getUserVisibility(req.user as any, row);
+  if (visibility === 'hidden') {
+    res.status(404).json({ error: 'User not found.' });
+    return;
+  }
+
+  if (visibility === 'limited') {
+    return res.json({
+      user: {
+        id: row.id, username: row.username, displayName: row.display_name,
+        avatarUrl: row.avatar_url, isPrivate: true, isFollowing,
+        limited: true,
+      },
+      message: 'This profile is private.'
+    });
+  }
 
   const followers = getDb().prepare('SELECT COUNT(*) as c FROM follows WHERE following_id = ?').get(row.id) as any;
   const following = getDb().prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id = ?').get(row.id) as any;
-  const postCount = getDb().prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL').get(row.id) as any;
+  const postCount = getDb().prepare(
+    'SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL AND group_id IS NULL AND hidden = 0',
+  ).get(row.id) as any;
 
-  const canViewGames = canViewFull || isOwner || isAdmin;
-  const gameVisibilityClause = isOwner || isAdmin ? '' : 'AND p.display_on_profile = 1';
-
-  // Get visible game preferences
+  const gameVisibilityClause = isOwner || req.user?.role === 'admin' ? '' : 'AND p.display_on_profile = 1';
   const gamePrefs = getDb().prepare(`
     SELECT p.*, g.name as game_name, g.slug as game_slug,
       EXISTS (
@@ -140,20 +192,6 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
     FROM user_game_preferences p JOIN games g ON p.game_id = g.id
     WHERE p.user_id = ? ${gameVisibilityClause} ORDER BY p.is_favorite DESC, g.name
   `).all(req.user?.id || 0, row.id);
-
-  if (!canViewFull) {
-    // Limited profile view for private profiles
-    return res.json({
-      user: {
-        id: row.id, username: row.username, displayName: row.display_name,
-        bio: '', avatarUrl: row.avatar_url, role: row.role, isVerified: !!row.is_verified,
-        profileVisibility: row.profile_visibility, isPrivate: true,
-        followerCount: followers?.c ?? 0, followingCount: following?.c ?? 0,
-        postCount: 0, isFollowing, limited: true,
-      },
-      message: 'This profile is private.'
-    });
-  }
 
   let profileData: any = null;
   try { profileData = row.profile_data ? JSON.parse(row.profile_data) : null; } catch { profileData = null; }
@@ -165,7 +203,7 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
       profileVisibility: row.profile_visibility, isPrivate: isPrivate,
       followerCount: followers?.c ?? 0, followingCount: following?.c ?? 0,
       postCount: postCount?.c ?? 0, isFollowing,
-      gamePrefs: canViewGames ? gamePrefs : [],
+      gamePrefs,
       profileData,
     }
   });
@@ -215,12 +253,50 @@ router.put('/profile', requireAuth, (req: AuthRequest, res) => {
 // GET /api/users/search?q=...
 router.get('/', optionalAuth, (req: AuthRequest, res) => {
   const q = `%${(req.query.q as string || '').trim()}%`;
-  const isAuth = !!req.user;
-  // For unauthenticated: only public profiles. For authenticated: all profiles.
-  const rows = isAuth
-    ? getDb().prepare('SELECT id, username, display_name, avatar_url, is_verified, profile_visibility, bio FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND banned = 0 LIMIT 20').all(q, q)
-    : getDb().prepare("SELECT id, username, display_name, avatar_url, is_verified, profile_visibility, bio FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND banned = 0 AND profile_visibility = 'public' LIMIT 20").all(q, q);
-  res.json({ users: rows });
+  const viewer = req.user as any;
+  const identity = userVisibilitySql(viewer, 'u', 'identity');
+  const fullProfile = userVisibilitySql(viewer, 'u', 'profile');
+  const rows = getDb().prepare(`
+    SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified,
+      u.profile_visibility,
+      CASE WHEN (${fullProfile.sql}) THEN u.bio ELSE '' END AS bio,
+      CASE WHEN (${fullProfile.sql}) THEN 1 ELSE 0 END AS can_view_full,
+      EXISTS (
+        SELECT 1 FROM follows sf WHERE sf.follower_id = ? AND sf.following_id = u.id
+      ) AS is_following
+    FROM users u
+    WHERE (u.username LIKE ? OR u.display_name LIKE ?)
+      AND ${identity.sql}
+    ORDER BY u.display_name COLLATE NOCASE, u.username COLLATE NOCASE
+    LIMIT 20
+  `).all(
+    ...fullProfile.params,
+    ...fullProfile.params,
+    req.user?.id || 0,
+    q,
+    q,
+    ...identity.params,
+  ) as any[];
+  res.json({
+    users: rows.map(row => row.can_view_full ? {
+      id: row.id,
+      username: row.username,
+      display_name: row.display_name,
+      avatar_url: row.avatar_url,
+      is_verified: row.is_verified,
+      profile_visibility: row.profile_visibility,
+      bio: row.bio,
+      isFollowing: !!row.is_following,
+    } : {
+      id: row.id,
+      username: row.username,
+      display_name: row.display_name,
+      avatar_url: row.avatar_url,
+      isFollowing: !!row.is_following,
+      isPrivate: true,
+      limited: true,
+    }),
+  });
 });
 
 router.post('/:userId/block', requireAuth, (req, res) => {

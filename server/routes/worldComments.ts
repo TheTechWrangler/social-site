@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified } from '../middleware.js';
+import { notMutedByViewerSql, userVisibilitySql } from '../visibility.js';
 
 const router = Router();
 
@@ -11,13 +12,18 @@ router.get('/:itemId/comments', optionalAuth, (req, res) => {
     const item = getDb().prepare('SELECT id FROM rss_items WHERE id = ?').get(itemId);
     if (!item) { res.status(404).json({ error: 'RSS item not found.' }); return; }
 
+    const authorVisibility = userVisibilitySql((req as any).user, 'u', 'public-context');
+    const notMuted = notMutedByViewerSql((req as any).user, 'u');
     const rows = getDb().prepare(`
       SELECT c.*, u.username, u.display_name, u.avatar_url
       FROM rss_item_comments c JOIN users u ON c.user_id = u.id
       WHERE c.rss_item_id = ? AND c.is_hidden = 0
+        AND ${authorVisibility.sql}
+        AND ${notMuted.sql}
       ORDER BY c.created_at ASC
-    `).all(itemId) as any[];
+    `).all(itemId, ...authorVisibility.params, ...notMuted.params) as any[];
 
+    const visibleCommentIds = new Set(rows.map(r => r.id));
     const comments = rows.map(r => ({
       id: r.id,
       body: r.body,
@@ -25,7 +31,7 @@ router.get('/:itemId/comments', optionalAuth, (req, res) => {
       username: r.username,
       displayName: r.display_name,
       avatarUrl: r.avatar_url,
-      parentId: r.parent_id ?? null,
+      parentId: r.parent_id && visibleCommentIds.has(r.parent_id) ? r.parent_id : null,
       createdAt: r.created_at,
     }));
 

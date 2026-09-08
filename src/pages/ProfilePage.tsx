@@ -110,15 +110,15 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
         websiteUrl: pd.websiteUrl || '',
       });
       if (r.user.limited) { setPosts([]); return; }
-      const feed = await api.feed();
-      setPosts(feed.posts.filter((p: any) => p.username === username));
+      const profilePosts = await api.getUserPosts(username!);
+      setPosts(profilePosts.posts);
     } catch (e) { console.error(e); }
   }
 
   async function handleFollow() {
     try {
       await (profile.isFollowing ? api.unfollow(profile.id) : api.follow(profile.id));
-      setProfile({ ...profile, isFollowing: !profile.isFollowing, followerCount: profile.followerCount + (profile.isFollowing ? -1 : 1) });
+      await loadProfile();
     } catch (e) { console.error(e); }
   }
 
@@ -259,7 +259,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
 
   if (!profile) return <div className="loading">Loading...</div>;
   const isOwn = currentUser?.id === profile.id;
-  const isLimited = profile.limited || profile.isPrivate;
+  const isLimited = !!profile.limited;
 
   return (
     <div className="profile-page">
