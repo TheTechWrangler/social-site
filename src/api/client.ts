@@ -135,7 +135,7 @@ export const api = {
   unhidePost: (id: number) => request<{ ok: boolean }>(`/admin/posts/${id}/unhide`, { method: 'POST' }),
   getReports: () => request<{ reports: any[] }>('/admin/reports'),
   reportPost: (postId: number, reason: string, details: string) =>
-    request<{ ok: boolean }>('/admin/reports', { method: 'POST', body: JSON.stringify({ postId, reason, details }) }),
+    request<{ ok: boolean }>('/reports', { method: 'POST', body: JSON.stringify({ targetType: 'post', targetId: postId, reason, details }) }),
   getAuthEvents: (params?: { eventType?: string; success?: string; userId?: number; page?: number; limit?: number }) => {
     const qs = params ? new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([,v]) => v !== undefined && v !== '').map(([k,v]) => [k, String(v)]))).toString() : '';
     return request<{ events: any[]; page: number; limit: number; total: number; totalPages: number }>(`/admin/auth-events${qs ? `?${qs}` : ''}`);

@@ -103,16 +103,16 @@ STEAM_REALM=https://refugecloud.com/
 ## How the auth handoff works (no token in URL)
 
 1. User clicks "Continue with Google" → browser navigates to `GET /api/auth/google`.
-2. Server redirects to Google's consent page.
+2. Server stores a short-lived, one-time state value in the server-side session and sends the matching value to Google.
 3. Google redirects back to `GET /api/auth/google/callback`.
-4. Server validates the OAuth code, finds/creates the user, generates a JWT.
+4. Server consumes and validates the session-backed state before validating the OAuth code, then finds/creates the user and generates a JWT.
 5. JWT is stored in the **server-side session** — never placed in the redirect URL.
 6. Browser is redirected to `https://refugecloud.com/oauth/callback` (no token in URL).
 7. The React `OAuthCallback` page calls `GET /api/auth/oauth-token` with `credentials: 'include'`.
 8. Server reads the token from session (one-time use), sets the `refugecloud_auth` **HttpOnly cookie**, deletes the session data, returns `{ ok: true, user }`.
 9. Frontend receives the user object, updates app state. Token is never visible to JavaScript.
 
-Cookie properties: `httpOnly`, `secure` (production only), `sameSite=lax`, `path=/`, 7-day expiry.
+Cookie properties: `httpOnly`, `secure` (production only), `sameSite=lax`, `path=/`, 7-day expiry. OAuth state and the Steam login intent expire after 10 minutes and are consumed on the first callback attempt. Steam OpenID has no OAuth state parameter; its signed `return_to` and nonce checks are supplemented by the one-time session login intent.
 
 ---
 

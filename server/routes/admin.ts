@@ -22,8 +22,6 @@ try {
 } catch { /* non-fatal — version stays 'unknown' */ }
 
 const router = Router();
-const REPORT_ERROR = 'Please select a reason and briefly explain the problem.';
-const REPORT_REASONS = new Set(['Spam', 'Harassment', 'Hate or abuse', 'Sexual content', 'Violence or threats', 'Scam or unsafe link', 'Other']);
 
 function activeAdminCount(): number {
   return (getDb().prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND banned = 0").get() as any).c;
@@ -234,20 +232,6 @@ router.get('/stats', requireAuth, requireAdmin, (_req, res) => {
     serverCount: (db.prepare('SELECT COUNT(*) as c FROM game_servers WHERE is_active = 1').get() as any).c,
     lfgCount: (db.prepare("SELECT COUNT(*) as c FROM game_lfg_posts WHERE is_active = 1 AND expires_at > datetime('now')").get() as any).c,
   });
-});
-
-// POST /api/admin/reports
-router.post('/reports', requireAuth, (req: AuthRequest, res) => {
-  const { postId } = req.body;
-  const reason = String(req.body.reason || '').trim().slice(0, 120);
-  const details = String(req.body.details ?? req.body.report_details ?? '').trim().slice(0, 1000);
-  if (!postId || !reason || details.length < 5) { res.status(400).json({ error: REPORT_ERROR }); return; }
-  if (!REPORT_REASONS.has(reason)) { res.status(400).json({ error: REPORT_ERROR }); return; }
-  const post = getDb().prepare('SELECT id FROM posts WHERE id = ?').get(postId);
-  if (!post) { res.status(404).json({ error: 'Content not found.' }); return; }
-  getDb().prepare('INSERT INTO reports (reporter_id, post_id, reason, report_details) VALUES (?, ?, ?, ?)')
-    .run(req.user!.id, postId, reason, details);
-  res.status(201).json({ ok: true });
 });
 
 // DELETE /api/admin/users/:id

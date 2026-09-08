@@ -263,7 +263,7 @@ The forgot-password endpoint is limited to 5 requests per IP per 15 minutes (con
 - **Generated**: at registration and each resend request.
 - **Stored**: only the SHA-256 hash (raw token is never stored or logged).
 - **Invalidated**: all previous unused tokens for the user are marked `used_at = now()` when a new one is generated.
-- **Expires**: after `EMAIL_VERIFICATION_TTL_HOURS` hours (default 24).
+- **Expires**: after `EMAIL_VERIFICATION_TTL_HOURS` hours (default 24), stored and compared as explicit UTC. Legacy SQLite UTC timestamps remain accepted.
 - **Cleaned up**: `runRetentionCleanup()` deletes expired tokens after `EMAIL_VERIFICATION_TOKENS_RETENTION_DAYS` days (default 7).
 
 ### Password reset tokens
@@ -271,6 +271,6 @@ The forgot-password endpoint is limited to 5 requests per IP per 15 minutes (con
 - **Generated**: on `POST /api/auth/forgot-password` (self-serve, 1-hour TTL) or admin panel (2-hour TTL).
 - **Stored**: only the SHA-256 hash. Raw token goes into the email link only, never stored, never logged.
 - **Invalidated**: all previous unused tokens for the user are marked used when a new one is generated.
-- **Expires**: after `PASSWORD_RESET_TTL_HOURS` hours (default 1 for self-serve; admin tokens always 2 hours).
+- **Expires**: after `PASSWORD_RESET_TTL_HOURS` hours (default 1 for self-serve; admin tokens always 2 hours), stored and compared as explicit UTC. Legacy SQLite UTC timestamps remain accepted without extending their lifetime.
 - **Revocation**: applying a reset also sets `password_changed_at = datetime('now')` on the user, which invalidates all existing JWTs (the `iat < password_changed_at` check in `requireAuth`).
 - **Cleaned up**: `runRetentionCleanup()` deletes expired `password_reset_tokens` rows after `PASSWORD_RESET_TOKENS_RETENTION_DAYS` days (default 30).

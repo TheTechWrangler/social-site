@@ -27,6 +27,7 @@ import uploadRoutes, { uploadsFileRouter } from './routes/uploads.js';
 import gamesRoutes from './routes/games.js';
 import messagesRoutes from './routes/messages.js';
 import usageRoutes from './routes/usage.js';
+import reportsRoutes from './routes/reports.js';
 import { SQLiteSessionStore } from './sessionStore.js';
 import { isEmailConfigured } from './email.js';
 
@@ -328,6 +329,7 @@ app.use('/api/comments', commentRoutes);
 app.use('/api/reposts', repostRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/reports', reportsRoutes);              // User-submitted moderation reports
 app.use('/api/admin', adminRoutes);
 app.use('/api/world-feed', rssPublicRouter);
 app.use('/api/world-feed', worldCommentsRoutes);  // Comments on RSS items

@@ -7,6 +7,7 @@ import { requireAuth, getAuthCookieValue, AUTH_COOKIE_NAME, type AuthRequest } f
 import { logAuthEvent, getClientIp } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
 import { sendEmail, buildVerificationEmail, buildPasswordResetEmail, isEmailConfigured } from '../email.js';
+import { isTokenUnexpired, utcExpiryFromNow } from '../tokenExpiry.js';
 
 const router = Router();
 
@@ -31,12 +32,13 @@ function generateAndStoreVerifToken(userId: number): string {
   const ttlHours = getVerifTtlHours();
   const rawToken = randomBytes(32).toString('hex');
   const hash = createHash('sha256').update(rawToken).digest('hex');
+  const expiresAt = utcExpiryFromNow(ttlHours);
   const db = getDb();
   // Invalidate previous unused tokens so only the latest link works.
   db.prepare("UPDATE email_verification_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(userId);
   db.prepare(
-    "INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', ?))"
-  ).run(userId, hash, `+${ttlHours} hours`);
+    'INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
+  ).run(userId, hash, expiresAt);
   return rawToken;
 }
 
@@ -206,9 +208,10 @@ router.post('/forgot-password', async (req, res) => {
 
     const rawToken = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const expiresAt = utcExpiryFromNow(ttlHours);
     db.prepare(
-      "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', ?))"
-    ).run(user.id, tokenHash, `+${ttlHours} hours`);
+      'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
+    ).run(user.id, tokenHash, expiresAt);
 
     // Build the reset URL pointing to the frontend route (not the API).
     const webBase = (process.env.WEB_BASE_URL || 'http://localhost:5174').replace(/\/$/, '');
@@ -248,7 +251,7 @@ router.get('/reset-password', (req, res) => {
   const row = getDb().prepare(
     'SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash = ?'
   ).get(hash) as any;
-  if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
+  if (!row || row.used_at || !isTokenUnexpired(row.expires_at)) {
     res.status(400).json({ error: 'This reset link is invalid or has expired.' }); return;
   }
   const user = getDb().prepare('SELECT id, username FROM users WHERE id = ?').get(row.user_id) as any;
@@ -272,7 +275,7 @@ router.post('/reset-password', (req, res) => {
       const row = db.prepare(
         'SELECT id, user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash = ?'
       ).get(hash) as any;
-      if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
+      if (!row || row.used_at || !isTokenUnexpired(row.expires_at)) {
         return { ok: false };
       }
       const user = db.prepare('SELECT id, username FROM users WHERE id = ?').get(row.user_id) as any;
@@ -314,7 +317,7 @@ router.get('/verify-email', (req, res) => {
       const row = db.prepare(
         'SELECT id, user_id, expires_at, used_at FROM email_verification_tokens WHERE token_hash = ?'
       ).get(hash) as any;
-      if (!row || row.used_at || new Date(row.expires_at + 'Z') < new Date()) {
+      if (!row || row.used_at || !isTokenUnexpired(row.expires_at)) {
         return { ok: false };
       }
       const user = db.prepare('SELECT id, is_verified FROM users WHERE id = ?').get(row.user_id) as any;

@@ -110,8 +110,8 @@ Development commands force `NODE_ENV=development`; they do not inherit a product
 - `GET /api/admin/posts` — List posts
 - `POST /api/admin/posts/:id/hide` — Hide post
 - `POST /api/admin/posts/:id/unhide` — Unhide post
-- `GET /api/admin/reports` — List reports
-- `POST /api/admin/reports` — Report a post
+- `POST /api/reports` — Submit a post/comment report (verified users; rate-limited, visible targets only)
+- `GET /api/admin/reports` — Review reports (admin only)
 
 **Admin user deletion rules:**
 - Admin cannot delete their own account

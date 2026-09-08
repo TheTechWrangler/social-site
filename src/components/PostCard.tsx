@@ -112,11 +112,11 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
     if (!reportReason || !reportDetails.trim() || reportDetails.trim().length < 5) { setReportError(REPORT_ERROR); return; }
     setReportError('');
     try {
-      const res = await fetch('/api/admin/reports', {
+      const res = await fetch('/api/reports', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ postId: reportTarget?.id, reason: reportReason, details: reportDetails.trim() }),
+        body: JSON.stringify({ targetType: reportTargetType, targetId: reportTarget?.id, reason: reportReason, details: reportDetails.trim() }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
