@@ -5,7 +5,7 @@
 After deploying or restarting the production service, run the read-only smoke test from the project root:
 
 ```bash
-npm run smoke
+npm run smoke:live
 ```
 
 Check service status:
@@ -67,7 +67,7 @@ After fixing the root cause:
 ```bash
 sudo systemctl restart refugecloud
 sudo systemctl status refugecloud --no-pager
-npm run smoke
+npm run smoke:live
 ```
 
 ---
@@ -78,10 +78,10 @@ Run after every code deploy or service restart:
 
 ```bash
 # From the project root:
-npm run smoke
+npm run smoke:live
 
 # With a custom target (e.g. staging):
-SMOKE_BASE_URL=http://127.0.0.1:3003 npm run smoke
+SMOKE_BASE_URL=http://127.0.0.1:3003 npm run smoke:live
 ```
 
 All checks should print `[ok]`. If any print `[fail]`, check the service logs before declaring the deploy good.
@@ -92,7 +92,7 @@ Full deploy sequence:
 npm run build
 sudo systemctl restart refugecloud
 sudo systemctl status refugecloud --no-pager
-npm run smoke
+npm run smoke:live
 ```
 
 ---
@@ -163,7 +163,7 @@ sqlite3 /home/brock/social-site/data/social.db "PRAGMA integrity_check;"
 
 # 6. Restart
 sudo systemctl start refugecloud
-npm run smoke
+npm run smoke:live
 ```
 
 ---

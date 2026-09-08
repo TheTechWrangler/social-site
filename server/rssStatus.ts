@@ -1,6 +1,15 @@
 import 'dotenv/config';
-import { initializeDatabase, getDb } from './database.js';
-import { getSources } from './rssService.js';
+import { assertSafeMaintenanceTarget } from './config.js';
+
+try {
+  assertSafeMaintenanceTarget('inspect RSS development data');
+} catch (err) {
+  console.error((err as Error).message);
+  process.exit(1);
+}
+
+const { initializeDatabase, getDb } = await import('./database.js');
+const { getSources } = await import('./rssService.js');
 
 console.log('[rss:status]');
 initializeDatabase();

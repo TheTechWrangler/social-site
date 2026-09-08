@@ -9,8 +9,10 @@ import { requireAuth, requireAdmin, type AuthRequest } from '../middleware.js';
 import { logAuthEvent } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
 import { isGoogleConfigured, isSteamConfigured } from '../authProviders.js';
+import { getStorageConfig } from '../config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const runtimeStorage = getStorageConfig();
 
 // Cache package version once at startup — avoids per-request disk read in system-health.
 let APP_VERSION = 'unknown';
@@ -469,8 +471,7 @@ router.get('/system-health', requireAuth, requireAdmin, (_req, res) => {
   let dbReachable = false;
   try { db.prepare('SELECT 1').get(); dbReachable = true; } catch {}
 
-  const uploadsPath = path.resolve(__dirname, '../../uploads');
-  const uploadsStats = directoryStats(uploadsPath);
+  const uploadsStats = directoryStats(runtimeStorage.uploadsDir);
 
   const appVersion = APP_VERSION;
 
@@ -738,6 +739,11 @@ function logAdminBackupRun(
 
 // GET /api/admin/backups/status — backup directory health, latest file info, timer status
 router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
+  if (!runtimeStorage.isProduction) {
+    res.status(503).json({ error: 'Production backup controls are disabled outside production.' });
+    return;
+  }
+
   // ── 1. Enumerate backup files ────────────────────────────────────────────
   let backupDirExists = false;
   let backupFiles: BackupFileInfo[] = [];
@@ -829,6 +835,11 @@ router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
 
 // POST /api/admin/backups/run — run the backup script (fixed command, no user args)
 router.post('/backups/run', requireAuth, requireAdmin, (req, res) => {
+  if (!runtimeStorage.isProduction) {
+    res.status(503).json({ error: 'Production backup controls are disabled outside production.' });
+    return;
+  }
+
   const startMs = Date.now();
   const adminId = (req as any).user.id;
   try {
@@ -865,6 +876,11 @@ router.post('/backups/run', requireAuth, requireAdmin, (req, res) => {
 
 // POST /api/admin/backups/run-uploads — run the uploads backup script (fixed command, no user args)
 router.post('/backups/run-uploads', requireAuth, requireAdmin, (req, res) => {
+  if (!runtimeStorage.isProduction) {
+    res.status(503).json({ error: 'Production backup controls are disabled outside production.' });
+    return;
+  }
+
   const startMs = Date.now();
   const adminId = (req as any).user.id;
   try {

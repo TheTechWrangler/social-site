@@ -87,7 +87,7 @@ After editing `.env`, restart the service:
 ```bash
 sudo systemctl restart refugecloud
 sudo systemctl status refugecloud --no-pager
-npm run smoke
+npm run smoke:live
 ```
 
 ---

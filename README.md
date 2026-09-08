@@ -37,7 +37,14 @@ Opens:
 | `npm run server` | Start API server only |
 | `npm run client` | Start Vite dev server only |
 | `npm run build` | TypeScript check + Vite production build |
+| `npm run seed` | Seed isolated development storage |
+| `npm run seed -- --reset --confirm-dev-reset` | Reset and reseed isolated development storage |
+| `npm run cleanup:test-data -- --confirm-dev-cleanup` | Remove known test data from isolated development storage |
+| `npm run smoke` | Start a temporary isolated API and run smoke checks |
+| `npm run smoke:live` | Run read-only smoke checks against an already-running target |
 | `npm run preview` | Preview production build |
+
+Development commands force `NODE_ENV=development`; they do not inherit a production mode from `.env`.
 
 ## API Endpoints
 
@@ -122,7 +129,34 @@ Users can list games they play as profile expression, including platform, play s
 
 ## Database
 
-SQLite database stored in `data/social.db`. Tables:
+SQLite runs in WAL mode. Storage is selected centrally by `server/config.ts`:
+
+| Mode | Database default | Uploads default |
+|------|------------------|-----------------|
+| Development (default) | `data/dev-social.db` | `uploads-dev/` |
+| Production (`NODE_ENV=production`) | `data/social.db` | `uploads/` |
+| Test (`NODE_ENV=test`) | Explicit `DATABASE_PATH` required | Explicit `UPLOADS_DIR` required |
+
+Set `DATABASE_PATH` and `UPLOADS_DIR` to override these paths. Relative values
+are resolved from the repository root. Non-production processes refuse paths
+that resolve to production storage, including symlink aliases. Test mode has no
+fallback. Parent directories are created only after configuration passes these
+checks.
+
+The isolated smoke harness creates both test paths under a unique
+`/tmp/refugecloud-smoke.*` directory and removes them when it exits:
+
+```bash
+npm run smoke
+```
+
+To inspect an existing deployed site without starting a server, use:
+
+```bash
+SMOKE_BASE_URL=https://refugecloud.com npm run smoke:live
+```
+
+Core tables include:
 - users, posts, follows, likes, groups_table, group_members, notifications, reports, user_auth_providers
 
 ## Environment
@@ -132,6 +166,8 @@ Copy `.env.example` to `.env` and fill in values.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3003` | API server port |
+| `DATABASE_PATH` | mode-dependent | SQLite file; relative paths resolve from repository root |
+| `UPLOADS_DIR` | mode-dependent | Media directory; relative paths resolve from repository root |
 | `JWT_SECRET` | dev secret | JWT signing secret |
 | `SESSION_SECRET` | dev secret | Express session secret for OAuth |
 | `APP_BASE_URL` | `http://localhost:3003` | Backend base URL |
@@ -200,13 +236,14 @@ Before pointing a real domain at this app, complete all of the following.
 # 1. Copy and fill in secrets
 cp .env.example .env
 # Edit .env: set JWT_SECRET, SESSION_SECRET, NODE_ENV=production, TRUST_PROXY=1,
-#            WEB_BASE_URL, APP_BASE_URL
+#            WEB_BASE_URL, APP_BASE_URL, DATABASE_PATH=data/social.db,
+#            UPLOADS_DIR=uploads
 
 # 2. Build
 npm run build
 
 # 3. Start (production)
-NODE_ENV=production node dist/server/index.js
+npm run start
 ```
 
 ## LAN Testing
@@ -324,9 +361,13 @@ A "Log in to join the discussion or customize your sources" prompt appears near 
 ## Seed Data
 
 ```bash
-npm run seed          # Seeds demo data (safe — skips if users already exist)
-npm run seed -- --reset  # Wipes and reseeds fresh demo data
+npm run seed
+npm run seed -- --reset --confirm-dev-reset
 ```
+
+Both commands are restricted to isolated non-production storage. Reset requires
+the explicit confirmation flag shown above. Production mode or production
+database/upload paths cause a loud refusal before SQLite is opened.
 
 Demo accounts created by seed:
 - `alice` / `demo1234`
@@ -414,7 +455,8 @@ The seed script includes 6 gaming RSS sources covering PC gaming, console news, 
 **Future video support:** The `post_media` table already supports `media_type='video'` with columns for `duration_seconds`, `thumbnail_url`, `processing_status`. When video uploads are enabled, no schema changes needed.
 
 **Production notes:**
-- Media files stored in `uploads/` directory (gitignored)
+- Development media is stored in `uploads-dev/` by default (gitignored)
+- Production media is stored in `uploads/` when production mode is explicitly selected
 - Production should use object storage (S3, R2) or CDN
 - `uploads/` directory must be backed up
 - No autoplay on embedded videos

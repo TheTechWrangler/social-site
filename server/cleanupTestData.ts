@@ -1,5 +1,14 @@
 import 'dotenv/config';
-import { initializeDatabase, getDb } from './database.js';
+import { assertSafeMaintenanceTarget } from './config.js';
+
+try {
+  assertSafeMaintenanceTarget('clean test data', { confirmationFlag: '--confirm-dev-cleanup' });
+} catch (err) {
+  console.error((err as Error).message);
+  process.exit(1);
+}
+
+const { initializeDatabase, getDb } = await import('./database.js');
 
 initializeDatabase();
 const db = getDb();

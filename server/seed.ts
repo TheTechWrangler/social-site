@@ -1,15 +1,26 @@
 import 'dotenv/config';
-import { initializeDatabase, getDb } from './database.js';
-import { hashPassword } from './auth.js';
-import { fetchSource } from './rssService.js';
+import { assertSafeMaintenanceTarget } from './config.js';
 
+const resetRequested = process.argv.includes('--reset');
+try {
+  assertSafeMaintenanceTarget('seed development data', {
+    confirmationFlag: resetRequested ? '--confirm-dev-reset' : undefined,
+  });
+} catch (err) {
+  console.error((err as Error).message);
+  process.exit(1);
+}
+
+const { initializeDatabase, getDb } = await import('./database.js');
+const { hashPassword } = await import('./auth.js');
+const { fetchSource } = await import('./rssService.js');
 console.log('[seed] Initializing database...');
 initializeDatabase();
 
 const db = getDb();
 
 // Reset first (before the skip-if-exists check, so --reset actually works)
-if (process.argv.includes('--reset')) {
+if (resetRequested) {
   console.log('[seed] Resetting database...');
   db.exec('DELETE FROM rss_item_comments');
   db.exec('DELETE FROM user_rss_source_blocks');

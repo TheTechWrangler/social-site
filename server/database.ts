@@ -1,18 +1,15 @@
 import Database from 'better-sqlite3';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import fs from 'node:fs';
+import { ensureDatabaseDirectory, getStorageConfig } from './config.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.resolve(__dirname, '..', 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const DB_PATH = path.join(DATA_DIR, 'social.db');
+const storageConfig = getStorageConfig();
+ensureDatabaseDirectory(storageConfig);
+const DB_PATH = storageConfig.databasePath;
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 export function getDb(): Database.Database { return db; }
+export function getDatabasePath(): string { return DB_PATH; }
 
 export function initializeDatabase(): void {
   db.exec(`

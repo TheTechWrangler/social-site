@@ -6,18 +6,19 @@
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm run server\" \"npm run client\"",
     "client": "vite",
-    "server": "tsx server/index.ts",
+    "server": "NODE_ENV=development tsx server/index.ts",
     "start": "NODE_ENV=production tsx server/index.ts",
     "build": "tsc --noEmit && vite build",
-    "seed": "tsx server/seed.ts",
-    "cleanup:test-data": "tsx server/cleanupTestData.ts",
-    "seed:with-rss": "tsx server/seed.ts && tsx server/rssFetch.ts",
-    "rss:fetch": "tsx server/rssFetch.ts",
-    "rss:status": "tsx server/rssStatus.ts",
+    "seed": "NODE_ENV=development tsx server/seed.ts",
+    "cleanup:test-data": "NODE_ENV=development tsx server/cleanupTestData.ts",
+    "seed:with-rss": "npm run seed && npm run rss:fetch",
+    "rss:fetch": "NODE_ENV=development tsx server/rssFetch.ts",
+    "rss:status": "NODE_ENV=development tsx server/rssStatus.ts",
     "preview": "vite preview",
     "backup:db": "bash scripts/backup-db.sh",
     "backup:uploads": "bash scripts/backup-uploads.sh",
-    "smoke": "bash scripts/smoke-test.sh"
+    "smoke": "bash scripts/smoke-test-isolated.sh",
+    "smoke:live": "bash scripts/smoke-test.sh"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

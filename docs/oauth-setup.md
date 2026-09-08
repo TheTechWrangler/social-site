@@ -46,7 +46,7 @@ After editing `.env`, restart the service and verify:
 ```bash
 sudo systemctl restart refugecloud
 sudo systemctl status refugecloud --no-pager
-npm run smoke
+npm run smoke:live
 ```
 
 ---
@@ -156,7 +156,7 @@ sudo journalctl -u refugecloud -n 30 --no-pager | grep '\[auth\]'
 ### Run smoke test
 
 ```bash
-npm run smoke
+npm run smoke:live
 ```
 
 The smoke test checks `GET /api/auth/providers` returns 200 with `google` and `steam` keys. This passes regardless of whether providers are configured — it just confirms the endpoint is reachable.

@@ -88,11 +88,13 @@ run_check api_not_real /api/not-real
 expect_status api_not_real 404
 expect_body_contains api_not_real '"error":"Not found"'
 
-run_check root /
-expect_status root 200
+if [[ "${SMOKE_API_ONLY:-0}" != "1" ]]; then
+  run_check root /
+  expect_status root 200
 
-run_check admin_shell /admin
-expect_status admin_shell 200
+  run_check admin_shell /admin
+  expect_status admin_shell 200
+fi
 
 run_check admin_users_unauth /api/admin/users
 expect_status admin_users_unauth 401

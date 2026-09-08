@@ -1,7 +1,15 @@
 import 'dotenv/config';
-import { initializeDatabase } from './database.js';
-import { fetchAllSources, getSources, getWorldFeed } from './rssService.js';
+import { assertSafeMaintenanceTarget } from './config.js';
 
+try {
+  assertSafeMaintenanceTarget('fetch RSS data');
+} catch (err) {
+  console.error((err as Error).message);
+  process.exit(1);
+}
+
+const { initializeDatabase } = await import('./database.js');
+const { fetchAllSources, getSources, getWorldFeed } = await import('./rssService.js');
 console.log('[rss:fetch] Initializing database...');
 initializeDatabase();
 
