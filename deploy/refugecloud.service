@@ -1,0 +1,81 @@
+# RefugeCloud production application service
+#
+# Install only during an approved deployment window:
+#   sudo install -o root -g root -m 0644 deploy/refugecloud.service \
+#     /etc/systemd/system/refugecloud.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl restart refugecloud.service
+#
+# Do not activate this unit without first validating production storage access,
+# outbound integrations, and the localhost/public health endpoints.
+
+[Unit]
+Description=RefugeCloud Social Site
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=brock
+Group=brock
+WorkingDirectory=/home/brock/social-site
+Environment=NODE_ENV=production
+# npm normally writes diagnostic/cache files beneath the user's home directory.
+# Keep those writes inside the service's private temporary directory instead.
+Environment=NPM_CONFIG_CACHE=/tmp/refugecloud-npm-cache
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+
+# Files created by the application are private to the service account.
+UMask=0077
+
+# Privilege and kernel isolation. RefugeCloud binds an unprivileged port and
+# requires no Linux capabilities.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+RemoveIPC=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# Keep application code and the host filesystem read-only. SQLite/WAL, uploads,
+# and the existing admin-triggered production backup functions need writes only
+# in these explicit locations.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/brock/social-site/data
+ReadWritePaths=/home/brock/social-site/uploads
+ReadWritePaths=/home/brock/backups/refugecloud-db
+ReadWritePaths=/home/brock/backups/refugecloud-uploads
+
+# Prevent access to unrelated high-value user credentials while retaining
+# read-only access to the application tree and production .env.
+InaccessiblePaths=-/home/brock/.ssh
+InaccessiblePaths=-/home/brock/.gnupg
+InaccessiblePaths=-/home/brock/.aws
+InaccessiblePaths=-/home/brock/.kube
+InaccessiblePaths=-/home/brock/.docker
+
+# Required for localhost/public listening, DNS, RSS, OAuth, Steam, and email.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# MemoryDenyWriteExecute is intentionally omitted: Node/V8 uses JIT-generated
+# executable memory. PrivateNetwork/IPAddressDeny are omitted because the app
+# requires inbound and outbound network access.
+
+[Install]
+WantedBy=multi-user.target
