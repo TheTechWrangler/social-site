@@ -123,7 +123,11 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
 
 // POST /api/groups/:id/join
 router.post('/:id/join', requireAuth, requireVerified, (req: AuthRequest, res) => {
-  const group = getDb().prepare('SELECT id FROM groups_table WHERE id = ?').get(req.params.id);
+  const ownerVisibility = userVisibilitySql(req.user, 'u', 'public-context');
+  const group = getDb().prepare(`
+    SELECT g.id FROM groups_table g JOIN users u ON u.id = g.owner_id
+    WHERE g.id = ? AND ${ownerVisibility.sql}
+  `).get(req.params.id, ...ownerVisibility.params);
   if (!group) { res.status(404).json({ error: 'Group not found.' }); return; }
   getDb().prepare('INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)')
     .run(Number(req.params.id), req.user!.id);
@@ -133,8 +137,8 @@ router.post('/:id/join', requireAuth, requireVerified, (req: AuthRequest, res) =
 // POST /api/groups/:id/leave
 router.post('/:id/leave', requireAuth, (req: AuthRequest, res) => {
   const group = getDb().prepare('SELECT owner_id FROM groups_table WHERE id = ?').get(req.params.id) as any;
-  if (!group) { res.status(404).json({ error: 'Group not found.' }); return; }
-  if (group.owner_id === req.user!.id) {
+  // Leaving is idempotent self-management, including missing/nonmember groups.
+  if (group?.owner_id === req.user!.id) {
     res.status(403).json({ error: 'You own this group and cannot leave. Delete the group to remove it.' });
     return;
   }
@@ -146,15 +150,22 @@ router.post('/:id/leave', requireAuth, (req: AuthRequest, res) => {
 // DELETE /api/groups/:id/members/:userId — owner or site-admin removes a member
 router.delete('/:id/members/:userId', requireAuth, (req: AuthRequest, res) => {
   const viewer = req.user!;
-  const group = getDb().prepare('SELECT owner_id FROM groups_table WHERE id = ?').get(req.params.id) as any;
+  const group = getDb().prepare(`
+    SELECT g.owner_id FROM groups_table g
+    WHERE g.id = ? AND (
+      g.owner_id = ?
+      OR ? = 'admin'
+      OR EXISTS (
+        SELECT 1 FROM group_members gm
+        WHERE gm.group_id = g.id AND gm.user_id = ? AND gm.role = 'admin'
+      )
+    )
+  `).get(req.params.id, viewer.id, viewer.role, viewer.id) as any;
   if (!group) { res.status(404).json({ error: 'Group not found.' }); return; }
   const targetId = Number(req.params.userId);
   if (targetId === group.owner_id) {
     res.status(400).json({ error: 'Cannot remove the group owner.' }); return;
   }
-  const viewerRole = (getDb().prepare('SELECT role FROM group_members WHERE group_id = ? AND user_id = ?').get(req.params.id, viewer.id) as any)?.role;
-  const canManage = group.owner_id === viewer.id || viewerRole === 'admin' || viewer.role === 'admin';
-  if (!canManage) { res.status(403).json({ error: 'Not authorized.' }); return; }
   getDb().prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?').run(req.params.id, targetId);
   res.json({ ok: true });
 });

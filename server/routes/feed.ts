@@ -5,6 +5,7 @@ import { enrichPost } from './posts.js';
 import { getWorldFeed, fetchSource } from '../rssService.js';
 import { logUsage } from '../usageEvents.js';
 import { notMutedByViewerSql, postAuthorVisibilitySql } from '../visibility.js';
+import { boundedInteger } from '../pagination.js';
 
 const router = Router();
 
@@ -30,8 +31,8 @@ function itemTime(item: any): string {
 // GET /api/feed?level=everyone|extended|friends|world&limit=50&offset=0
 router.get('/', optionalAuth, (req: AuthRequest, res) => {
   try {
-    const limit = Math.min(Number(req.query.limit) || 50, 100);
-    const offset = Number(req.query.offset) || 0;
+    const limit = boundedInteger(req.query.limit, 50, 1, 100);
+    const offset = boundedInteger(req.query.offset, 0, 0, 100000);
     const db = getDb();
     const postVisibility = postAuthorVisibilitySql(req.user as any, 'p', 'u');
     const notMuted = notMutedByViewerSql(req.user as any, 'u');

@@ -6,6 +6,12 @@ its SQL predicates for lists. Administrative and moderation routes are explicit
 exceptions: normal routes do not acquire moderation visibility merely because a
 viewer has a moderator-like role.
 
+The block list is an explicit self-management exception to blocking: it returns
+minimal identity for unblocking, while still suppressing banned accounts. The
+mute list follows normal identity visibility, including reverse blocks.
+Self-owned game preferences, LFG drafts/history, and membership-leave
+operations are likewise account-management surfaces rather than discovery.
+
 ## Account visibility matrix
 
 | Viewer | Public account | Private account | Banned account | Either-direction block |
@@ -49,7 +55,11 @@ public-context author rule; membership alone must not turn the group public.
 ## Media and deferred upload work
 
 Attached post media inherits the post's centralized visibility decision, and
-responses use private cache control. Avatar serving and unattached-upload
+responses use `Cache-Control: private, no-store` so new responses are never
+reused without authorization. Previously cached responses from older releases
+cannot be retroactively invalidated by a response header; they may persist until
+their original 24-hour freshness expires. Saved/downloaded copies cannot be
+revoked. Avatar serving and unattached-upload
 ownership/previews retain their existing behavior for the later upload
 ownership milestone. Milestone 4 does not redesign the upload lifecycle.
 
@@ -60,6 +70,13 @@ count lists inject centralized SQL predicates so they do not perform one block
 or follow lookup per returned row. Direct object checks use small indexed
 lookups. Existing post enrichment still performs per-post aggregate queries,
 and notification post-reference sanitization performs at most one visibility
-check for each of the bounded 50 returned notifications; those bounded,
-pre-existing-style tradeoffs are retained rather than changing data-loading
-architecture in this milestone.
+check for each of the bounded 50 returned notifications. Conversation loading
+retains unpaginated per-conversation enrichment but moves author visibility
+filtering into SQL. Large conversation lists and unpaginated comment threads
+remain linear performance concerns, rather than recursive amplification.
+Repost expansion is capped at three nested reposts, with cycle detection and no
+hidden/truncated original IDs returned. Reply authorization fails closed after
+64 ancestors. Feed/World Feed limits are 1–100, messages 1–50, and offsets at
+most 100000; malformed/negative values use safe defaults. No production-scale
+load benchmark is claimed. World comment counts and profile relationship counts
+apply the same centralized author/identity policy as their visible lists.

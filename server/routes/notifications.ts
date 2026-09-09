@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, type AuthRequest } from '../middleware.js';
-import { canViewPost, userVisibilitySql } from '../visibility.js';
+import { canViewGroup, canViewPost, userVisibilitySql } from '../visibility.js';
 
 const router = Router();
 
@@ -21,6 +21,7 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
   `).all(req.user!.id, ...actorVisibility.params) as any[];
   res.json({
     notifications: rows.map(row => {
+      if (row.group_id && !canViewGroup(req.user, row.group_id)) row.group_id = null;
       if (row.post_id && !canViewPost(req.user as any, row.post_id)) {
         return { ...row, post_id: null, post_parent_id: null, post_snippet: null };
       }
@@ -48,9 +49,15 @@ router.post('/read-all', requireAuth, (req: AuthRequest, res) => {
 
 // PATCH /api/notifications/:id/read
 router.patch('/:id/read', requireAuth, (req: AuthRequest, res) => {
+  const actorVisibility = userVisibilitySql(req.user as any, 'u', 'identity');
   const result = getDb().prepare(
-    'UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ?'
-  ).run(Number(req.params.id), req.user!.id);
+    `UPDATE notifications SET read = 1
+     WHERE id = ? AND user_id = ?
+       AND EXISTS (
+         SELECT 1 FROM users u
+         WHERE u.id = notifications.actor_id AND ${actorVisibility.sql}
+       )`
+  ).run(Number(req.params.id), req.user!.id, ...actorVisibility.params);
   if (result.changes === 0) { res.status(404).json({ error: 'Notification not found.' }); return; }
   res.json({ ok: true });
 });

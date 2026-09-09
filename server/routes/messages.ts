@@ -3,14 +3,26 @@ import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import {
   canUserMessageRecipient,
-  getUserVisibility,
-  isBlockedBetween,
+  canViewUserIdentity,
+  canViewFullProfile,
   userVisibilitySql,
 } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
+import { boundedInteger } from '../pagination.js';
 
 const router = Router();
 const DM_MAX_LENGTH = 2000;
+
+function getVisibleOther(conversationId: number, viewer: NonNullable<AuthRequest['user']>) {
+  const visibility = userVisibilitySql(viewer, 'u', 'identity');
+  return getDb().prepare(`
+    SELECT u.id, u.username, u.display_name, u.avatar_url
+    FROM dm_conversation_members m JOIN users u ON m.user_id = u.id
+    WHERE m.conversation_id = ? AND m.user_id != ? AND m.deleted_at IS NULL
+      AND ${visibility.sql}
+    LIMIT 1
+  `).get(conversationId, viewer.id, ...visibility.params) as any;
+}
 
 function getMembership(conversationId: number, userId: number) {
   return getDb().prepare(
@@ -64,7 +76,9 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
   const db = getDb();
 
   const convIds = (db.prepare(
-    'SELECT conversation_id FROM dm_conversation_members WHERE user_id = ? AND deleted_at IS NULL ORDER BY conversation_id DESC'
+    `SELECT conversation_id FROM dm_conversation_members
+     WHERE user_id = ? AND deleted_at IS NULL
+     ORDER BY conversation_id DESC`
   ).all(userId) as any[]).map(r => r.conversation_id);
 
   const conversations = convIds.map(cid => {
@@ -72,14 +86,8 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
       'SELECT last_read_message_id FROM dm_conversation_members WHERE conversation_id = ? AND user_id = ?'
     ).get(cid, userId) as any;
 
-    const other = db.prepare(`
-      SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified,
-        u.profile_visibility, u.banned
-      FROM dm_conversation_members m JOIN users u ON m.user_id = u.id
-      WHERE m.conversation_id = ? AND m.user_id != ? AND m.deleted_at IS NULL
-      LIMIT 1
-    `).get(cid, userId) as any;
-    if (!other || getUserVisibility(req.user, other) === 'hidden') return null;
+    const other = getVisibleOther(cid, req.user!);
+    if (!other) return null;
 
     const lastMsg = db.prepare(
       'SELECT id, sender_id, body, created_at FROM dm_messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1'
@@ -98,7 +106,6 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
         username: other.username,
         displayName: other.display_name,
         avatarUrl: other.avatar_url,
-        isVerified: !!other.is_verified,
       },
       lastMessage: lastMsg ? {
         id: lastMsg.id,
@@ -131,12 +138,17 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   if (recipientId === senderId) {
     res.status(400).json({ error: 'You cannot message yourself.' }); return;
   }
-  if (isBlockedBetween(senderId, recipientId)) {
-    res.status(403).json({ error: 'Cannot start a conversation with this user.' }); return;
+  const db = getDb();
+  const target = db.prepare(
+    'SELECT id, profile_visibility, banned, dm_privacy FROM users WHERE id = ?',
+  ).get(recipientId) as any;
+  if (!target || !canViewUserIdentity(req.user, target)) {
+    res.status(404).json({ error: 'User not found.' }); return;
   }
   if (!canUserMessageRecipient(senderId, recipientId)) {
-    const db = getDb();
-    const target = db.prepare('SELECT dm_privacy FROM users WHERE id = ?').get(recipientId) as any;
+    if (!canViewFullProfile(req.user, target)) {
+      res.status(403).json({ error: 'Cannot message this user.' }); return;
+    }
     const policy = target?.dm_privacy || 'friends_of_friends';
     const policyLabel: Record<string, string> = {
       noone: 'This user is not accepting messages.',
@@ -149,7 +161,6 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const existing = findExisting1on1(senderId, recipientId);
   if (existing) { res.json({ conversationId: existing }); return; }
 
-  const db = getDb();
   const conv = db.prepare('INSERT INTO dm_conversations DEFAULT VALUES').run();
   const cid = conv.lastInsertRowid as number;
   db.prepare('INSERT INTO dm_conversation_members (conversation_id, user_id) VALUES (?, ?)').run(cid, senderId);
@@ -167,18 +178,12 @@ router.get('/:conversationId', requireAuth, (req: AuthRequest, res) => {
   const membership = getMembership(conversationId, userId);
   if (!membership) { res.status(404).json({ error: 'Conversation not found.' }); return; }
 
-  const before = req.query.before ? Number(req.query.before) : null;
-  const limit = Math.min(Number(req.query.limit) || 50, 50);
+  const before = boundedInteger(req.query.before, 0, 1, Number.MAX_SAFE_INTEGER) || null;
+  const limit = boundedInteger(req.query.limit, 50, 1, 50);
 
   const db = getDb();
-  const other = db.prepare(`
-    SELECT u.id, u.username, u.display_name, u.avatar_url, u.is_verified, u.dm_privacy,
-      u.profile_visibility, u.banned
-    FROM dm_conversation_members m JOIN users u ON m.user_id = u.id
-    WHERE m.conversation_id = ? AND m.user_id != ? AND m.deleted_at IS NULL
-    LIMIT 1
-  `).get(conversationId, userId) as any;
-  if (!other || getUserVisibility(req.user, other) === 'hidden') {
+  const other = getVisibleOther(conversationId, req.user!);
+  if (!other) {
     res.status(404).json({ error: 'Conversation not found.' }); return;
   }
 
@@ -211,8 +216,6 @@ router.get('/:conversationId', requireAuth, (req: AuthRequest, res) => {
       username: other.username,
       displayName: other.display_name,
       avatarUrl: other.avatar_url,
-      isVerified: !!other.is_verified,
-      dmPrivacy: other.dm_privacy,
     },
     lastReadMessageId: membership.last_read_message_id ?? null,
   });
@@ -227,6 +230,9 @@ router.post('/:conversationId', requireAuth, requireVerified, (req: AuthRequest,
   const membership = getMembership(conversationId, senderId);
   if (!membership) { res.status(404).json({ error: 'Conversation not found.' }); return; }
 
+  const visibleOther = getVisibleOther(conversationId, req.user!);
+  if (!visibleOther) { res.status(404).json({ error: 'Conversation not found.' }); return; }
+
   const body = String(req.body.body || '').trim();
   if (!body) { res.status(400).json({ error: 'Message cannot be empty.' }); return; }
   if (body.length > DM_MAX_LENGTH) {
@@ -235,15 +241,7 @@ router.post('/:conversationId', requireAuth, requireVerified, (req: AuthRequest,
 
   // Re-check recipient's privacy setting on every send
   const db = getDb();
-  const other = db.prepare(
-    'SELECT user_id FROM dm_conversation_members WHERE conversation_id = ? AND user_id != ? AND deleted_at IS NULL'
-  ).get(conversationId, senderId) as any;
-  if (!other) { res.status(400).json({ error: 'Conversation has no other participant.' }); return; }
-
-  if (isBlockedBetween(senderId, other.user_id)) {
-    res.status(403).json({ error: 'Cannot send messages to this user.' }); return;
-  }
-  if (!canUserMessageRecipient(senderId, other.user_id)) {
+  if (!canUserMessageRecipient(senderId, visibleOther.id)) {
     res.status(403).json({ error: 'This user\'s message settings no longer allow incoming messages.' }); return;
   }
 
@@ -272,6 +270,9 @@ router.post('/:conversationId/read', requireAuth, (req: AuthRequest, res) => {
 
   const membership = getMembership(conversationId, userId);
   if (!membership) { res.status(404).json({ error: 'Conversation not found.' }); return; }
+  if (!getVisibleOther(conversationId, req.user!)) {
+    res.status(404).json({ error: 'Conversation not found.' }); return;
+  }
 
   const lastMsg = getDb().prepare(
     'SELECT id FROM dm_messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1'
@@ -294,6 +295,9 @@ router.delete('/:conversationId/messages/:messageId', requireAuth, (req: AuthReq
 
   const membership = getMembership(conversationId, userId);
   if (!membership) { res.status(404).json({ error: 'Conversation not found.' }); return; }
+  if (!getVisibleOther(conversationId, req.user!)) {
+    res.status(404).json({ error: 'Conversation not found.' }); return;
+  }
 
   const msg = getDb().prepare(
     'SELECT id, sender_id, deleted_at FROM dm_messages WHERE id = ? AND conversation_id = ?'

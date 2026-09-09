@@ -10,6 +10,7 @@ import { logAuthEvent } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
 import { isGoogleConfigured, isSteamConfigured } from '../authProviders.js';
 import { getStorageConfig } from '../config.js';
+import { boundedInteger } from '../pagination.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const runtimeStorage = getStorageConfig();
@@ -38,15 +39,9 @@ function logBlockedAdminGuard(eventType: 'admin_self_ban_blocked' | 'admin_last_
   });
 }
 
-function parsePositiveInt(value: unknown, fallback: number): number {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const parsed = Number.parseInt(String(raw ?? ''), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 function parsePageLimit(query: any, defaultLimit: number, maxLimit: number): { page: number; limit: number; offset: number } {
-  const page = parsePositiveInt(query.page, 1);
-  const limit = Math.min(parsePositiveInt(query.limit, defaultLimit), maxLimit);
+  const limit = boundedInteger(query.limit, defaultLimit, 1, maxLimit);
+  const page = boundedInteger(query.page, 1, 1, Math.floor(100000 / limit) + 1);
   return { page, limit, offset: (page - 1) * limit };
 }
 

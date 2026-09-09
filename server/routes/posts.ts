@@ -1,12 +1,15 @@
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
-import { canViewPost, userVisibilitySql, type Viewer } from '../visibility.js';
+import { canViewGroup, canViewPost, userVisibilitySql, type Viewer } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
 
 const router = Router();
 
-function enrichPost(row: any, viewer?: Viewer | null): any {
+const MAX_REPOST_DEPTH = 3;
+
+function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new Set<number>()): any {
+  visited.add(row.id);
   const commentAuthor = userVisibilitySql(viewer, 'cu', 'public-context');
   const comments = getDb().prepare(`
     SELECT COUNT(*) as c
@@ -41,12 +44,12 @@ function enrichPost(row: any, viewer?: Viewer | null): any {
   }
 
   let repostedPost = null;
-  if (row.repost_of) {
+  if (row.repost_of && depth < MAX_REPOST_DEPTH && !visited.has(row.repost_of)) {
     const rp = getDb().prepare(`
       SELECT p.*, u.username, u.display_name, u.avatar_url
       FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
     `).get(row.repost_of) as any;
-    if (rp && canViewPost(viewer, rp.id)) repostedPost = enrichPost(rp, viewer);
+    if (rp && canViewPost(viewer, rp.id)) repostedPost = enrichPost(rp, viewer, depth + 1, visited);
   }
 
   return {
@@ -57,9 +60,9 @@ function enrichPost(row: any, viewer?: Viewer | null): any {
     displayName: row.display_name,
     avatarUrl: row.avatar_url,
     parentId: row.parent_id ?? null,
-    repostOf: row.repost_of ?? null,
+    repostOf: repostedPost ? row.repost_of : null,
     repostedPost,
-    groupId: row.group_id ?? null,
+    groupId: row.group_id && canViewGroup(viewer, row.group_id) ? row.group_id : null,
     hidden: !!row.hidden,
     likeCount: reactions.like + reactions.love + reactions.laugh + reactions.wow + reactions.support + reactions.thoughtful,
     commentCount: comments?.c ?? 0,
@@ -83,7 +86,11 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
     }
 
     if (groupId) {
-      const group = getDb().prepare('SELECT id FROM groups_table WHERE id = ?').get(Number(groupId));
+      const groupOwnerVisibility = userVisibilitySql(req.user, 'u', 'public-context');
+      const group = getDb().prepare(`
+        SELECT g.id FROM groups_table g JOIN users u ON u.id = g.owner_id
+        WHERE g.id = ? AND ${groupOwnerVisibility.sql}
+      `).get(Number(groupId), ...groupOwnerVisibility.params);
       if (!group) { res.status(404).json({ error: 'Group not found.' }); return; }
       const isMember = getDb().prepare('SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?').get(Number(groupId), req.user!.id);
       if (!isMember && req.user!.role !== 'admin') {
@@ -122,11 +129,11 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
 
 // DELETE /api/posts/:id
 router.delete('/:id', requireAuth, requireVerified, (req: AuthRequest, res) => {
-  const post = getDb().prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id) as any;
+  const post = getDb().prepare(`
+    SELECT id FROM posts
+    WHERE id = ? AND (user_id = ? OR ? = 'admin')
+  `).get(req.params.id, req.user!.id, req.user!.role) as any;
   if (!post) { res.status(404).json({ error: 'Not found.' }); return; }
-  if (post.user_id !== req.user!.id && req.user!.role !== 'admin') {
-    res.status(403).json({ error: 'Not authorized.' }); return;
-  }
   getDb().prepare('DELETE FROM posts WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
