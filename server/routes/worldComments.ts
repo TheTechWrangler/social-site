@@ -84,13 +84,12 @@ router.post('/:itemId/comments', requireAuth, requireVerified, (req, res) => {
 router.delete('/comments/:commentId', requireAuth, requireVerified, (req, res) => {
   try {
     const commentId = Number(req.params.commentId);
-    const comment = getDb().prepare('SELECT * FROM rss_item_comments WHERE id = ?').get(commentId) as any;
-    if (!comment) { res.status(404).json({ error: 'Comment not found.' }); return; }
-
     const user = (req as any).user;
-    if (comment.user_id !== user.id && user.role !== 'admin') {
-      res.status(403).json({ error: 'Not authorized.' }); return;
-    }
+    const comment = getDb().prepare(`
+      SELECT id FROM rss_item_comments
+      WHERE id = ? AND (user_id = ? OR ? = 'admin')
+    `).get(commentId, user.id, user.role) as any;
+    if (!comment) { res.status(404).json({ error: 'Comment not found.' }); return; }
 
     getDb().prepare('DELETE FROM rss_item_comments WHERE id = ?').run(commentId);
     res.json({ ok: true });

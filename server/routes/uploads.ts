@@ -168,11 +168,12 @@ router.post('/image', requireAuth, requireVerified, handleImageUpload, validateU
     // If postId provided, link immediately
     const postId = req.body.postId ? Number(req.body.postId) : null;
     if (postId) {
-      const post = getDb().prepare('SELECT user_id FROM posts WHERE id = ?').get(postId) as any;
+      const user = (req as any).user;
+      const post = getDb().prepare(`
+        SELECT id FROM posts
+        WHERE id = ? AND (user_id = ? OR ? = 'admin')
+      `).get(postId, user.id, user.role) as any;
       if (!post) { res.status(404).json({ error: 'Post not found.' }); return; }
-      if (post.user_id !== (req as any).user.id && (req as any).user.role !== 'admin') {
-        res.status(403).json({ error: 'Not authorized to attach media to this post.' }); return;
-      }
       const result = getDb().prepare(
         'INSERT INTO post_media (post_id, media_type, url, mime_type, file_size_bytes) VALUES (?, ?, ?, ?, ?)'
       ).run(postId, 'image', url, req.file.mimetype, req.file.size);
@@ -218,11 +219,12 @@ router.post('/external-video', requireAuth, requireVerified, (req, res) => {
 
     const provider = 'youtube';
     if (postId) {
-      const post = getDb().prepare('SELECT user_id FROM posts WHERE id = ?').get(postId) as any;
+      const user = (req as any).user;
+      const post = getDb().prepare(`
+        SELECT id FROM posts
+        WHERE id = ? AND (user_id = ? OR ? = 'admin')
+      `).get(postId, user.id, user.role) as any;
       if (!post) { res.status(404).json({ error: 'Post not found.' }); return; }
-      if (post.user_id !== (req as any).user.id && (req as any).user.role !== 'admin') {
-        res.status(403).json({ error: 'Not authorized to attach media to this post.' }); return;
-      }
     }
     const result = getDb().prepare(
       'INSERT INTO post_media (post_id, media_type, url, provider, original_url) VALUES (?, ?, ?, ?, ?)'
@@ -320,9 +322,8 @@ function sendUploadFile(res: Response, filePath: string, filename: string): void
   const contentType = IMAGE_CONTENT_TYPE_BY_EXT[path.extname(filename).toLowerCase()];
   if (!contentType) { res.status(404).end(); return; }
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  // Cache uploaded images privately for 24 h. 'private' prevents shared/CDN caching
-  // so the per-user post-visibility check is not bypassed by a proxy cache.
-  res.setHeader('Cache-Control', 'private, max-age=86400');
+  // Every subsequent fetch must recheck current authorization, even in the same browser.
+  res.setHeader('Cache-Control', 'private, no-store');
   res.type(contentType);
   res.sendFile(filePath);
 }

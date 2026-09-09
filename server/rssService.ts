@@ -1,5 +1,7 @@
 import Parser from 'rss-parser';
 import { getDb } from './database.js';
+import { notMutedByViewerSql, userVisibilitySql } from './visibility.js';
+import { boundedInteger } from './pagination.js';
 
 const parser = new Parser({
   timeout: 10000,
@@ -211,8 +213,16 @@ export async function fetchAllSources(): Promise<FetchResult[]> {
 // ─── World Feed Query ───
 
 export function getWorldFeed(params: { sourceId?: number; category?: string; itemType?: string; limit?: number; offset?: number; userId?: number }) {
-  const limit = Math.min(params.limit || 50, 100);
-  const offset = params.offset || 0;
+  const limit = boundedInteger(params.limit, 50, 1, 100);
+  const offset = boundedInteger(params.offset, 0, 0, 100000);
+  // Public discussion counts must use the same author policy as its comments.
+  const viewer = params.userId ? { id: params.userId, role: 'user' } : null;
+  const author = userVisibilitySql(viewer, 'cu', 'public-context');
+  const notMuted = notMutedByViewerSql(viewer, 'cu');
+  const commentCount = `(SELECT COUNT(*) FROM rss_item_comments c
+    JOIN users cu ON cu.id = c.user_id
+    WHERE c.rss_item_id = ri.id AND c.is_hidden = 0
+      AND ${author.sql} AND ${notMuted.sql})`;
 
   // Per-source cap prevents one prolific source from dominating the feed.
   // Only applied when not filtering to a specific source or category.
@@ -220,7 +230,7 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; ite
   const perSourceCap = 8;
 
   let whereClause = 'WHERE rs.is_active = 1';
-  const vals: any[] = [];
+  const vals: any[] = [...author.params, ...notMuted.params];
 
   if (params.sourceId) { whereClause += ' AND ri.source_id = ?'; vals.push(params.sourceId); }
   if (params.category) { whereClause += ' AND rs.category = ?'; vals.push(params.category); }
@@ -235,7 +245,7 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; ite
     sql = `
       WITH ranked AS (
         SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
-          (SELECT COUNT(*) FROM rss_item_comments c WHERE c.rss_item_id = ri.id AND c.is_hidden = 0) as comment_count,
+          ${commentCount} as comment_count,
           ROW_NUMBER() OVER (PARTITION BY ri.source_id ORDER BY ri.published_at DESC) as rn
         FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
         ${whereClause}
@@ -246,7 +256,7 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; ite
   } else {
     sql = `
       SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
-        (SELECT COUNT(*) FROM rss_item_comments c WHERE c.rss_item_id = ri.id AND c.is_hidden = 0) as comment_count
+        ${commentCount} as comment_count
       FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
       ${whereClause}
       ORDER BY ri.published_at DESC LIMIT ? OFFSET ?

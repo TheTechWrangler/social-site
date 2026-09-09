@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth, requireAdmin, optionalAuth, requireVerified } from '../middleware.js';
 import { getWorldFeed, getSources, getBlockedSourceIds, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
+import { boundedInteger } from '../pagination.js';
 import { logAuthEvent } from '../authEvents.js';
 
 const publicRouter = Router();
@@ -58,8 +59,8 @@ publicRouter.get('/', optionalAuth, (req, res) => {
   try {
     const sourceId = req.query.sourceId ? Number(req.query.sourceId) : undefined;
     const category = req.query.category as string | undefined;
-    const limit = Number(req.query.limit) || 50;
-    const offset = Number(req.query.offset) || 0;
+    const limit = boundedInteger(req.query.limit, 50, 1, 100);
+    const offset = boundedInteger(req.query.offset, 0, 0, 100000);
     const userId = (req as any).user?.id;
     const items = getWorldFeed({ sourceId, category, limit, offset, userId });
     res.json({ items });

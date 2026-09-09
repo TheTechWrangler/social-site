@@ -84,20 +84,23 @@ function formatConnectionUser(row: any) {
 // ─── Block / Mute ───
 
 router.get('/blocked/list', requireAuth, (req, res) => {
+  // Explicit unblock UI exception to blocks; bans still suppress identities.
+  const identity = userVisibilitySql(null, 'u', 'public-context');
   const rows = getDb().prepare(`
     SELECT u.id, u.username, u.display_name, u.avatar_url, r.created_at
     FROM user_relationship_blocks r JOIN users u ON r.blocked_user_id = u.id
-    WHERE r.blocker_user_id = ? AND r.relationship_type = 'block' ORDER BY r.created_at DESC
+    WHERE r.blocker_user_id = ? AND r.relationship_type = 'block' AND ${identity.sql} ORDER BY r.created_at DESC
   `).all((req as any).user.id);
   res.json({ blocked: rows });
 });
 
 router.get('/muted/list', requireAuth, (req, res) => {
+  const identity = userVisibilitySql((req as any).user, 'u', 'identity');
   const rows = getDb().prepare(`
     SELECT u.id, u.username, u.display_name, u.avatar_url, r.created_at
     FROM user_relationship_blocks r JOIN users u ON r.blocked_user_id = u.id
-    WHERE r.blocker_user_id = ? AND r.relationship_type = 'mute' ORDER BY r.created_at DESC
-  `).all((req as any).user.id);
+    WHERE r.blocker_user_id = ? AND r.relationship_type = 'mute' AND ${identity.sql} ORDER BY r.created_at DESC
+  `).all((req as any).user.id, ...identity.params);
   res.json({ muted: rows });
 });
 
@@ -176,8 +179,15 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
     });
   }
 
-  const followers = getDb().prepare('SELECT COUNT(*) as c FROM follows WHERE following_id = ?').get(row.id) as any;
-  const following = getDb().prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id = ?').get(row.id) as any;
+  const connectionVisibility = userVisibilitySql(req.user, 'u', 'identity');
+  const followers = getDb().prepare(`SELECT COUNT(*) as c FROM follows f
+    JOIN users u ON u.id = f.follower_id
+    WHERE f.following_id = ? AND ${connectionVisibility.sql}
+  `).get(row.id, ...connectionVisibility.params) as any;
+  const following = getDb().prepare(`SELECT COUNT(*) as c FROM follows f
+    JOIN users u ON u.id = f.following_id
+    WHERE f.follower_id = ? AND ${connectionVisibility.sql}
+  `).get(row.id, ...connectionVisibility.params) as any;
   const postCount = getDb().prepare(
     'SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL AND group_id IS NULL AND hidden = 0',
   ).get(row.id) as any;
@@ -306,7 +316,8 @@ router.post('/:userId/block', requireAuth, (req, res) => {
   const db = getDb();
   db.prepare("DELETE FROM user_relationship_blocks WHERE blocker_user_id = ? AND blocked_user_id = ? AND relationship_type = 'mute'").run(blockerId, blockedId);
   db.prepare('DELETE FROM follows WHERE (follower_id = ? AND following_id = ?) OR (follower_id = ? AND following_id = ?)').run(blockerId, blockedId, blockedId, blockerId);
-  db.prepare("INSERT OR IGNORE INTO user_relationship_blocks (blocker_user_id, blocked_user_id, relationship_type) VALUES (?, ?, 'block')").run(blockerId, blockedId);
+  db.prepare(`INSERT OR IGNORE INTO user_relationship_blocks (blocker_user_id, blocked_user_id, relationship_type)
+    SELECT ?, id, 'block' FROM users WHERE id = ?`).run(blockerId, blockedId);
   res.json({ ok: true, blocked: true });
 });
 
@@ -319,7 +330,8 @@ router.post('/:userId/mute', requireAuth, (req, res) => {
   const blockerId = (req as any).user.id;
   const mutedId = Number(req.params.userId);
   if (blockerId === mutedId) { res.status(400).json({ error: 'Cannot mute yourself.' }); return; }
-  getDb().prepare("INSERT OR IGNORE INTO user_relationship_blocks (blocker_user_id, blocked_user_id, relationship_type) VALUES (?, ?, 'mute')").run(blockerId, mutedId);
+  getDb().prepare(`INSERT OR IGNORE INTO user_relationship_blocks (blocker_user_id, blocked_user_id, relationship_type)
+    SELECT ?, id, 'mute' FROM users WHERE id = ?`).run(blockerId, mutedId);
   res.json({ ok: true, muted: true });
 });
 

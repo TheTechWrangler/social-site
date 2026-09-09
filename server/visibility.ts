@@ -194,6 +194,13 @@ export function canViewUserProfile(viewer: Viewer | null | undefined, targetUser
   return !!target && canViewFullProfile(viewer, target);
 }
 
+/** Current groups are public; owner bans/blocks hide their discovery metadata. */
+export function canViewGroup(viewer: Viewer | null | undefined, groupId: number): boolean {
+  const owner = userVisibilitySql(viewer, 'u', 'public-context');
+  return !!getDb().prepare(`SELECT 1 FROM groups_table g JOIN users u ON u.id = g.owner_id
+    WHERE g.id = ? AND ${owner.sql}`).get(groupId, ...owner.params);
+}
+
 interface PostVisibilityRow extends VisibilityUser {
   post_id: number;
   parent_id: number | null;
@@ -206,7 +213,7 @@ export function canViewPost(
   postId: number,
   visited = new Set<number>(),
 ): boolean {
-  if (!Number.isSafeInteger(postId) || postId <= 0 || visited.has(postId)) return false;
+  if (!Number.isSafeInteger(postId) || postId <= 0 || visited.has(postId) || visited.size >= 64) return false;
   visited.add(postId);
 
   const post = getDb().prepare(`
