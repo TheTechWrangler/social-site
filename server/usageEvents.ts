@@ -20,6 +20,8 @@ export type UsageEventType =
   | 'like_created'
   | 'repost_created'
   | 'group_created'
+  | 'group_ownership_transferred'
+  | 'group_deleted'
   | 'message_sent'
   | 'upload_started'
   | 'upload_completed'

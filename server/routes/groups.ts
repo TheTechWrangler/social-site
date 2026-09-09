@@ -19,12 +19,16 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   if (!name?.trim()) { res.status(400).json({ error: 'Name required.' }); return; }
   const trimmedName = name.trim().slice(0, GROUP_NAME_MAX);
   const trimmedDesc = (description || '').trim().slice(0, GROUP_DESC_MAX);
-  const result = getDb().prepare(
-    'INSERT INTO groups_table (name, description, owner_id) VALUES (?, ?, ?)'
-  ).run(trimmedName, trimmedDesc, req.user!.id);
-  const groupId = result.lastInsertRowid as number;
-  getDb().prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)')
-    .run(groupId, req.user!.id, 'admin');
+  const createGroup = getDb().transaction(() => {
+    const result = getDb().prepare(
+      'INSERT INTO groups_table (name, description, owner_id) VALUES (?, ?, ?)'
+    ).run(trimmedName, trimmedDesc, req.user!.id);
+    const groupId = Number(result.lastInsertRowid);
+    getDb().prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)')
+      .run(groupId, req.user!.id, 'admin');
+    return groupId;
+  });
+  const groupId = createGroup();
   logUsage({ eventType: 'group_created', userId: req.user!.id, featureArea: 'groups' });
   res.status(201).json({ group: { id: groupId, name: trimmedName, description: trimmedDesc, ownerId: req.user!.id } });
 });
@@ -139,12 +143,127 @@ router.post('/:id/leave', requireAuth, (req: AuthRequest, res) => {
   const group = getDb().prepare('SELECT owner_id FROM groups_table WHERE id = ?').get(req.params.id) as any;
   // Leaving is idempotent self-management, including missing/nonmember groups.
   if (group?.owner_id === req.user!.id) {
-    res.status(403).json({ error: 'You own this group and cannot leave. Delete the group to remove it.' });
+    res.status(409).json({ error: 'Transfer ownership before leaving, or delete the group.' });
     return;
   }
   getDb().prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?')
     .run(Number(req.params.id), req.user!.id);
   res.json({ ok: true });
+});
+
+
+// PUT /api/groups/:id/owner — atomically transfer the single owner authority.
+// The owner is represented by groups_table.owner_id; membership roles remain
+// the existing member/mod/admin model, so both the new and previous owner are
+// group admins after transfer.
+router.put('/:id/owner', requireAuth, (req: AuthRequest, res) => {
+  const groupId = Number(req.params.id);
+  const targetUserId = Number(req.body?.userId);
+  if (!Number.isSafeInteger(groupId) || groupId <= 0 ||
+      !Number.isSafeInteger(targetUserId) || targetUserId <= 0) {
+    res.status(400).json({ error: 'Invalid ownership transfer.' });
+    return;
+  }
+  const viewer = req.user!;
+  try {
+    const transferOwnership = getDb().transaction(() => {
+      const group = getDb().prepare('SELECT id, owner_id FROM groups_table WHERE id = ?')
+        .get(groupId) as any;
+      if (!group || (group.owner_id !== viewer.id && viewer.role !== 'admin')) {
+        return { status: 404, error: 'Group not found.' };
+      }
+      const target = getDb().prepare(`
+        SELECT u.id, u.username, u.display_name
+        FROM group_members gm JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ? AND gm.user_id = ? AND u.banned = 0
+      `).get(groupId, targetUserId) as any;
+      if (!target) return { status: 404, error: 'Eligible group member not found.' };
+
+      if (group.owner_id === targetUserId) {
+        getDb().prepare(`
+          UPDATE group_members SET role = 'admin' WHERE group_id = ? AND user_id = ?
+        `).run(groupId, targetUserId);
+        return { status: 200, target, previousOwnerId: group.owner_id, replayed: true };
+      }
+
+      // Heal a legacy missing owner-membership row inside the same transaction;
+      // normal creation already guarantees it exists.
+      getDb().prepare(`
+        INSERT OR IGNORE INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')
+      `).run(groupId, group.owner_id);
+      getDb().prepare(`
+        UPDATE group_members SET role = 'admin' WHERE group_id = ? AND user_id IN (?, ?)
+      `).run(groupId, targetUserId, group.owner_id);
+      const updated = getDb().prepare(`
+        UPDATE groups_table SET owner_id = ? WHERE id = ? AND owner_id = ?
+      `).run(targetUserId, groupId, group.owner_id);
+      if (updated.changes !== 1) throw new Error('Group ownership changed concurrently.');
+      return { status: 200, target, previousOwnerId: group.owner_id, replayed: false };
+    });
+    const result = transferOwnership();
+    if (!result.target) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    logUsage({ eventType: 'group_ownership_transferred', userId: viewer.id, featureArea: 'groups' });
+    res.json({
+      ok: true,
+      owner: result.target,
+      previousOwnerId: result.previousOwnerId,
+      previousOwnerRole: 'admin',
+      replayed: result.replayed,
+    });
+  } catch (err: any) {
+    console.error('[groups] Ownership transfer error:', err.message);
+    res.status(500).json({ error: 'Could not transfer group ownership.' });
+  }
+});
+
+// DELETE /api/groups/:id — owner or site administrator deletes the complete
+// group-scoped publication graph. Foreign-key cascades remove memberships,
+// posts and descendants; Batch 06 triggers detach managed media references.
+router.delete('/:id', requireAuth, (req: AuthRequest, res) => {
+  const groupId = Number(req.params.id);
+  if (!Number.isSafeInteger(groupId) || groupId <= 0) {
+    res.status(404).json({ error: 'Group not found.' });
+    return;
+  }
+  const viewer = req.user!;
+  try {
+    const deleteGroup = getDb().transaction(() => {
+      const group = getDb().prepare('SELECT id, name, owner_id FROM groups_table WHERE id = ?')
+        .get(groupId) as any;
+      if (!group || (group.owner_id !== viewer.id && viewer.role !== 'admin')) return null;
+      const memberCount = (getDb().prepare(
+        'SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?'
+      ).get(groupId) as any).c as number;
+      const postCount = (getDb().prepare(
+        'SELECT COUNT(*) AS c FROM posts WHERE group_id = ?'
+      ).get(groupId) as any).c as number;
+      const deleted = getDb().prepare('DELETE FROM groups_table WHERE id = ?').run(groupId);
+      if (deleted.changes !== 1) throw new Error('Group deletion did not complete.');
+      return { name: group.name as string, memberCount, postCount };
+    });
+    const result = deleteGroup();
+    if (!result) {
+      res.status(404).json({ error: 'Group not found.' });
+      return;
+    }
+    logUsage({ eventType: 'group_deleted', userId: viewer.id, featureArea: 'groups' });
+    res.json({
+      ok: true,
+      deleted: {
+        groupId,
+        name: result.name,
+        memberCount: result.memberCount,
+        groupPostCount: result.postCount,
+        contentPolicy: 'group-scoped-content-deleted',
+      },
+    });
+  } catch (err: any) {
+    console.error('[groups] Delete group error:', err.message);
+    res.status(500).json({ error: 'Could not delete group.' });
+  }
 });
 
 // DELETE /api/groups/:id/members/:userId — owner or site-admin removes a member

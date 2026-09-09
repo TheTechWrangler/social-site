@@ -108,7 +108,11 @@ Development commands force `NODE_ENV=development`; they do not inherit a product
 - `GET /api/groups` — List groups
 - `GET /api/groups/:id` — Group detail + feed
 - `POST /api/groups/:id/join` — Join
-- `POST /api/groups/:id/leave` — Leave
+- `POST /api/groups/:id/leave` — Leave; current owners must transfer or delete first
+- `PUT /api/groups/:id/owner` — Transfer ownership to an active current member (owner/site admin)
+- `DELETE /api/groups/:id` — Delete a group and all group-scoped content (owner/site admin)
+
+Group deletion removes memberships and posts published in that group, including dependent comments, repost references, reactions, reports, notifications, and media relationships. It does not convert group posts into general posts. Managed local files follow the deferred asset-reclamation policy. Administrative account deletion is refused while the target still owns a group; ownership must be transferred or the group explicitly deleted first.
 
 ### Notifications
 - `GET /api/notifications` — List notifications

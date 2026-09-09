@@ -165,6 +165,11 @@ export const api = {
   getGroup: (id: number) => request<{ group: any; members: any[]; posts: any[] }>(`/groups/${id}`),
   joinGroup: (id: number) => request<{ ok: boolean }>(`/groups/${id}/join`, { method: 'POST' }),
   leaveGroup: (id: number) => request<{ ok: boolean }>(`/groups/${id}/leave`, { method: 'POST' }),
+  transferGroupOwnership: (groupId: number, userId: number) =>
+    request<{ ok: boolean; owner: any; previousOwnerId: number; previousOwnerRole: 'admin'; replayed: boolean }>(`/groups/${groupId}/owner`, {
+      method: 'PUT', body: JSON.stringify({ userId }),
+    }),
+  deleteGroup: (id: number) => request<{ ok: boolean; deleted: any }>(`/groups/${id}`, { method: 'DELETE' }),
   removeGroupMember: (groupId: number, userId: number) =>
     request<{ ok: boolean }>(`/groups/${groupId}/members/${userId}`, { method: 'DELETE' }),
 

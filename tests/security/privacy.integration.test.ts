@@ -1008,6 +1008,192 @@ test('local upload URLs cannot be adopted to broaden media access', async () => 
   }
 });
 
+test('group deletion authorization and sole-owner cleanup are explicit', async () => {
+  const makeGroup = (name: string, ownerId = ids.public) => {
+    const id = Number(db.prepare('INSERT INTO groups_table (name, owner_id) VALUES (?, ?)').run(name, ownerId).lastInsertRowid);
+    db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')").run(id, ownerId);
+    return id;
+  };
+  const group = makeGroup('BATCH07 AUTH GROUP');
+  db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')").run(group, ids.follower);
+  db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')").run(group, ids.stranger);
+
+  assert.equal((await request(`/api/groups/${group}`, undefined, { method: 'DELETE' })).response.status, 401);
+  for (const username of ['follower', 'stranger', 'blocker']) {
+    const denied = await request(`/api/groups/${group}`, username, { method: 'DELETE' });
+    assert.equal(denied.response.status, 404);
+    assert.ok(db.prepare('SELECT 1 FROM groups_table WHERE id = ?').get(group));
+    assert.equal((db.prepare('SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?').get(group) as any).c, 3);
+  }
+
+  const ownerDelete = await request(`/api/groups/${group}`, 'public', { method: 'DELETE' });
+  assert.equal(ownerDelete.response.status, 200);
+  assert.equal(ownerDelete.body.deleted.contentPolicy, 'group-scoped-content-deleted');
+  assert.equal((await request(`/api/groups/${group}`)).response.status, 404);
+  assert.equal((await request(`/api/groups/${group}`, 'public', { method: 'DELETE' })).response.status, 404);
+
+  const sole = makeGroup('BATCH07 SOLE GROUP');
+  const leave = await request(`/api/groups/${sole}/leave`, 'public', { method: 'POST' });
+  assert.equal(leave.response.status, 409);
+  assert.match(leave.body.error, /Transfer ownership.*delete/i);
+  assert.ok(db.prepare('SELECT 1 FROM groups_table WHERE id = ?').get(sole));
+  assert.equal((await request(`/api/groups/${sole}`, 'public', { method: 'DELETE' })).response.status, 200);
+  assert.equal((await request(`/api/groups/${sole}`)).response.status, 404);
+
+  const adminDelete = makeGroup('BATCH07 SITE ADMIN GROUP');
+  assert.equal((await request(`/api/groups/${adminDelete}`, 'admin', { method: 'DELETE' })).response.status, 200);
+  assert.equal((await request(`/api/groups/${adminDelete}`)).response.status, 404);
+});
+
+test('group deletion removes the complete scoped graph and detaches managed media', async () => {
+  const groupName = 'BATCH07 GRAPH GROUP';
+  const group = Number(db.prepare('INSERT INTO groups_table (name, owner_id) VALUES (?, ?)').run(groupName, ids.public).lastInsertRowid);
+  const memberships = [
+    [ids.public, 'admin'], [ids.follower, 'admin'], [ids.stranger, 'member'],
+  ] as const;
+  for (const [userId, role] of memberships) {
+    db.prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)').run(group, userId, role);
+  }
+  const ownerPost = Number(db.prepare('INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)').run(ids.public, 'B07 OWNER GROUP POST', group).lastInsertRowid);
+  const adminPost = Number(db.prepare('INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)').run(ids.follower, 'B07 ADMIN GROUP POST', group).lastInsertRowid);
+  const memberPost = Number(db.prepare('INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)').run(ids.stranger, 'B07 MEMBER GROUP POST', group).lastInsertRowid);
+  const comment = Number(db.prepare('INSERT INTO posts (user_id, content, parent_id) VALUES (?, ?, ?)').run(ids.follower, 'B07 COMMENT', memberPost).lastInsertRowid);
+  const reply = Number(db.prepare('INSERT INTO posts (user_id, content, parent_id) VALUES (?, ?, ?)').run(ids.stranger, 'B07 REPLY', comment).lastInsertRowid);
+  const repost = Number(db.prepare('INSERT INTO posts (user_id, content, repost_of) VALUES (?, ?, ?)').run(ids.blocker, '', ownerPost).lastInsertRowid);
+  db.prepare("INSERT INTO likes (user_id, post_id, reaction_type) VALUES (?, ?, 'love')").run(ids.private, memberPost);
+  const report = Number(db.prepare("INSERT INTO reports (reporter_id, post_id, reason) VALUES (?, ?, 'other')").run(ids.private, adminPost).lastInsertRowid);
+  const postNotice = Number(db.prepare("INSERT INTO notifications (user_id, actor_id, type, post_id) VALUES (?, ?, 'like', ?)").run(ids.public, ids.private, memberPost).lastInsertRowid);
+  const groupNotice = Number(db.prepare("INSERT INTO notifications (user_id, actor_id, type, group_id) VALUES (?, ?, 'group_invite', ?)").run(ids.stranger, ids.public, group).lastInsertRowid);
+
+  const assetId = '7'.repeat(32);
+  const filename = `asset-${'7'.repeat(32)}.png`;
+  const assetUrl = `/uploads/${filename}`;
+  const filePath = path.join(uploadsDir, filename);
+  fs.writeFileSync(filePath, Buffer.from('batch07 managed file'));
+  db.prepare(`INSERT INTO managed_assets
+    (id, owner_user_id, storage_key, url, media_type, mime_type, file_size_bytes, sha256, purpose, state, created_at_ms)
+    VALUES (?, ?, ?, ?, 'image', 'image/png', 20, ?, 'post_image', 'active', ?)`)
+    .run(assetId, ids.stranger, filename, assetUrl, '0'.repeat(64), Date.now());
+  db.prepare("INSERT INTO post_media (post_id, asset_id, media_type, url) VALUES (?, ?, 'image', ?)")
+    .run(memberPost, assetId, assetUrl);
+
+  const deleted = await request(`/api/groups/${group}`, 'public', { method: 'DELETE' });
+  assert.equal(deleted.response.status, 200);
+  assert.equal(deleted.body.deleted.groupPostCount, 3);
+  assert.equal(deleted.body.deleted.memberCount, 3);
+  assert.equal(db.prepare('SELECT 1 FROM groups_table WHERE id = ?').get(group), undefined);
+  assert.equal((db.prepare('SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?').get(group) as any).c, 0);
+  for (const postId of [ownerPost, adminPost, memberPost, comment, reply, repost]) {
+    assert.equal(db.prepare('SELECT 1 FROM posts WHERE id = ?').get(postId), undefined);
+    assert.equal((await request(`/api/posts/${postId}`, 'public')).response.status, 404);
+  }
+  assert.equal((db.prepare('SELECT COUNT(*) AS c FROM likes WHERE post_id = ?').get(memberPost) as any).c, 0);
+  assert.equal(db.prepare('SELECT 1 FROM reports WHERE id = ?').get(report), undefined);
+  assert.equal(db.prepare('SELECT 1 FROM notifications WHERE id IN (?, ?)').get(postNotice, groupNotice), undefined);
+  assert.equal((db.prepare('SELECT COUNT(*) AS c FROM post_media WHERE asset_id = ?').get(assetId) as any).c, 0);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(assetId) as any).state, 'reclaimable');
+  assert.equal(fs.existsSync(filePath), true);
+  assert.equal((await request(assetUrl, 'stranger')).response.status, 404);
+  assert.equal((await request(`/api/uploads/post/${memberPost}`, 'stranger')).response.status, 404);
+
+  const feed = await request('/api/feed?level=everyone', 'public');
+  const serializedFeed = JSON.stringify(feed.body);
+  for (const value of ['B07 OWNER GROUP POST', 'B07 ADMIN GROUP POST', 'B07 MEMBER GROUP POST']) {
+    assert.equal(serializedFeed.includes(value), false);
+  }
+  const search = await request(`/api/groups?q=${encodeURIComponent(groupName)}`, 'public');
+  assert.equal(search.body.groups.some((item: any) => item.id === group), false);
+  const notices = await request('/api/notifications', 'public');
+  assert.equal(notices.body.notifications.some((item: any) => item.id === postNotice || item.id === groupNotice), false);
+
+  fs.unlinkSync(filePath);
+  db.prepare('DELETE FROM managed_assets WHERE id = ?').run(assetId);
+});
+
+test('ownership transfer is atomic, member-only, replay-safe, and enables former-owner leave', async () => {
+  const makeTransferGroup = (name: string) => {
+    const id = Number(db.prepare('INSERT INTO groups_table (name, owner_id) VALUES (?, ?)').run(name, ids.public).lastInsertRowid);
+    db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')").run(id, ids.public);
+    db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')").run(id, ids.follower);
+    db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')").run(id, ids.stranger);
+    db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')").run(id, ids.banned);
+    return id;
+  };
+  const group = makeTransferGroup('BATCH07 TRANSFER GROUP');
+  const endpoint = `/api/groups/${group}/owner`;
+
+  assert.equal((await request(endpoint, 'follower', { method: 'PUT', body: JSON.stringify({ userId: ids.stranger }) })).response.status, 404);
+  assert.equal((db.prepare('SELECT owner_id FROM groups_table WHERE id = ?').get(group) as any).owner_id, ids.public);
+  assert.equal((await request(endpoint, 'public', { method: 'PUT', body: JSON.stringify({ userId: ids.blocker }) })).response.status, 404);
+  assert.equal((await request(endpoint, 'public', { method: 'PUT', body: JSON.stringify({ userId: ids.banned }) })).response.status, 404);
+  assert.equal((await request(endpoint, 'public', { method: 'PUT', body: JSON.stringify({ userId: 999999 }) })).response.status, 404);
+
+  const transferred = await request(endpoint, 'public', { method: 'PUT', body: JSON.stringify({ userId: ids.stranger }) });
+  assert.equal(transferred.response.status, 200);
+  assert.equal(transferred.body.previousOwnerRole, 'admin');
+  assert.equal((db.prepare('SELECT owner_id FROM groups_table WHERE id = ?').get(group) as any).owner_id, ids.stranger);
+  assert.equal((db.prepare('SELECT role FROM group_members WHERE group_id = ? AND user_id = ?').get(group, ids.public) as any).role, 'admin');
+  assert.equal((db.prepare('SELECT role FROM group_members WHERE group_id = ? AND user_id = ?').get(group, ids.stranger) as any).role, 'admin');
+
+  assert.equal((await request(endpoint, 'public', { method: 'PUT', body: JSON.stringify({ userId: ids.stranger }) })).response.status, 404);
+  const replay = await request(endpoint, 'admin', { method: 'PUT', body: JSON.stringify({ userId: ids.stranger }) });
+  assert.equal(replay.response.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal((await request(`/api/groups/${group}`, 'public', { method: 'DELETE' })).response.status, 404);
+  assert.equal((await request(`/api/groups/${group}/leave`, 'public', { method: 'POST' })).response.status, 200);
+  assert.equal(db.prepare('SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?').get(group, ids.public), undefined);
+  assert.equal((await request(`/api/groups/${group}/leave`, 'stranger', { method: 'POST' })).response.status, 409);
+  assert.equal((db.prepare('SELECT owner_id FROM groups_table WHERE id = ?').get(group) as any).owner_id, ids.stranger);
+  assert.equal((await request(`/api/groups/${group}`, 'stranger', { method: 'DELETE' })).response.status, 200);
+
+  const failingGroup = makeTransferGroup('BATCH07 FAILING TRANSFER');
+  db.exec(`CREATE TRIGGER batch07_abort_transfer BEFORE UPDATE OF owner_id ON groups_table
+    WHEN OLD.id = ${failingGroup} BEGIN SELECT RAISE(ABORT, 'injected transfer failure'); END`);
+  try {
+    const failed = await request(`/api/groups/${failingGroup}/owner`, 'public', {
+      method: 'PUT', body: JSON.stringify({ userId: ids.stranger }),
+    });
+    assert.equal(failed.response.status, 500);
+    assert.equal((db.prepare('SELECT owner_id FROM groups_table WHERE id = ?').get(failingGroup) as any).owner_id, ids.public);
+    assert.equal((db.prepare('SELECT role FROM group_members WHERE group_id = ? AND user_id = ?').get(failingGroup, ids.stranger) as any).role, 'member');
+  } finally {
+    db.exec('DROP TRIGGER batch07_abort_transfer');
+    db.prepare('DELETE FROM groups_table WHERE id = ?').run(failingGroup);
+  }
+});
+
+test('admin account deletion requires explicit resolution of every owned group', async () => {
+  const ownerId = Number(db.prepare(`INSERT INTO users
+    (username, display_name, email, password_hash, is_verified)
+    VALUES ('batch07account', 'Batch 07 Account', 'batch07account@test.invalid', 'x', 1)`).run().lastInsertRowid);
+  const emptyGroup = Number(db.prepare("INSERT INTO groups_table (name, owner_id) VALUES ('B07 ACCOUNT EMPTY', ?)").run(ownerId).lastInsertRowid);
+  db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')").run(emptyGroup, ownerId);
+  const sharedGroup = Number(db.prepare("INSERT INTO groups_table (name, owner_id) VALUES ('B07 ACCOUNT SHARED', ?)").run(ownerId).lastInsertRowid);
+  db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')").run(sharedGroup, ownerId);
+  db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')").run(sharedGroup, ids.stranger);
+  const ownerPost = Number(db.prepare('INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)').run(ownerId, 'B07 ACCOUNT OWNER POST', sharedGroup).lastInsertRowid);
+  const memberPost = Number(db.prepare('INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)').run(ids.stranger, 'B07 ACCOUNT MEMBER POST', sharedGroup).lastInsertRowid);
+
+  const blocked = await request(`/api/admin/users/${ownerId}`, 'admin', { method: 'DELETE' });
+  assert.equal(blocked.response.status, 409);
+  assert.equal(blocked.body.ownedGroups.length, 2);
+  assert.ok(db.prepare('SELECT 1 FROM users WHERE id = ?').get(ownerId));
+  assert.ok(db.prepare('SELECT 1 FROM groups_table WHERE id = ?').get(emptyGroup));
+  assert.ok(db.prepare('SELECT 1 FROM posts WHERE id = ?').get(memberPost));
+
+  assert.equal((await request(`/api/groups/${emptyGroup}`, 'admin', { method: 'DELETE' })).response.status, 200);
+  assert.equal((await request(`/api/groups/${sharedGroup}/owner`, 'admin', {
+    method: 'PUT', body: JSON.stringify({ userId: ids.stranger }),
+  })).response.status, 200);
+  const deleted = await request(`/api/admin/users/${ownerId}`, 'admin', { method: 'DELETE' });
+  assert.equal(deleted.response.status, 200);
+  assert.equal(db.prepare('SELECT 1 FROM users WHERE id = ?').get(ownerId), undefined);
+  assert.equal((db.prepare('SELECT owner_id FROM groups_table WHERE id = ?').get(sharedGroup) as any).owner_id, ids.stranger);
+  assert.equal(db.prepare('SELECT 1 FROM posts WHERE id = ?').get(ownerPost), undefined);
+  assert.ok(db.prepare('SELECT 1 FROM posts WHERE id = ?').get(memberPost));
+  assert.equal((await request(`/api/groups/${sharedGroup}`, 'admin', { method: 'DELETE' })).response.status, 200);
+});
+
 test('managed assets enforce ownership, idempotency, visibility, and deferred reclamation', async () => {
   const png = Buffer.from('89504e470d0a1a0a0000000d494844520000000100000001', 'hex');
   const upload = async (username: string, bytes = png, name = 'owned.png', type = 'image/png') => {

@@ -245,11 +245,35 @@ router.delete('/users/:id', requireAuth, requireAdmin, (req, res) => {
     res.status(400).json({ error: 'Cannot delete the last active admin.' }); return;
   }
 
-  // reports.resolved_by has no cascade — null it first to avoid dangling FK
-  getDb().prepare('UPDATE reports SET resolved_by = NULL WHERE resolved_by = ?').run(targetId);
+  // Account deletion must not accidentally delete groups and other members'
+  // group-scoped content through the owner FK cascade. An administrator must
+  // explicitly transfer or delete every owned group first.
+  const ownedGroups = getDb().prepare(`
+    SELECT g.id, g.name,
+      (SELECT COUNT(*) FROM group_members gm WHERE gm.group_id = g.id) AS member_count,
+      (SELECT COUNT(*) FROM posts p WHERE p.group_id = g.id) AS post_count
+    FROM groups_table g WHERE g.owner_id = ? ORDER BY g.id
+  `).all(targetId) as any[];
+  if (ownedGroups.length > 0) {
+    res.status(409).json({
+      error: 'Resolve or delete groups owned by this user before deleting the account.',
+      ownedGroups: ownedGroups.map(group => ({
+        id: group.id,
+        name: group.name,
+        memberCount: group.member_count,
+        groupPostCount: group.post_count,
+      })),
+    });
+    return;
+  }
 
-  // All other related data cascades via ON DELETE CASCADE on the users FK
-  getDb().prepare('DELETE FROM users WHERE id = ?').run(targetId);
+  const deleteAccount = getDb().transaction(() => {
+    // reports.resolved_by has no cascade — null it within the same transaction.
+    getDb().prepare('UPDATE reports SET resolved_by = NULL WHERE resolved_by = ?').run(targetId);
+    const deleted = getDb().prepare('DELETE FROM users WHERE id = ?').run(targetId);
+    if (deleted.changes !== 1) throw new Error('Account deletion did not complete.');
+  });
+  deleteAccount();
 
   logAuthEvent({ eventType: 'admin_delete_user', adminActorId: viewerId, targetUserId: targetId, meta: { username: target.username, role: target.role } });
   res.json({ ok: true });
