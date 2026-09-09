@@ -223,7 +223,18 @@ router.put('/profile', requireAuth, (req: AuthRequest, res) => {
   }
   fields.push("updated_at = datetime('now')");
   vals.push(req.user!.id);
-  getDb().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  const saveProfile = getDb().transaction(() => {
+    getDb().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+    if (avatar_url === '') {
+      // Deleting managed avatar references invokes the lifecycle trigger. Do
+      // not touch legacy rows: their ownership cannot be inferred from URL use.
+      getDb().prepare(`
+        DELETE FROM user_avatar_uploads
+        WHERE user_id = ? AND asset_id IS NOT NULL
+      `).run(req.user!.id);
+    }
+  });
+  saveProfile();
   const result = getCanonicalProfile(req.user, { id: req.user!.id });
   const authUser = getUserById(req.user!.id);
   if (!result || !authUser) {

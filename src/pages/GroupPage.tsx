@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
+import { createClientOperationKey } from '../postComposerSubmission';
 
 export default function GroupPage({ user }: { user: any }) {
   const { id } = useParams<{ id: string }>();
@@ -17,6 +18,7 @@ export default function GroupPage({ user }: { user: any }) {
   const [posts, setPosts] = useState<any[]>([]);
   const [content, setContent] = useState('');
   const [posting, setPosting] = useState(false);
+  const [postSubmissionKey, setPostSubmissionKey] = useState<string | null>(null);
   const [postError, setPostError] = useState('');
   const [membershipError, setMembershipError] = useState('');
   const [showMembers, setShowMembers] = useState(false);
@@ -27,6 +29,7 @@ export default function GroupPage({ user }: { user: any }) {
     setShowMembers(false);
     setMembershipError('');
     setPostError('');
+    setPostSubmissionKey(null);
     void loadGroup();
     return () => requestGate.current.invalidate();
   }, [routeKey]);
@@ -96,8 +99,14 @@ export default function GroupPage({ user }: { user: any }) {
     e.preventDefault();
     if (!content.trim()) return;
     setPosting(true); setPostError('');
-    try { await api.createPost(content, Number(id)); setContent(''); await loadGroup(); }
-    catch (e: any) { setPostError(e.message || 'Could not post.'); }
+    const key = postSubmissionKey ?? createClientOperationKey();
+    if (!postSubmissionKey) setPostSubmissionKey(key);
+    try {
+      await api.createPost(content, Number(id), key);
+      setContent(''); setPostSubmissionKey(null);
+      await loadGroup();
+    }
+    catch (e: any) { setPostError(e.message || 'Could not post. Your draft was preserved.'); }
     finally { setPosting(false); }
   }
 
@@ -144,7 +153,7 @@ export default function GroupPage({ user }: { user: any }) {
       {isMember && isVerified && (
         <form className="post-composer" onSubmit={handlePost}>
           <textarea className="input" placeholder="Post to this group…" value={content}
-            onChange={e => setContent(e.target.value)} rows={2} />
+            onChange={e => { setContent(e.target.value); setPostSubmissionKey(null); }} rows={2} />
           {postError && <p className="error-msg">{postError}</p>}
           <button className="btn btn-primary" disabled={posting || !content.trim()}>
             {posting ? 'Posting…' : 'Post'}

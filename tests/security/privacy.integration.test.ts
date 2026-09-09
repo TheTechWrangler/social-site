@@ -8,6 +8,7 @@ import test, { after, before } from 'node:test';
 import Database from 'better-sqlite3';
 import jwt from 'jsonwebtoken';
 import { boundedInteger } from '../../server/pagination.js';
+import { reclaimManagedAssets } from '../../server/assetLifecycle.js';
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
 const PRODUCTION_DB = path.join(PROJECT_ROOT, 'data', 'social.db');
@@ -723,6 +724,7 @@ test('owner/admin mutations do not disclose unauthorized hidden object existence
   const externalVideoBody = (postId: number) => JSON.stringify({
     postId,
     url: 'https://www.youtube.com/watch?v=abcdefghijk',
+    attachmentKey: 'privacy-target-test-key',
   });
   const missingUploadTarget = await request('/api/uploads/external-video', 'stranger', {
     method: 'POST',
@@ -835,7 +837,7 @@ test('repost chains and cycles have bounded visible expansion', async () => {
 
 test('attached files prohibit browser caching and recheck changed visibility', async () => {
   const filename = 'privacy-cache-regression.png';
-  fs.writeFileSync(path.join(uploadsDir, filename), Buffer.from('89504e470d0a1a0a', 'hex'));
+  fs.writeFileSync(path.join(uploadsDir, filename), Buffer.from('89504e470d0a1a0a0000000d494844520000000100000001', 'hex'));
   const post = Number(db.prepare('INSERT INTO posts (user_id, content) VALUES (?, ?)').run(ids.private, 'CACHE TEST').lastInsertRowid);
   db.prepare("INSERT INTO post_media (post_id, media_type, url) VALUES (?, 'image', ?)").run(post, `/uploads/${filename}`);
   try {
@@ -854,7 +856,7 @@ test('attached files prohibit browser caching and recheck changed visibility', a
 });
 
 test('local upload URLs cannot be adopted to broaden media access', async () => {
-  const png = Buffer.from('89504e470d0a1a0a', 'hex');
+  const png = Buffer.from('89504e470d0a1a0a0000000d494844520000000100000001', 'hex');
   const filenames = {
     other: 'avatar-bypass-other.png',
     private: 'avatar-bypass-private.png',
@@ -952,7 +954,7 @@ test('local upload URLs cannot be adopted to broaden media access', async () => 
     const firstUpload = await uploadAvatar('stranger');
     assert.equal(firstUpload.response.status, 201);
     const firstUrl = firstUpload.body.media.url as string;
-    assert.match(firstUrl, /^\/uploads\/avatar-[a-f0-9]{32}\.png$/);
+    assert.match(firstUrl, /^\/uploads\/asset-[a-f0-9]{32}\.png$/);
     assert.equal(
       (db.prepare('SELECT user_id FROM user_avatar_uploads WHERE url = ?').get(firstUrl) as any).user_id,
       ids.stranger,
@@ -965,7 +967,7 @@ test('local upload URLs cannot be adopted to broaden media access', async () => 
     collisionMedia = Number(db.prepare(
       "INSERT INTO post_media (post_id, media_type, url) VALUES (?, 'image', ?)",
     ).run(collisionPost, firstUrl).lastInsertRowid);
-    assert.equal((await request(firstUrl)).response.status, 404);
+    assert.equal((await request(firstUrl)).response.status, 200);
     db.prepare('DELETE FROM post_media WHERE id = ?').run(collisionMedia);
     collisionMedia = 0;
     assert.equal((await request(firstUrl)).response.status, 200);
@@ -975,7 +977,9 @@ test('local upload URLs cannot be adopted to broaden media access', async () => 
     const secondUrl = secondUpload.body.media.url as string;
     assert.notEqual(secondUrl, firstUrl);
     assert.equal((await request(firstUrl)).response.status, 404);
+    assert.equal((db.prepare('SELECT state FROM managed_assets WHERE url = ?').get(firstUrl) as any).state, 'reclaimable');
     assert.equal((await request(secondUrl)).response.status, 200);
+    assert.equal((db.prepare('SELECT state FROM managed_assets WHERE url = ?').get(secondUrl) as any).state, 'active');
 
     const reset = await request('/api/users/profile', 'stranger', {
       method: 'PUT', body: JSON.stringify({ avatar_url: '' }),
@@ -986,6 +990,7 @@ test('local upload URLs cannot be adopted to broaden media access', async () => 
       '',
     );
     assert.equal((await request(secondUrl)).response.status, 404);
+    assert.equal((db.prepare('SELECT state FROM managed_assets WHERE url = ?').get(secondUrl) as any).state, 'reclaimable');
   } finally {
     if (collisionMedia) db.prepare('DELETE FROM post_media WHERE id = ?').run(collisionMedia);
     if (collisionPost) db.prepare('DELETE FROM posts WHERE id = ?').run(collisionPost);
@@ -1000,6 +1005,266 @@ test('local upload URLs cannot be adopted to broaden media access', async () => 
       const filePath = path.join(uploadsDir, filename);
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     }
+  }
+});
+
+test('managed assets enforce ownership, idempotency, visibility, and deferred reclamation', async () => {
+  const png = Buffer.from('89504e470d0a1a0a0000000d494844520000000100000001', 'hex');
+  const upload = async (username: string, bytes = png, name = 'owned.png', type = 'image/png') => {
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type }), name);
+    return request('/api/uploads/image', username, { method: 'POST', body: form });
+  };
+  const postKey = 'asset-lifecycle-post-key';
+  const created = await request('/api/posts', 'stranger', {
+    method: 'POST', body: JSON.stringify({ content: 'MANAGED ASSET TEST', clientSubmissionKey: postKey }),
+  });
+  assert.equal(created.response.status, 201);
+  const postId = created.body.post.id as number;
+  const replay = await request('/api/posts', 'stranger', {
+    method: 'POST', body: JSON.stringify({ content: 'MANAGED ASSET TEST', clientSubmissionKey: postKey }),
+  });
+  assert.equal(replay.response.status, 200);
+  assert.equal(replay.body.post.id, postId);
+  assert.equal(replay.body.replayed, true);
+  assert.equal((db.prepare('SELECT COUNT(*) AS c FROM posts WHERE content = ?').get('MANAGED ASSET TEST') as any).c, 1);
+  const keyConflict = await request('/api/posts', 'stranger', {
+    method: 'POST', body: JSON.stringify({ content: 'DIFFERENT', clientSubmissionKey: postKey }),
+  });
+  assert.equal(keyConflict.response.status, 409);
+  const otherUserKey = await request('/api/posts', 'follower', {
+    method: 'POST', body: JSON.stringify({ content: 'OTHER USER SAME KEY', clientSubmissionKey: postKey }),
+  });
+  assert.equal(otherUserKey.response.status, 201);
+  assert.notEqual(otherUserKey.body.post.id, postId);
+  const boundedKey = 'bounded-retention-key';
+  const boundedFirst = await request('/api/posts', 'stranger', {
+    method: 'POST', body: JSON.stringify({ content: 'BOUNDED IDEMPOTENCY', clientSubmissionKey: boundedKey }),
+  });
+  assert.equal(boundedFirst.response.status, 201);
+  db.prepare('UPDATE post_submission_keys SET expires_at_ms = ? WHERE user_id = ? AND submission_key = ?')
+    .run(Date.now() - 1, ids.stranger, boundedKey);
+  const boundedAfterExpiry = await request('/api/posts', 'stranger', {
+    method: 'POST', body: JSON.stringify({ content: 'BOUNDED IDEMPOTENCY', clientSubmissionKey: boundedKey }),
+  });
+  assert.equal(boundedAfterExpiry.response.status, 201);
+  assert.notEqual(boundedAfterExpiry.body.post.id, boundedFirst.body.post.id);
+
+  const staged = await upload('stranger');
+  assert.equal(staged.response.status, 201);
+  const assetId = staged.body.asset.id as string;
+  const assetUrl = staged.body.asset.url as string;
+  const filename = path.basename(assetUrl);
+  assert.match(assetId, /^[a-f0-9]{32}$/);
+  assert.match(filename, /^asset-[a-f0-9]{32}\.png$/);
+  const row = db.prepare('SELECT * FROM managed_assets WHERE id = ?').get(assetId) as any;
+  assert.equal(row.owner_user_id, ids.stranger);
+  assert.equal(row.purpose, 'pending_post_image');
+  assert.equal(row.state, 'pending');
+  assert.equal(row.file_size_bytes, png.length);
+  assert.match(row.sha256, /^[a-f0-9]{64}$/);
+  assert.equal((await request(assetUrl)).response.status, 404);
+  assert.equal((await request(assetUrl, 'stranger')).response.status, 200);
+
+  const foreignPost = Number(db.prepare('INSERT INTO posts (user_id, content) VALUES (?, ?)').run(ids.follower, 'FOREIGN TARGET').lastInsertRowid);
+  const hiddenPost = Number(db.prepare('INSERT INTO posts (user_id, content, hidden) VALUES (?, ?, 1)').run(ids.stranger, 'HIDDEN TARGET').lastInsertRowid);
+  assert.equal((await request(`/api/uploads/assets/${assetId}/attach`, 'follower', {
+    method: 'POST', body: JSON.stringify({ postId: foreignPost }),
+  })).response.status, 404);
+  assert.equal((await request(`/api/uploads/assets/${assetId}/attach`, 'stranger', {
+    method: 'POST', body: JSON.stringify({ postId: foreignPost }),
+  })).response.status, 404);
+  assert.equal((await request(`/api/uploads/assets/${assetId}/attach`, 'stranger', {
+    method: 'POST', body: JSON.stringify({ postId: hiddenPost }),
+  })).response.status, 404);
+  assert.equal((await request(`/api/uploads/assets/${assetId}/attach`, 'stranger', {
+    method: 'POST', body: JSON.stringify({ postId: 999999 }),
+  })).response.status, 404);
+
+  const attached = await request(`/api/uploads/assets/${assetId}/attach`, 'stranger', {
+    method: 'POST', body: JSON.stringify({ postId, altText: 'managed test image' }),
+  });
+  assert.equal(attached.response.status, 201);
+  const attachedReplay = await request(`/api/uploads/assets/${assetId}/attach`, 'stranger', {
+    method: 'POST', body: JSON.stringify({ postId, altText: 'ignored on replay' }),
+  });
+  assert.equal(attachedReplay.response.status, 200);
+  assert.equal(attachedReplay.body.media.id, attached.body.media.id);
+  assert.equal(attachedReplay.body.replayed, true);
+  assert.equal((db.prepare('SELECT COUNT(*) AS c FROM post_media WHERE asset_id = ?').get(assetId) as any).c, 1);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(assetId) as any).state, 'active');
+  assert.equal((await request(assetUrl)).response.status, 200);
+  // Pending expiry never detaches an active reference.
+  const activeExpiryPass = reclaimManagedAssets(db, { uploadsDir, nodeEnv: 'test', nowMs: Date.now() + 2 * 60 * 60 * 1000 });
+  assert.equal(activeExpiryPass.disabled, true);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(assetId) as any).state, 'active');
+  // Even an inconsistent reclaimable state cannot delete a referenced file.
+  db.prepare('UPDATE managed_assets SET state = ?, reclaim_after_ms = ? WHERE id = ?').run('reclaimable', Date.now() - 1, assetId);
+  const referencedGuard = reclaimManagedAssets(db, { uploadsDir, nodeEnv: 'test', allowPhysicalDeletion: true });
+  assert.ok(referencedGuard.failed >= 1);
+  assert.equal(fs.existsSync(path.join(uploadsDir, filename)), true);
+  db.prepare("UPDATE managed_assets SET state = 'active', reclaim_after_ms = NULL, last_reclaim_error = '' WHERE id = ?").run(assetId);
+
+  const videoKey = 'external-video-retry-key';
+  const videoBody = JSON.stringify({
+    postId, attachmentKey: videoKey, url: 'https://www.youtube.com/watch?v=abcdefghijk',
+  });
+  const video = await request('/api/uploads/external-video', 'stranger', { method: 'POST', body: videoBody });
+  const videoReplay = await request('/api/uploads/external-video', 'stranger', { method: 'POST', body: videoBody });
+  assert.equal(video.response.status, 201);
+  assert.equal(videoReplay.response.status, 200);
+  assert.equal(videoReplay.body.media.id, video.body.media.id);
+  assert.equal((db.prepare('SELECT COUNT(*) AS c FROM post_media WHERE post_id = ? AND attachment_key = ?').get(postId, videoKey) as any).c, 1);
+
+  const deletion = await request(`/api/posts/${postId}`, 'stranger', { method: 'DELETE' });
+  assert.equal(deletion.response.status, 200);
+  const detached = db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(assetId) as any;
+  assert.equal(detached.state, 'reclaimable');
+  assert.equal(fs.existsSync(path.join(uploadsDir, filename)), true);
+  assert.equal((await request(assetUrl, 'stranger')).response.status, 404);
+
+  db.prepare('UPDATE managed_assets SET reclaim_after_ms = ? WHERE id = ?').run(Date.now() - 1, assetId);
+  const disabled = reclaimManagedAssets(db, {
+    uploadsDir, nodeEnv: 'production', allowPhysicalDeletion: true, nowMs: Date.now(),
+  });
+  assert.equal(disabled.disabled, true);
+  assert.equal(fs.existsSync(path.join(uploadsDir, filename)), true);
+  const failed = reclaimManagedAssets(db, {
+    uploadsDir, nodeEnv: 'test', allowPhysicalDeletion: true, nowMs: Date.now(),
+    unlinkFile: () => { throw new Error('simulated unlink failure'); },
+  });
+  assert.equal(failed.failed, 1);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(assetId) as any).state, 'reclaimable');
+  const reclaimed = reclaimManagedAssets(db, {
+    uploadsDir, nodeEnv: 'test', allowPhysicalDeletion: true, nowMs: Date.now(),
+  });
+  assert.equal(reclaimed.deleted, 1);
+  assert.equal(fs.existsSync(path.join(uploadsDir, filename)), false);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(assetId) as any).state, 'deleted');
+
+  const abandoned = await upload('stranger');
+  const abandonedId = abandoned.body.asset.id as string;
+  const abandonedFile = path.basename(abandoned.body.asset.url);
+  db.prepare('UPDATE managed_assets SET pending_expires_at_ms = ? WHERE id = ?').run(Date.now() - 1, abandonedId);
+  const expired = reclaimManagedAssets(db, { uploadsDir, nodeEnv: 'test', nowMs: Date.now() });
+  assert.equal(expired.disabled, true);
+  assert.ok(expired.pendingExpired >= 1);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(abandonedId) as any).state, 'reclaimable');
+  assert.equal((await request(abandoned.body.asset.url, 'stranger')).response.status, 404);
+  const expiredTarget = Number(db.prepare('INSERT INTO posts (user_id, content) VALUES (?, ?)').run(ids.stranger, 'EXPIRED ASSET TARGET').lastInsertRowid);
+  assert.equal((await request(`/api/uploads/assets/${abandonedId}/attach`, 'stranger', {
+    method: 'POST', body: JSON.stringify({ postId: expiredTarget }),
+  })).response.status, 410);
+
+  const mismatch = await upload('stranger', png, 'mismatch.jpg', 'image/jpeg');
+  assert.equal(mismatch.response.status, 400);
+  const malformed = await upload('stranger', Buffer.from('89504e470d0a1a0a', 'hex'));
+  assert.equal(malformed.response.status, 400);
+  const invalidMime = await upload('stranger', Buffer.from('<script>'), 'payload.png', 'text/html');
+  assert.equal(invalidMime.response.status, 400);
+  const oversized = await upload('stranger', Buffer.alloc(5 * 1024 * 1024 + 1), 'large.png', 'image/png');
+  assert.equal(oversized.response.status, 400);
+  const protectedUpload = await upload('private');
+  const protectedAssetId = protectedUpload.body.asset.id as string;
+  const protectedUrl = protectedUpload.body.asset.url as string;
+  const protectedPost = Number(db.prepare('INSERT INTO posts (user_id, content) VALUES (?, ?)').run(ids.private, 'PRIVATE MANAGED ASSET').lastInsertRowid);
+  assert.equal((await request(`/api/uploads/assets/${protectedAssetId}/attach`, 'private', {
+    method: 'POST', body: JSON.stringify({ postId: protectedPost }),
+  })).response.status, 201);
+  assert.equal((await request(protectedUrl)).response.status, 404);
+  assert.equal((await request(protectedUrl, 'blocker')).response.status, 404);
+  const adoption = await request('/api/users/profile', 'stranger', {
+    method: 'PUT', body: JSON.stringify({ avatar_url: protectedUrl }),
+  });
+  assert.equal(adoption.response.status, 400);
+  assert.equal((await request(protectedUrl)).response.status, 404);
+  db.prepare('DELETE FROM posts WHERE id = ?').run(protectedPost);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(protectedAssetId) as any).state, 'reclaimable');
+  const protectedPath = path.join(uploadsDir, path.basename(protectedUrl));
+  if (fs.existsSync(protectedPath)) fs.unlinkSync(protectedPath);
+  db.prepare('DELETE FROM managed_assets WHERE id = ?').run(protectedAssetId);
+
+  const oldCombined = new FormData();
+  oldCombined.append('file', new Blob([png], { type: 'image/png' }), 'old.png');
+  oldCombined.append('postId', String(foreignPost));
+  assert.equal((await request('/api/uploads/image', 'stranger', { method: 'POST', body: oldCombined })).response.status, 400);
+
+  db.prepare('DELETE FROM posts WHERE id IN (?, ?, ?)').run(foreignPost, hiddenPost, expiredTarget);
+  db.prepare('DELETE FROM posts WHERE id = ?').run(otherUserKey.body.post.id);
+  db.prepare('DELETE FROM posts WHERE id IN (?, ?)').run(boundedFirst.body.post.id, boundedAfterExpiry.body.post.id);
+  const unsafeId = 'd'.repeat(32);
+  db.prepare(`INSERT INTO managed_assets
+    (id, owner_user_id, storage_key, url, media_type, mime_type, file_size_bytes, sha256, purpose, state, created_at_ms, reclaim_after_ms)
+    VALUES (?, ?, '../outside.png', '/uploads/outside.png', 'image', 'image/png', 1, ?, 'post_image', 'reclaimable', ?, ?)`)
+    .run(unsafeId, ids.stranger, '0'.repeat(64), Date.now() - 10000, Date.now() - 1);
+  const unsafe = reclaimManagedAssets(db, { uploadsDir, nodeEnv: 'test', allowPhysicalDeletion: true });
+  assert.ok(unsafe.failed >= 1);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(unsafeId) as any).state, 'reclaimable');
+
+  const symlinkId = 'e'.repeat(32);
+  const symlinkName = `asset-${'e'.repeat(32)}.png`;
+  const symlinkPath = path.join(uploadsDir, symlinkName);
+  fs.symlinkSync('/etc/hosts', symlinkPath);
+  db.prepare(`INSERT INTO managed_assets
+    (id, owner_user_id, storage_key, url, media_type, mime_type, file_size_bytes, sha256, purpose, state, created_at_ms, reclaim_after_ms)
+    VALUES (?, ?, ?, ?, 'image', 'image/png', 1, ?, 'post_image', 'reclaimable', ?, ?)`)
+    .run(symlinkId, ids.stranger, symlinkName, `/uploads/${symlinkName}`, '0'.repeat(64), Date.now() - 10000, Date.now() - 1);
+  const symlinkResult = reclaimManagedAssets(db, { uploadsDir, nodeEnv: 'test', allowPhysicalDeletion: true });
+  assert.ok(symlinkResult.failed >= 1);
+  assert.equal(fs.lstatSync(symlinkPath).isSymbolicLink(), true);
+
+  const untrackedName = `asset-${'f'.repeat(32)}.png`;
+  const untrackedPath = path.join(uploadsDir, untrackedName);
+  fs.writeFileSync(untrackedPath, png);
+  const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  fs.utimesSync(untrackedPath, old, old);
+  const untracked = reclaimManagedAssets(db, {
+    uploadsDir, nodeEnv: 'test', allowPhysicalDeletion: true, nowMs: Date.now(),
+  });
+  assert.equal(untracked.untrackedDeleted, 1);
+  assert.equal(fs.existsSync(untrackedPath), false);
+
+  const abandonedPath = path.join(uploadsDir, abandonedFile);
+  if (fs.existsSync(abandonedPath)) fs.unlinkSync(abandonedPath);
+  if (fs.existsSync(symlinkPath)) fs.unlinkSync(symlinkPath);
+  db.prepare('DELETE FROM managed_assets WHERE id IN (?, ?, ?, ?)').run(assetId, abandonedId, unsafeId, symlinkId);
+});
+
+test('account and group cascades detach managed references without deleting files', () => {
+  const userId = Number(db.prepare(`INSERT INTO users
+    (username, display_name, email, password_hash, is_verified, avatar_url)
+    VALUES ('assetcascade', 'Asset Cascade', 'assetcascade@test.invalid', 'x', 1, '/uploads/asset-cascade-avatar.png')`).run().lastInsertRowid);
+  const group = Number(db.prepare("INSERT INTO groups_table (name, owner_id) VALUES ('ASSET CASCADE GROUP', ?)").run(userId).lastInsertRowid);
+  db.prepare("INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'admin')").run(group, userId);
+  const directPost = Number(db.prepare('INSERT INTO posts (user_id, content) VALUES (?, ?)').run(userId, 'ACCOUNT CASCADE POST').lastInsertRowid);
+  const groupPost = Number(db.prepare('INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)').run(userId, 'GROUP CASCADE POST', group).lastInsertRowid);
+  const rows = [
+    ['1'.repeat(32), `asset-${'1'.repeat(32)}.png`, 'post_image', directPost],
+    ['2'.repeat(32), `asset-${'2'.repeat(32)}.png`, 'post_image', groupPost],
+    ['3'.repeat(32), `asset-${'3'.repeat(32)}.png`, 'avatar', null],
+  ] as const;
+  for (const [id, filename, purpose, postId] of rows) {
+    const url = `/uploads/${filename}`;
+    fs.writeFileSync(path.join(uploadsDir, filename), Buffer.from('asset cascade'));
+    db.prepare(`INSERT INTO managed_assets
+      (id, owner_user_id, storage_key, url, media_type, mime_type, file_size_bytes, sha256, purpose, state, created_at_ms)
+      VALUES (?, ?, ?, ?, 'image', 'image/png', 13, ?, ?, 'active', ?)`)
+      .run(id, userId, filename, url, '0'.repeat(64), purpose, Date.now());
+    if (postId) db.prepare("INSERT INTO post_media (post_id, asset_id, media_type, url) VALUES (?, ?, 'image', ?)").run(postId, id, url);
+    else db.prepare('INSERT INTO user_avatar_uploads (user_id, asset_id, url, mime_type, file_size_bytes) VALUES (?, ?, ?, ?, ?)').run(userId, id, url, 'image/png', 13);
+  }
+
+  db.prepare('DELETE FROM groups_table WHERE id = ?').run(group);
+  assert.equal((db.prepare('SELECT state FROM managed_assets WHERE id = ?').get(rows[1][0]) as any).state, 'reclaimable');
+  assert.equal(fs.existsSync(path.join(uploadsDir, rows[1][1])), true);
+  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  for (const [id, filename] of rows) {
+    const asset = db.prepare('SELECT state, owner_user_id FROM managed_assets WHERE id = ?').get(id) as any;
+    assert.equal(asset.state, 'reclaimable');
+    assert.equal(asset.owner_user_id, null);
+    assert.equal(fs.existsSync(path.join(uploadsDir, filename)), true);
+    fs.unlinkSync(path.join(uploadsDir, filename));
+    db.prepare('DELETE FROM managed_assets WHERE id = ?').run(id);
   }
 });
 

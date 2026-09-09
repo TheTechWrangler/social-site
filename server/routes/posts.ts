@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { canViewGroup, canViewPost, userVisibilitySql, type Viewer } from '../visibility.js';
@@ -75,14 +76,19 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
 }
 
 const POST_MAX_LENGTH = 5000;
+const POST_SUBMISSION_KEY = /^[A-Za-z0-9_-]{16,100}$/;
+const POST_SUBMISSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 // POST /api/posts — create a post
 router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   try {
-    const { content, groupId } = req.body;
+    const { content, groupId, clientSubmissionKey } = req.body;
     if (!content?.trim()) { res.status(400).json({ error: 'Content required.' }); return; }
     if (content.trim().length > POST_MAX_LENGTH) {
       res.status(400).json({ error: `Post content must be ${POST_MAX_LENGTH} characters or fewer.` }); return;
+    }
+    if (clientSubmissionKey !== undefined && !POST_SUBMISSION_KEY.test(String(clientSubmissionKey))) {
+      res.status(400).json({ error: 'Invalid post submission key.' }); return;
     }
 
     if (groupId) {
@@ -98,17 +104,77 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
       }
     }
 
-    const result = getDb().prepare(
-      'INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)'
-    ).run(req.user!.id, content.trim(), groupId ? Number(groupId) : null);
+    const normalizedContent = content.trim();
+    const normalizedGroupId = groupId ? Number(groupId) : null;
+    const requestHash = createHash('sha256')
+      .update(JSON.stringify({ content: normalizedContent, groupId: normalizedGroupId }))
+      .digest('hex');
+    const nowMs = Date.now();
+    const create = getDb().transaction(() => {
+      getDb().prepare(`
+        DELETE FROM post_submission_keys
+        WHERE rowid IN (
+          SELECT rowid FROM post_submission_keys
+          WHERE expires_at_ms <= ? ORDER BY expires_at_ms LIMIT 100
+        )
+      `).run(nowMs);
+
+      if (clientSubmissionKey !== undefined) {
+        getDb().prepare(`
+          DELETE FROM post_submission_keys
+          WHERE user_id = ? AND submission_key = ? AND expires_at_ms <= ?
+        `).run(req.user!.id, String(clientSubmissionKey), nowMs);
+        const existing = getDb().prepare(`
+          SELECT post_id, request_hash
+          FROM post_submission_keys
+          WHERE user_id = ? AND submission_key = ? AND expires_at_ms > ?
+        `).get(req.user!.id, String(clientSubmissionKey), nowMs) as any;
+        if (existing) {
+          if (existing.request_hash !== requestHash) {
+            return { conflict: true, postId: 0, replayed: false };
+          }
+          return { conflict: false, postId: existing.post_id as number, replayed: true };
+        }
+      }
+
+      const inserted = getDb().prepare(
+        'INSERT INTO posts (user_id, content, group_id) VALUES (?, ?, ?)'
+      ).run(req.user!.id, normalizedContent, normalizedGroupId);
+      const postId = Number(inserted.lastInsertRowid);
+      if (clientSubmissionKey !== undefined) {
+        getDb().prepare(`
+          INSERT INTO post_submission_keys
+            (user_id, submission_key, post_id, request_hash, created_at_ms, expires_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          req.user!.id,
+          String(clientSubmissionKey),
+          postId,
+          requestHash,
+          nowMs,
+          nowMs + POST_SUBMISSION_TTL_MS,
+        );
+      }
+      return { conflict: false, postId, replayed: false };
+    });
+    const result = create();
+    if (result.conflict) {
+      res.status(409).json({ error: 'Post submission key was already used for different content.' });
+      return;
+    }
 
     const row = getDb().prepare(`
       SELECT p.*, u.username, u.display_name, u.avatar_url
       FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
-    `).get(result.lastInsertRowid);
+    `).get(result.postId);
 
-    logUsage({ eventType: 'post_created', userId: req.user!.id, featureArea: groupId ? 'groups' : 'feed' });
-    res.status(201).json({ post: enrichPost(row, req.user as any) });
+    if (!result.replayed) {
+      logUsage({ eventType: 'post_created', userId: req.user!.id, featureArea: groupId ? 'groups' : 'feed' });
+    }
+    res.status(result.replayed ? 200 : 201).json({
+      post: enrichPost(row, req.user as any),
+      replayed: result.replayed,
+    });
   } catch (err: any) {
     console.error('[posts] Create post error:', err.message);
     res.status(500).json({ error: 'Could not create post.' });

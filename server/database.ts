@@ -46,6 +46,18 @@ export function initializeDatabase(): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS post_submission_keys (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      submission_key TEXT NOT NULL,
+      post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+      request_hash TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      expires_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (user_id, submission_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_post_submission_expiry
+      ON post_submission_keys(expires_at_ms);
+
     CREATE TABLE IF NOT EXISTS follows (
       follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       following_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -178,9 +190,35 @@ export function initializeDatabase(): void {
       UNIQUE(user_id, source_id)
     );
 
+    CREATE TABLE IF NOT EXISTS managed_assets (
+      id TEXT PRIMARY KEY,
+      owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      storage_key TEXT NOT NULL UNIQUE,
+      url TEXT NOT NULL UNIQUE,
+      media_type TEXT NOT NULL CHECK(media_type IN ('image')),
+      mime_type TEXT NOT NULL,
+      file_size_bytes INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK(purpose IN ('pending_post_image','post_image','avatar')),
+      state TEXT NOT NULL CHECK(state IN ('pending','active','reclaimable','deleted')),
+      alt_text TEXT NOT NULL DEFAULT '',
+      created_at_ms INTEGER NOT NULL,
+      pending_expires_at_ms INTEGER,
+      detached_at_ms INTEGER,
+      reclaim_after_ms INTEGER,
+      deleted_at_ms INTEGER,
+      reclaim_attempts INTEGER NOT NULL DEFAULT 0,
+      last_reclaim_error TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_managed_assets_owner ON managed_assets(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_managed_assets_reclaim
+      ON managed_assets(state, reclaim_after_ms);
+
     CREATE TABLE IF NOT EXISTS post_media (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       post_id INTEGER REFERENCES posts(id) ON DELETE CASCADE,
+      asset_id TEXT REFERENCES managed_assets(id) ON DELETE RESTRICT,
+      attachment_key TEXT,
       media_type TEXT NOT NULL CHECK(media_type IN ('image','external_video','video')),
       url TEXT NOT NULL,
       provider TEXT,
@@ -199,6 +237,7 @@ export function initializeDatabase(): void {
     CREATE TABLE IF NOT EXISTS user_avatar_uploads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      asset_id TEXT REFERENCES managed_assets(id) ON DELETE RESTRICT,
       url TEXT NOT NULL UNIQUE,
       mime_type TEXT NOT NULL,
       file_size_bytes INTEGER NOT NULL,
@@ -320,6 +359,33 @@ export function initializeDatabase(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_dm_messages_convo ON dm_messages(conversation_id, id);
   `);
+
+  const postMediaColumns = db.prepare('PRAGMA table_info(post_media)').all() as Array<{ name: string }>;
+  if (!postMediaColumns.some(c => c.name === 'asset_id')) {
+    db.exec('ALTER TABLE post_media ADD COLUMN asset_id TEXT REFERENCES managed_assets(id) ON DELETE RESTRICT');
+  }
+  if (!postMediaColumns.some(c => c.name === 'attachment_key')) {
+    db.exec('ALTER TABLE post_media ADD COLUMN attachment_key TEXT');
+  }
+  const avatarUploadColumns = db.prepare('PRAGMA table_info(user_avatar_uploads)').all() as Array<{ name: string }>;
+  if (!avatarUploadColumns.some(c => c.name === 'asset_id')) {
+    db.exec('ALTER TABLE user_avatar_uploads ADD COLUMN asset_id TEXT REFERENCES managed_assets(id) ON DELETE RESTRICT');
+  }
+  db.exec([
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_post_media_asset ON post_media(asset_id) WHERE asset_id IS NOT NULL;',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_post_media_attachment_key ON post_media(post_id, attachment_key) WHERE attachment_key IS NOT NULL;',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_user_avatar_asset ON user_avatar_uploads(asset_id) WHERE asset_id IS NOT NULL;',
+    'CREATE TRIGGER IF NOT EXISTS managed_post_media_detach BEFORE DELETE ON post_media WHEN OLD.asset_id IS NOT NULL BEGIN',
+    "UPDATE managed_assets SET state = 'reclaimable', detached_at_ms = unixepoch('now') * 1000, reclaim_after_ms = unixepoch('now') * 1000 + 86400000",
+    "WHERE id = OLD.asset_id AND state = 'active'",
+    'AND NOT EXISTS (SELECT 1 FROM post_media WHERE asset_id = OLD.asset_id AND id != OLD.id)',
+    'AND NOT EXISTS (SELECT 1 FROM user_avatar_uploads WHERE asset_id = OLD.asset_id); END;',
+    'CREATE TRIGGER IF NOT EXISTS managed_avatar_detach BEFORE DELETE ON user_avatar_uploads WHEN OLD.asset_id IS NOT NULL BEGIN',
+    "UPDATE managed_assets SET state = 'reclaimable', detached_at_ms = unixepoch('now') * 1000, reclaim_after_ms = unixepoch('now') * 1000 + 86400000",
+    "WHERE id = OLD.asset_id AND state = 'active'",
+    'AND NOT EXISTS (SELECT 1 FROM user_avatar_uploads WHERE asset_id = OLD.asset_id AND id != OLD.id)',
+    'AND NOT EXISTS (SELECT 1 FROM post_media WHERE asset_id = OLD.asset_id); END;',
+  ].join('\n'));
 
   // Identity comparisons are case-insensitive while stored username casing is
   // preserved for display. Refuse to guess if a legacy database contains a

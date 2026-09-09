@@ -114,8 +114,8 @@ export const api = {
     request<{ ok: boolean; started?: boolean; sourcesChecked: number; newItems?: number; nextAvailableAt?: string }>('/feed/replenish', { method: 'POST' }),
 
   // Posts
-  createPost: (content: string, groupId?: number) =>
-    request<{ post: any }>('/posts', { method: 'POST', body: JSON.stringify({ content, groupId }) }),
+  createPost: (content: string, groupId?: number, clientSubmissionKey?: string) =>
+    request<{ post: any; replayed?: boolean }>('/posts', { method: 'POST', body: JSON.stringify({ content, groupId, clientSubmissionKey }) }),
   getPost: (id: number) => request<{ post: any }>(`/posts/${id}`),
   deletePost: (id: number) => request<{ ok: boolean }>(`/posts/${id}`, { method: 'DELETE' }),
 
@@ -229,19 +229,24 @@ export const api = {
     request<{ ok: boolean; message: string }>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, newPassword }) }),
 
   // Media — uses credentials:'include' via request() for cookie auth
-  uploadImage: async (file: File, postId?: number): Promise<{ media: any }> => {
+  uploadImage: async (file: File): Promise<{ asset: any }> => {
     const form = new FormData();
     form.append('file', file);
-    if (postId !== undefined) form.append('postId', String(postId));
-    return request<{ media: any }>('/uploads/image', { method: 'POST', body: form });
+    return request<{ asset: any }>('/uploads/image', { method: 'POST', body: form });
   },
+  attachImage: (assetId: string, postId: number, altText?: string) =>
+    request<{ media: any; replayed?: boolean }>(`/uploads/assets/${encodeURIComponent(assetId)}/attach`, {
+      method: 'POST', body: JSON.stringify({ postId, altText }),
+    }),
   uploadAvatar: async (file: File): Promise<{ media: any }> => {
     const form = new FormData();
     form.append('file', file);
     return request<{ media: any }>('/uploads/avatar', { method: 'POST', body: form });
   },
-  attachYouTube: (url: string, postId?: number) =>
-    request<{ media: any }>('/uploads/external-video', { method: 'POST', body: JSON.stringify({ url, postId }) }),
+  attachYouTube: (url: string, postId: number, attachmentKey: string) =>
+    request<{ media: any; replayed?: boolean }>('/uploads/external-video', {
+      method: 'POST', body: JSON.stringify({ url, postId, attachmentKey }),
+    }),
   getPostMedia: (postId: number) =>
     request<{ media: any[] }>(`/uploads/post/${postId}`),
 };

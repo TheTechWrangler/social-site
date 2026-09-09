@@ -35,11 +35,13 @@ if (resetRequested) {
   db.exec('DELETE FROM reports');
   db.exec('DELETE FROM likes');
   db.exec('DELETE FROM post_media');
+  db.exec('DELETE FROM user_avatar_uploads');
   db.exec('DELETE FROM posts');
   db.exec('DELETE FROM group_members');
   db.exec('DELETE FROM groups_table');
   db.exec('DELETE FROM follows');
   db.exec('DELETE FROM user_auth_providers');
+  db.exec('DELETE FROM managed_assets');
   db.exec('DELETE FROM users');
   // Reset auto-increment counters so IDs start from 1 again
   db.exec("DELETE FROM sqlite_sequence");

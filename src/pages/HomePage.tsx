@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 import WorldCard from '../components/WorldCard';
-import { attachComposerMedia, SubmissionLock, submitComposerPost, type AttachmentResult } from '../postComposerSubmission';
+import { attachComposerMedia, createClientOperationKey, SubmissionLock, submitComposerPost, type AttachmentResult } from '../postComposerSubmission';
 
 const LEVELS = [
   { key: 'everyone', label: 'Community', help: 'All public posts from verified members. Mute, block, or follow to shape what you see.' },
@@ -40,6 +40,9 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [composerError, setComposerError] = useState('');
   const [partialPostId, setPartialPostId] = useState<number | null>(null);
+  const [submissionKey, setSubmissionKey] = useState<string | null>(null);
+  const [imageAssetId, setImageAssetId] = useState<string | null>(null);
+  const [videoAttachmentKey, setVideoAttachmentKey] = useState<string | null>(null);
   const [preferenceError, setPreferenceError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const submissionLock = useRef(new SubmissionLock());
@@ -133,9 +136,15 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { alert(IMAGE_UPLOAD_ERROR); if (fileInputRef.current) fileInputRef.current.value = ''; return; }
     if (file.size > 5 * 1024 * 1024) { alert('Image must be under 5MB.'); return; }
     setImageFile(file); setImagePreview(URL.createObjectURL(file));
+    setImageAssetId(null);
+    if (partialPostId === null) setSubmissionKey(null);
   }
 
-  function removeImage() { setImageFile(null); setImagePreview(null); if (fileInputRef.current) fileInputRef.current.value = ''; }
+  function removeImage() {
+    setImageFile(null); setImagePreview(null); setImageAssetId(null);
+    if (partialPostId === null) setSubmissionKey(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
 
   function parseYoutubeUrl(input: string): string | null {
     const t = input.trim();
@@ -162,11 +171,21 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     setPosting(true);
     setComposerError('');
     try {
-      const result = await submitComposerPost(content, { imageFile, youtubeUrl }, {
-        createPost: api.createPost,
-        uploadImage: api.uploadImage,
-        attachYouTube: api.attachYouTube,
-      });
+      const key = submissionKey ?? createClientOperationKey();
+      if (!submissionKey) setSubmissionKey(key);
+      const result = await submitComposerPost(
+        content,
+        { imageFile, youtubeUrl, imageAssetId, videoAttachmentKey },
+        key,
+        {
+          createPost: (text, operationKey) => api.createPost(text, undefined, operationKey),
+          uploadImage: api.uploadImage,
+          attachImage: api.attachImage,
+          attachYouTube: api.attachYouTube,
+        },
+      );
+      // Receiving a valid post ID proves the keyed creation result is known.
+      setSubmissionKey(null);
       applyAttachmentResult(result);
       await loadFeed();
     } catch (e: any) {
@@ -180,6 +199,8 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
 
   function applyAttachmentResult(result: AttachmentResult) {
     setContent('');
+    setImageAssetId(result.imageAssetId);
+    setVideoAttachmentKey(result.videoAttachmentKey);
     if (result.attached.includes('image')) removeImage();
     if (result.attached.includes('video')) setYoutubeUrl('');
     if (result.failures.length > 0) {
@@ -189,6 +210,9 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       return;
     }
     setPartialPostId(null);
+    setSubmissionKey(null);
+    setImageAssetId(null);
+    setVideoAttachmentKey(null);
     setComposerError('');
     removeImage();
     setYoutubeUrl('');
@@ -199,10 +223,11 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     setPosting(true);
     setComposerError('');
     try {
-      const result = await attachComposerMedia(partialPostId, { imageFile, youtubeUrl }, {
-        uploadImage: api.uploadImage,
-        attachYouTube: api.attachYouTube,
-      });
+      const result = await attachComposerMedia(
+        partialPostId,
+        { imageFile, youtubeUrl, imageAssetId, videoAttachmentKey },
+        { uploadImage: api.uploadImage, attachImage: api.attachImage, attachYouTube: api.attachYouTube },
+      );
       applyAttachmentResult(result);
       await loadFeed();
     } catch (e: any) {
@@ -215,6 +240,9 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
 
   function dismissFailedAttachments() {
     setPartialPostId(null);
+    setSubmissionKey(null);
+    setImageAssetId(null);
+    setVideoAttachmentKey(null);
     setComposerError('');
     removeImage();
     setYoutubeUrl('');
@@ -302,11 +330,11 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
 
       {isVerified && level !== 'world' && (
         <form className="post-composer" onSubmit={handlePost}>
-          <textarea className="input" placeholder="What's on your mind?" value={content} onChange={e => setContent(e.target.value)} rows={3} disabled={partialPostId !== null} />
+          <textarea className="input" placeholder="What's on your mind?" value={content} onChange={e => { setContent(e.target.value); if (partialPostId === null) setSubmissionKey(null); }} rows={3} disabled={partialPostId !== null} />
           {imagePreview && (<div className="image-preview-wrap"><img src={imagePreview} alt="Preview" className="image-preview" /><button type="button" className="btn btn-sm" onClick={removeImage}>✕ Remove</button></div>)}
           <div className="composer-actions">
             <label className="composer-upload-btn">🖼 Image<input type="file" ref={fileInputRef} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleFileSelect} style={{ display: 'none' }} /></label>
-            <input className="input" placeholder="YouTube link (optional)" value={youtubeUrl} onChange={e => setYoutubeUrl(e.target.value)} style={{ flex: 1 }} />
+            <input className="input" placeholder="YouTube link (optional)" value={youtubeUrl} onChange={e => { setYoutubeUrl(e.target.value); setVideoAttachmentKey(null); if (partialPostId === null) setSubmissionKey(null); }} style={{ flex: 1 }} />
             <button className="btn btn-primary" disabled={posting || (partialPostId === null && !content.trim() && !imageFile)}>
               {posting ? 'Working...' : partialPostId !== null ? 'Retry attachment' : 'Post'}
             </button>
@@ -318,7 +346,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
             </button>
           )}
           {isYoutubeInvalid && <p className="muted" style={{ fontSize: '0.8rem', marginTop: 4 }}>Paste a valid YouTube link to preview it.</p>}
-          {youtubePreview && (<div className="youtube-preview"><div className="youtube-preview-header"><span>🎬 YouTube preview</span><button type="button" className="btn btn-sm btn-ghost" onClick={() => setYoutubeUrl('')}>✕ Remove</button></div><div className="post-video-wrap" style={{ maxWidth: 400 }}><iframe src={youtubePreview} allowFullScreen loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" className="post-video-embed" title="YouTube preview" /></div></div>)}
+          {youtubePreview && (<div className="youtube-preview"><div className="youtube-preview-header"><span>🎬 YouTube preview</span><button type="button" className="btn btn-sm btn-ghost" onClick={() => { setYoutubeUrl(''); setVideoAttachmentKey(null); if (partialPostId === null) setSubmissionKey(null); }}>✕ Remove</button></div><div className="post-video-wrap" style={{ maxWidth: 400 }}><iframe src={youtubePreview} allowFullScreen loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" className="post-video-embed" title="YouTube preview" /></div></div>)}
         </form>
       )}
 
