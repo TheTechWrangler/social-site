@@ -18,16 +18,28 @@ function gameDiscoveryValue(user: any): boolean {
   return Boolean(user?.game_discovery_enabled ?? user?.gameDiscoveryEnabled ?? 0);
 }
 
-export default function SettingsPage({ user }: { user: any }) {
-  const initialUser = user;
+export default function SettingsPage({
+  user,
+  onUserChange,
+}: {
+  user: any;
+  onUserChange: (user: any) => void;
+}) {
   const [blocked, setBlocked] = useState<any[]>([]);
   const [muted, setMuted] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [gameDiscovery, setGameDiscovery] = useState(gameDiscoveryValue(initialUser));
-  const [worldHomeInjection, setWorldHomeInjection] = useState(initialUser?.world_home_injection || 'world_home_few');
-  const [dmPrivacy, setDmPrivacy] = useState(initialUser?.dm_privacy || 'friends_of_friends');
+  const [gameDiscovery, setGameDiscovery] = useState(gameDiscoveryValue(user));
+  const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
+  const [dmPrivacy, setDmPrivacy] = useState(user?.dm_privacy || 'friends_of_friends');
+  const [relationshipError, setRelationshipError] = useState('');
+  const [pendingRelationship, setPendingRelationship] = useState<string | null>(null);
 
   useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    setGameDiscovery(gameDiscoveryValue(user));
+    setWorldHomeInjection(user?.world_home_injection || 'world_home_few');
+    setDmPrivacy(user?.dm_privacy || 'friends_of_friends');
+  }, [user]);
 
   async function loadData() {
     try {
@@ -42,17 +54,33 @@ export default function SettingsPage({ user }: { user: any }) {
   }
 
   async function unblock(id: number) {
+    if (pendingRelationship) return;
+    setPendingRelationship(`block:${id}`);
+    setRelationshipError('');
     try {
-      await fetch(`/api/users/${id}/block`, { method: 'DELETE', credentials: 'include' });
+      await api.delete(`/users/${id}/block`);
       setBlocked(prev => prev.filter(u => u.id !== id));
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      console.error(e);
+      setRelationshipError(e.message || 'Could not unblock user.');
+    } finally {
+      setPendingRelationship(null);
+    }
   }
 
   async function unmute(id: number) {
+    if (pendingRelationship) return;
+    setPendingRelationship(`mute:${id}`);
+    setRelationshipError('');
     try {
-      await fetch(`/api/users/${id}/mute`, { method: 'DELETE', credentials: 'include' });
+      await api.delete(`/users/${id}/mute`);
       setMuted(prev => prev.filter(u => u.id !== id));
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      console.error(e);
+      setRelationshipError(e.message || 'Could not unmute user.');
+    } finally {
+      setPendingRelationship(null);
+    }
   }
 
   async function toggleGameDiscovery() {
@@ -60,7 +88,8 @@ export default function SettingsPage({ user }: { user: any }) {
     setGameDiscovery(newVal);
     try {
       const r = await api.updateProfile({ gameDiscoveryEnabled: newVal });
-      setGameDiscovery(gameDiscoveryValue(r.user));
+      onUserChange(r.authUser);
+      setGameDiscovery(gameDiscoveryValue(r.authUser));
     } catch (e) {
       console.error(e);
       setGameDiscovery(!newVal);
@@ -68,18 +97,28 @@ export default function SettingsPage({ user }: { user: any }) {
   }
 
   async function updateWorldHomeInjection(value: string) {
+    const previous = worldHomeInjection;
     setWorldHomeInjection(value);
     try {
-      await fetch('/api/users/profile', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ worldHomeInjection: value }) });
-    } catch (e) { console.error(e); }
+      const r = await api.updateProfile({ worldHomeInjection: value });
+      onUserChange(r.authUser);
+      setWorldHomeInjection(r.authUser.world_home_injection);
+    } catch (e) {
+      console.error(e);
+      setWorldHomeInjection(previous);
+    }
   }
 
   async function updateDmPrivacy(value: string) {
+    const previous = dmPrivacy;
     setDmPrivacy(value);
     try {
-      await api.updateProfile({ dmPrivacy: value });
+      const r = await api.updateProfile({ dmPrivacy: value });
+      onUserChange(r.authUser);
+      setDmPrivacy(r.authUser.dm_privacy);
     } catch (e) {
       console.error(e);
+      setDmPrivacy(previous);
     }
   }
 
@@ -88,6 +127,7 @@ export default function SettingsPage({ user }: { user: any }) {
   return (
     <div className="settings-page">
       <h2>⚙ Settings</h2>
+      {relationshipError && <p className="error-msg" role="alert">{relationshipError}</p>}
 
       <div className="settings-section">
         <h3>Account</h3>
@@ -159,7 +199,7 @@ export default function SettingsPage({ user }: { user: any }) {
                   <strong>{u.display_name}</strong>
                   <span className="muted">@{u.username}</span>
                 </div>
-                <button className="btn btn-sm" onClick={() => unblock(u.id)}>Unblock</button>
+                <button className="btn btn-sm" onClick={() => unblock(u.id)} disabled={pendingRelationship === `block:${u.id}`}>Unblock</button>
               </div>
             ))}
           </div>
@@ -179,7 +219,7 @@ export default function SettingsPage({ user }: { user: any }) {
                   <strong>{u.display_name}</strong>
                   <span className="muted">@{u.username}</span>
                 </div>
-                <button className="btn btn-sm" onClick={() => unmute(u.id)}>Unmute</button>
+                <button className="btn btn-sm" onClick={() => unmute(u.id)} disabled={pendingRelationship === `mute:${u.id}`}>Unmute</button>
               </div>
             ))}
           </div>

@@ -13,6 +13,8 @@ export default function WorldPage({ user }: { user?: any }) {
   const [page, setPage] = useState(0);
   const [blockedSources, setBlockedSources] = useState<any[]>([]);
   const [showBlockedPanel, setShowBlockedPanel] = useState(false);
+  const [mutationError, setMutationError] = useState('');
+  const [pendingMutation, setPendingMutation] = useState<string | null>(null);
   const PAGE_SIZE = 30;
 
   const [discussions, setDiscussions] = useState<Record<number, { open: boolean; comments: any[]; loading: boolean; body: string }>>({});
@@ -47,15 +49,33 @@ export default function WorldPage({ user }: { user?: any }) {
 
   async function handleBlock(sourceId: number, sourceName: string) {
     if (!confirm(`Block "${sourceName}"? You will no longer see World Feed items or discussions from this source.`)) return;
-    try { await api.post<any>(`/world-feed/sources/${sourceId}/block`); setItems(prev => prev.filter(i => i.sourceId !== sourceId)); loadBlockedSources(); } catch (e) {}
+    if (pendingMutation) return;
+    setPendingMutation(`block:${sourceId}`);
+    setMutationError('');
+    try {
+      await api.post<any>(`/world-feed/sources/${sourceId}/block`);
+      setItems(prev => prev.filter(i => i.sourceId !== sourceId));
+      await loadBlockedSources();
+    } catch (e: any) {
+      setMutationError(e.message || 'Could not block source.');
+    } finally {
+      setPendingMutation(null);
+    }
   }
 
   async function handleUnblock(sourceId: number) {
+    if (pendingMutation) return;
+    setPendingMutation(`unblock:${sourceId}`);
+    setMutationError('');
     try {
-      await fetch(`/api/world-feed/sources/${sourceId}/block`, { method: 'DELETE', credentials: 'include' });
+      await api.delete(`/world-feed/sources/${sourceId}/block`);
       setBlockedSources(prev => prev.filter(s => s.id !== sourceId));
-      loadFeed(selectedCategory, selectedSource, 0);
-    } catch (e) {}
+      await loadFeed(selectedCategory, selectedSource, 0);
+    } catch (e: any) {
+      setMutationError(e.message || 'Could not unblock source.');
+    } finally {
+      setPendingMutation(null);
+    }
   }
 
   async function toggleDiscussion(itemId: number) {
@@ -67,14 +87,31 @@ export default function WorldPage({ user }: { user?: any }) {
 
   async function addComment(itemId: number) {
     const d = discussions[itemId]; if (!d?.body?.trim()) return;
-    try { const r = await api.post<any>(`/world-feed/${itemId}/comments`, { body: d.body }); setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], comments: [...prev[itemId].comments, r.comment], body: '' } })); } catch (e) {}
+    if (pendingMutation) return;
+    setPendingMutation(`comment:${itemId}`);
+    setMutationError('');
+    try {
+      const r = await api.post<any>(`/world-feed/${itemId}/comments`, { body: d.body });
+      setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], comments: [...prev[itemId].comments, r.comment], body: '' } }));
+    } catch (e: any) {
+      setMutationError(e.message || 'Could not add comment.');
+    } finally {
+      setPendingMutation(null);
+    }
   }
 
   async function deleteComment(itemId: number, commentId: number) {
+    if (pendingMutation) return;
+    setPendingMutation(`delete-comment:${commentId}`);
+    setMutationError('');
     try {
-      await fetch(`/api/world-feed/comments/${commentId}`, { method: 'DELETE', credentials: 'include' });
+      await api.delete(`/world-feed/comments/${commentId}`);
       setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], comments: prev[itemId].comments.filter((c: any) => c.id !== commentId) } }));
-    } catch (e) {}
+    } catch (e: any) {
+      setMutationError(e.message || 'Could not delete comment.');
+    } finally {
+      setPendingMutation(null);
+    }
   }
 
   const filteredCategories = categories.filter(c => c.toLowerCase().includes('gaming'));
@@ -83,6 +120,7 @@ export default function WorldPage({ user }: { user?: any }) {
     <div className="world-page">
       <h2>🌍 World Feed</h2>
       <p className="muted">External content from RSS sources. Sorted by published date, newest first.</p>
+      {mutationError && <p className="error-msg" role="alert">{mutationError}</p>}
 
       {blockedSources.length > 0 && (
         <div className="blocked-sources-panel">
@@ -94,7 +132,7 @@ export default function WorldPage({ user }: { user?: any }) {
               {blockedSources.map((s: any) => (
                 <div key={s.id} className="blocked-source-row">
                   <span>{s.name} <span className="muted">({s.category})</span></span>
-                  <button className="btn btn-sm btn-ghost" onClick={() => handleUnblock(s.id)}>Unblock</button>
+                  <button className="btn btn-sm btn-ghost" onClick={() => handleUnblock(s.id)} disabled={pendingMutation === `unblock:${s.id}`}>Unblock</button>
                 </div>
               ))}
             </div>
@@ -153,7 +191,7 @@ export default function WorldPage({ user }: { user?: any }) {
                             <strong>{c.displayName}</strong> <span className="muted">@{c.username}</span>
                             <span className="world-comment-time">{new Date(c.createdAt + 'Z').toLocaleString()}</span>
                             {isLoggedIn && user && (user.id === c.userId || user.role === 'admin') && (
-                              <button className="btn-link" onClick={() => deleteComment(item.id, c.id)} style={{ marginLeft: 'auto', fontSize: '0.75rem' }}>delete</button>
+                              <button className="btn-link" onClick={() => deleteComment(item.id, c.id)} disabled={pendingMutation === `delete-comment:${c.id}`} style={{ marginLeft: 'auto', fontSize: '0.75rem' }}>delete</button>
                             )}
                           </div>
                           <p className="world-comment-body">{c.body}</p>
@@ -163,7 +201,7 @@ export default function WorldPage({ user }: { user?: any }) {
                     {isLoggedIn ? (
                       <form className="world-comment-form" onSubmit={e => { e.preventDefault(); addComment(item.id); }}>
                         <input className="input" placeholder="Add a comment..." value={disc.body} onChange={e => setDiscussions(prev => ({ ...prev, [item.id]: { ...prev[item.id], body: e.target.value } }))} />
-                        <button className="btn btn-sm btn-primary" disabled={!disc.body?.trim()}>Post</button>
+                        <button className="btn btn-sm btn-primary" disabled={!disc.body?.trim() || pendingMutation === `comment:${item.id}`}>Post</button>
                       </form>
                     ) : (
                       <p className="muted" style={{ marginTop: 10, fontSize: '0.85rem' }}>

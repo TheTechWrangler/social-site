@@ -141,6 +141,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [reportNotes, setReportNotes] = useState<Record<number, string>>({});
   const [serverList, setServerList] = useState<any[]>([]);
   const [srvForm, setSrvForm] = useState({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
+  const [serverMutation, setServerMutation] = useState<string | null>(null);
 
   // Auth logs
   const [authEvents, setAuthEvents] = useState<any[]>([]);
@@ -264,13 +265,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   async function toggleSource(id: number, active: boolean) {
     try {
-      const r = await fetch(`/api/admin/rss/sources/${id}`, {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_active: active ? 0 : 1 }),
-      });
-      if (r.ok) loadRss();
+      await api.patch(`/admin/rss/sources/${id}`, { is_active: active ? 0 : 1 });
+      await loadRss();
     } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not update RSS source.')); }
   }
 
@@ -400,40 +396,51 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   async function addServer(e: React.FormEvent) {
     e.preventDefault();
-    if (!srvForm.gameId || !srvForm.name) return;
+    if (!srvForm.gameId || !srvForm.name || serverMutation) return;
+    setServerMutation('create');
     try {
-      await fetch('/api/admin/game-servers', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(srvForm) });
+      await api.post('/admin/game-servers', srvForm);
       setSrvForm({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
-      loadServers();
-    } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not add game server.')); }
+      await loadServers();
+    } catch (e: any) {
+      console.error(e);
+      setLoadError('servers', errorMessage(e, 'Could not add game server.'));
+    } finally {
+      setServerMutation(null);
+    }
   }
 
   async function toggleServerActive(id: number, active: boolean) {
+    if (serverMutation) return;
+    setServerMutation(`toggle:${id}`);
     try {
-      await fetch(`/api/admin/game-servers/${id}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_active: active ? 0 : 1 }) });
-      loadServers();
-    } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not update game server.')); }
+      await api.patch(`/admin/game-servers/${id}`, { isActive: active ? 0 : 1 });
+      await loadServers();
+    } catch (e: any) {
+      console.error(e);
+      setLoadError('servers', errorMessage(e, 'Could not update game server.'));
+    } finally {
+      setServerMutation(null);
+    }
   }
 
   async function deleteServer(id: number) {
     if (!confirm('Delete this server?')) return;
+    if (serverMutation) return;
+    setServerMutation(`delete:${id}`);
     try {
-      await fetch(`/api/admin/game-servers/${id}`, { method: 'DELETE', credentials: 'include' });
-      loadServers();
-    } catch (e: any) { console.error(e); setLoadError('servers', errorMessage(e, 'Could not delete game server.')); }
+      await api.delete(`/admin/game-servers/${id}`);
+      await loadServers();
+    } catch (e: any) {
+      console.error(e);
+      setLoadError('servers', errorMessage(e, 'Could not delete game server.'));
+    } finally {
+      setServerMutation(null);
+    }
   }
 
   async function updateReportStatus(id: number, status: 'dismissed' | 'resolved', adminNote: string) {
-    const res = await fetch(`/api/admin/reports/${id}`, {
-      method: 'PATCH',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status, adminNote }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || 'Could not update report.');
-    }
+    await api.patch(`/admin/reports/${id}`, { status, adminNote });
   }
 
   async function reviewReport(report: any, status: 'dismissed' | 'resolved') {
@@ -457,14 +464,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       return;
     }
     try {
-      const r = await fetch(`/api/admin/users/${id}/role`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role }),
-      });
-      const data = await r.json();
-      if (!r.ok) { setRoleMsg(data.error || 'Failed'); return; }
+      const data = await api.post<any>(`/admin/users/${id}/role`, { role });
       setUsers(prev => prev.map(u => u.id === id ? { ...u, role: data.role } : u));
       setRoleMsg(`Role updated to ${role}`);
     } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not change role.')); }
@@ -493,19 +493,22 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     try {
       await (hidden ? api.unhidePost(id) : api.hidePost(id));
       setPosts(prev => prev.map(p => p.id === id ? { ...p, hidden: hidden ? 0 : 1 } : p));
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      console.error(e);
+      setLoadError('posts', errorMessage(e, 'Could not update post visibility.'));
+    }
   }
 
   async function verifyUser(id: number) {
     try {
-      await fetch(`/api/admin/users/${id}/verify`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
+      await api.post(`/admin/users/${id}/verify`);
       setUsers(prev => prev.map(u => u.id === id ? { ...u, is_verified: 1 } : u));
     } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not verify user.')); }
   }
 
   async function unverifyUser(id: number) {
     try {
-      await fetch(`/api/admin/users/${id}/unverify`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' } });
+      await api.post(`/admin/users/${id}/unverify`);
       setUsers(prev => prev.map(u => u.id === id ? { ...u, is_verified: 0 } : u));
     } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not unverify user.')); }
   }
@@ -895,7 +898,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
             <input className="input" placeholder="Host/IP" value={srvForm.connection_host} onChange={e => setSrvForm({ ...srvForm, connection_host: e.target.value })} />
             <input className="input" placeholder="Port" value={srvForm.connection_port} onChange={e => setSrvForm({ ...srvForm, connection_port: e.target.value })} style={{ width: 100 }} />
             <input className="input" placeholder="Platform" value={srvForm.platform} onChange={e => setSrvForm({ ...srvForm, platform: e.target.value })} style={{ width: 120 }} />
-            <button className="btn btn-primary">Add Server</button>
+            <button className="btn btn-primary" disabled={serverMutation === 'create'}>{serverMutation === 'create' ? 'Adding...' : 'Add Server'}</button>
           </form>
 
           <h3 style={{ marginTop: 20 }}>Servers ({serverList.length})</h3>
@@ -910,8 +913,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                 <td>{s.current_players}/{s.max_players || '?'}</td>
                 <td>{s.is_active ? '✅' : '❌'}</td>
                 <td>
-                  <button className="btn btn-sm" onClick={() => toggleServerActive(s.id, !!s.is_active)}>{s.is_active ? 'Deactivate' : 'Activate'}</button>
-                  <button className="btn btn-sm" onClick={() => deleteServer(s.id)}>Delete</button>
+                  <button className="btn btn-sm" onClick={() => toggleServerActive(s.id, !!s.is_active)} disabled={serverMutation === `toggle:${s.id}`}>{s.is_active ? 'Deactivate' : 'Activate'}</button>
+                  <button className="btn btn-sm" onClick={() => deleteServer(s.id)} disabled={serverMutation === `delete:${s.id}`}>Delete</button>
                 </td>
               </tr>
             ))}</tbody>

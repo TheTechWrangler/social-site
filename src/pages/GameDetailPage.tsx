@@ -1,11 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
 
 export default function GameDetailPage({ user }: { user?: any }) {
   const { slug } = useParams<{ slug: string }>();
   const [searchParams] = useSearchParams();
+  const routeKey = `${slug || ''}:${user?.id ?? 'anonymous'}`;
+  const currentRouteKey = useRef(routeKey);
+  currentRouteKey.current = routeKey;
   const [game, setGame] = useState<any>(null);
+  const [loadState, setLoadState] = useState<RouteLoadState>('loading');
+  const [stateRouteKey, setStateRouteKey] = useState(routeKey);
+  const requestGate = useRef(new RouteRequestGate());
   const [lfgPosts, setLfgPosts] = useState<any[]>([]);
   const [players, setPlayers] = useState<any[]>([]);
   const [servers, setServers] = useState<any[]>([]);
@@ -23,6 +30,9 @@ export default function GameDetailPage({ user }: { user?: any }) {
   const [myLfgPosts, setMyLfgPosts] = useState<any[]>([]);
   const [extendDurations, setExtendDurations] = useState<Record<number, number>>({});
   const [extendingId, setExtendingId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [creatingLfg, setCreatingLfg] = useState(false);
+  const [lfgError, setLfgError] = useState('');
 
   const isVerified = user?.is_verified === 1 || user?.isVerified === true;
 
@@ -39,48 +49,82 @@ export default function GameDetailPage({ user }: { user?: any }) {
     if (searchParams.get('tab') === 'players') setTab('players');
   }, [searchParams]);
 
-  useEffect(() => { loadData(); }, [slug]);
+  useEffect(() => {
+    void loadData();
+    return () => requestGate.current.invalidate();
+  }, [routeKey]);
 
   async function loadData() {
+    const requestedRouteKey = routeKey;
+    if (currentRouteKey.current !== requestedRouteKey) return;
+    const isCurrent = requestGate.current.begin();
+    setStateRouteKey(requestedRouteKey);
+    setLoadState('loading');
+    setGame(null);
+    setLfgPosts([]);
+    setPlayers([]);
+    setServers([]);
+    setMyLfgPosts([]);
+    if (!slug) {
+      if (isCurrent()) setLoadState('unavailable');
+      return;
+    }
     try {
       const r = await api.get<any>(`/games/${slug}`);
+      if (!isCurrent()) return;
       setGame(r.game); setLfgPosts(r.lfgPosts); setPlayers(r.players); setServers(r.servers || []);
       setViewerDiscoveryEnabled(!!r.viewerDiscoveryEnabled);
-    } catch (e) { console.error(e); }
+      setLoadState('loaded');
+    } catch (error) {
+      if (isCurrent()) setLoadState(routeFailureState(error));
+      return;
+    }
     if (user) {
       try {
         const r = await api.get<any>(`/games/${slug}/lfg/mine`);
-        setMyLfgPosts(r.posts);
+        if (isCurrent()) setMyLfgPosts(r.posts || []);
       } catch (e) { /* not logged in or no posts */ }
     }
   }
 
   async function createLfg(e: React.FormEvent) {
     e.preventDefault();
-    if (!lfgTitle.trim() || !isVerified) return;
+    if (!lfgTitle.trim() || !isVerified || creatingLfg) return;
+    setCreatingLfg(true);
+    setLfgError('');
     try {
       await api.post(`/games/${slug}/lfg`, { title: lfgTitle, body: lfgBody, platform: lfgPlatform, playStyle: lfgPlayStyle, durationHours: lfgDuration });
       setLfgTitle(''); setLfgBody(''); setLfgPlatform(''); setLfgPlayStyle(''); setShowCreateLfg(false);
-      loadData();
-    } catch (e: any) { alert(e.message); }
+      await loadData();
+    } catch (e: any) {
+      setLfgError(e.message || 'Could not create LFG post.');
+    } finally {
+      setCreatingLfg(false);
+    }
   }
 
   async function deleteLfg(id: number) {
-    try { await fetch(`/api/games/lfg/${id}`, { method: 'DELETE', credentials: 'include' }); loadData(); } catch (e) {}
+    if (deletingId !== null) return;
+    setDeletingId(id);
+    setLfgError('');
+    try {
+      await api.delete(`/games/lfg/${id}`);
+      await loadData();
+    } catch (e: any) {
+      setLfgError(e.message || 'Could not delete LFG post.');
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   async function extendLfg(id: number) {
     const hours = extendDurations[id] ?? 6;
     setExtendingId(id);
+    setLfgError('');
     try {
-      await fetch(`/api/games/lfg/${id}/extend`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ durationHours: hours }),
-      });
+      await api.post(`/games/lfg/${id}/extend`, { durationHours: hours });
       await loadData();
-    } catch (e: any) { alert(e.message || 'Could not extend post.'); }
+    } catch (e: any) { setLfgError(e.message || 'Could not extend post.'); }
     finally { setExtendingId(null); }
   }
 
@@ -95,7 +139,24 @@ export default function GameDetailPage({ user }: { user?: any }) {
     } catch (e: any) { alert(e.message || 'Could not follow player.'); }
   }
 
-  if (!game) return <div className="loading">Loading...</div>;
+  const visibleLoadState = routeStateForKey(routeKey, stateRouteKey, loadState);
+  if (visibleLoadState === 'loading') {
+    return <div className="loading">Loading...</div>;
+  }
+  if (visibleLoadState === 'unavailable') return (
+    <div className="game-detail-page">
+      <Link to="/games" className="btn-ghost">← All Games</Link>
+      <p className="muted" style={{ marginTop: 24 }}>This game is not available.</p>
+    </div>
+  );
+  if (visibleLoadState === 'error') return (
+    <div className="game-detail-page">
+      <Link to="/games" className="btn-ghost">← All Games</Link>
+      <p className="error-msg" role="alert">Could not load this game.</p>
+      <button className="btn btn-ghost" onClick={() => void loadData()}>Try again</button>
+    </div>
+  );
+  if (!game) return null;
   const filteredPlayers = players.filter((p: any) => {
     if (playerPlatform && p.platform !== playerPlatform) return false;
     if (playerStyle && p.play_style !== playerStyle) return false;
@@ -152,6 +213,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
 
       {tab === 'lfg' && (
         <div className="lfg-section">
+          {lfgError && <p className="error-msg" role="alert">{lfgError}</p>}
           {isVerified && (
             <button className="btn btn-primary" style={{ marginBottom: 12 }} onClick={() => setShowCreateLfg(!showCreateLfg)}>
               {showCreateLfg ? 'Cancel' : '+ New LFG Post'}
@@ -169,7 +231,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
                   {[1,3,6,12,24].map(h => <option key={h} value={h}>{h} hour{h>1?'s':''}</option>)}
                 </select>
               </div>
-              <button className="btn btn-primary">Post</button>
+              <button className="btn btn-primary" disabled={creatingLfg}>{creatingLfg ? 'Posting...' : 'Post'}</button>
             </form>
           )}
 
@@ -212,7 +274,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
                       >
                         {isWorking ? '…' : isExpired ? 'Reactivate' : 'Extend'}
                       </button>
-                      <button className="btn btn-sm btn-ghost" onClick={() => deleteLfg(p.id)} disabled={isWorking}>Delete</button>
+                      <button className="btn btn-sm btn-ghost" onClick={() => deleteLfg(p.id)} disabled={isWorking || deletingId === p.id}>Delete</button>
                     </div>
                   </div>
                 );
@@ -246,7 +308,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
                     {p.mic_required ? <span className="lfg-tag">🎙 Mic required</span> : null}
                   </div>
                   {user?.role === 'admin' && user?.id !== p.user_id && (
-                    <button className="btn btn-sm btn-ghost" onClick={() => deleteLfg(p.id)} style={{ marginTop: 8 }}>Delete</button>
+                    <button className="btn btn-sm btn-ghost" onClick={() => deleteLfg(p.id)} disabled={deletingId === p.id} style={{ marginTop: 8 }}>Delete</button>
                   )}
                 </div>
               ))

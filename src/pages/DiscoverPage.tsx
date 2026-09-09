@@ -8,6 +8,8 @@ export default function DiscoverPage({ user }: { user?: any }) {
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const [pendingUserId, setPendingUserId] = useState<number | null>(null);
 
   const isVerified = !!user?.is_verified;
 
@@ -37,24 +39,37 @@ export default function DiscoverPage({ user }: { user?: any }) {
   }
 
   async function handleFollow(userId: number) {
+    if (pendingUserId !== null) return;
+    setPendingUserId(userId);
+    setActionError('');
     try {
       await api.follow(userId);
       const update = (arr: any[]) => arr.map(u => u.id === userId ? { ...u, isFollowing: true } : u);
       setResults(update);
       setSuggestions(update);
     } catch (e: any) {
-      if (e.message?.includes('verification')) alert('Account verification required before you can follow.');
-      else console.error(e);
+      console.error(e);
+      setActionError(e.message || 'Could not follow user.');
+    } finally {
+      setPendingUserId(null);
     }
   }
 
   async function handleUnfollow(userId: number) {
+    if (pendingUserId !== null) return;
+    setPendingUserId(userId);
+    setActionError('');
     try {
       await api.unfollow(userId);
       const update = (arr: any[]) => arr.map(u => u.id === userId ? { ...u, isFollowing: false } : u);
       setResults(update);
       setSuggestions(update);
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      console.error(e);
+      setActionError(e.message || 'Could not unfollow user.');
+    } finally {
+      setPendingUserId(null);
+    }
   }
 
   function renderCard(u: any) {
@@ -71,7 +86,8 @@ export default function DiscoverPage({ user }: { user?: any }) {
         </div>
         {isVerified && user && user.id !== u.id && (
           <button className={`btn ${u.isFollowing ? 'btn-ghost' : 'btn-primary'}`}
-            onClick={() => u.isFollowing ? handleUnfollow(u.id) : handleFollow(u.id)}>
+            onClick={() => u.isFollowing ? handleUnfollow(u.id) : handleFollow(u.id)}
+            disabled={pendingUserId === u.id}>
             {u.isFollowing ? 'Following' : 'Follow'}
           </button>
         )}
@@ -82,6 +98,7 @@ export default function DiscoverPage({ user }: { user?: any }) {
   return (
     <div className="discover-page">
       <h2>🔍 Discover People</h2>
+      {actionError && <p className="error-msg" role="alert">{actionError}</p>}
       <form className="discover-search" onSubmit={handleSearch}>
         <input className="input" placeholder="Search by name or username..." value={query}
           onChange={e => setQuery(e.target.value)} autoFocus />

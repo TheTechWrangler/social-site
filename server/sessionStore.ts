@@ -16,6 +16,7 @@
 
 import { Store } from 'express-session';
 import { getDb } from './database.js';
+import { isStoredSessionUnexpired, sessionExpiryEpochMs } from './sessionExpiry.js';
 
 // How long between automatic expired-session cleanup sweeps.
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -35,12 +36,22 @@ export class SQLiteSessionStore extends Store {
 
   private runCleanup(): void {
     try {
-      const result = getDb()
-        .prepare("DELETE FROM sessions WHERE expire < datetime('now')")
-        .run();
-      if (result.changes > 0) {
-        console.log(`[session] Cleaned up ${result.changes} expired session(s).`);
+      const db = getDb();
+      const nowMs = Date.now();
+      const rows = db.prepare('SELECT sid, expire, expire_ms FROM sessions')
+        .all() as Array<{ sid: string; expire: unknown; expire_ms: unknown }>;
+      const staleIds = rows
+        .filter(row => !isStoredSessionUnexpired(row.expire_ms ?? row.expire, nowMs))
+        .map(row => row.sid);
+      const remove = db.prepare('DELETE FROM sessions WHERE sid = ?');
+      const removeStale = db.transaction((ids: string[]) => {
+        for (const sid of ids) remove.run(sid);
+      });
+      removeStale(staleIds);
+      if (staleIds.length > 0) {
+        console.log(`[session] Cleaned up ${staleIds.length} expired or malformed session(s).`);
       }
+      db.prepare('DELETE FROM application_auth_sessions WHERE expires_at_ms <= ?').run(nowMs);
     } catch (e) {
       // Non-fatal — log and continue. Missing sessions cause re-login, not data loss.
       console.error('[session] Cleanup error:', (e as Error).message);
@@ -50,10 +61,21 @@ export class SQLiteSessionStore extends Store {
   /** Read a session by ID. Returns null if not found or expired. */
   get(sid: string, callback: (err: any, session?: any) => void): void {
     try {
-      const row = getDb()
-        .prepare("SELECT sess FROM sessions WHERE sid = ? AND expire > datetime('now')")
-        .get(sid) as { sess: string } | undefined;
-      callback(null, row ? JSON.parse(row.sess) : null);
+      const db = getDb();
+      const row = db.prepare('SELECT sess, expire, expire_ms FROM sessions WHERE sid = ?')
+        .get(sid) as { sess: string; expire: unknown; expire_ms: unknown } | undefined;
+      if (!row) { callback(null, null); return; }
+      if (!isStoredSessionUnexpired(row.expire_ms ?? row.expire)) {
+        db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
+        callback(null, null);
+        return;
+      }
+      try {
+        callback(null, JSON.parse(row.sess));
+      } catch {
+        db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
+        callback(null, null);
+      }
     } catch (e) {
       callback(e);
     }
@@ -63,18 +85,17 @@ export class SQLiteSessionStore extends Store {
   set(sid: string, session: any, callback?: (err?: any) => void): void {
     try {
       // Prefer the cookie's explicit expiry Date; fall back to originalMaxAge or 24 h.
-      const cookieExpires = session.cookie?.expires;
-      const expire =
-        cookieExpires instanceof Date
-          ? cookieExpires.toISOString()
-          : new Date(Date.now() + (session.cookie?.originalMaxAge ?? 86400000)).toISOString();
+      const expire = sessionExpiryEpochMs(session);
 
       getDb()
         .prepare(`
-          INSERT INTO sessions (sid, sess, expire) VALUES (?, ?, ?)
-          ON CONFLICT(sid) DO UPDATE SET sess = excluded.sess, expire = excluded.expire
+          INSERT INTO sessions (sid, sess, expire, expire_ms) VALUES (?, ?, ?, ?)
+          ON CONFLICT(sid) DO UPDATE SET
+            sess = excluded.sess,
+            expire = excluded.expire,
+            expire_ms = excluded.expire_ms
         `)
-        .run(sid, JSON.stringify(session), expire);
+        .run(sid, JSON.stringify(session), expire, expire);
 
       callback?.();
     } catch (e) {
@@ -98,15 +119,11 @@ export class SQLiteSessionStore extends Store {
    */
   touch(sid: string, session: any, callback?: (err?: any) => void): void {
     try {
-      const cookieExpires = session.cookie?.expires;
-      const expire =
-        cookieExpires instanceof Date
-          ? cookieExpires.toISOString()
-          : new Date(Date.now() + (session.cookie?.originalMaxAge ?? 86400000)).toISOString();
+      const expire = sessionExpiryEpochMs(session);
 
       getDb()
-        .prepare('UPDATE sessions SET expire = ? WHERE sid = ?')
-        .run(expire, sid);
+        .prepare('UPDATE sessions SET expire = ?, expire_ms = ? WHERE sid = ?')
+        .run(expire, expire, sid);
 
       callback?.();
     } catch (e) {

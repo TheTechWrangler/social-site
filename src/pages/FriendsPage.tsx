@@ -11,6 +11,8 @@ export default function FriendsPage({ user }: { user: any }) {
   const [following, setFollowing] = useState<any[]>([]);
   const [followers, setFollowers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState('');
+  const [pendingUserId, setPendingUserId] = useState<number | null>(null);
 
   useEffect(() => { loadConnections(); }, []);
 
@@ -30,10 +32,18 @@ export default function FriendsPage({ user }: { user: any }) {
   }
 
   async function toggleFollow(userId: number, isFollowing: boolean) {
+    if (pendingUserId !== null) return;
+    setPendingUserId(userId);
+    setActionError('');
     try {
       await (isFollowing ? api.unfollow(userId) : api.follow(userId));
-      loadConnections();
-    } catch (e) { console.error(e); }
+      await loadConnections();
+    } catch (e: any) {
+      console.error(e);
+      setActionError(e.message || 'Could not update follow status.');
+    } finally {
+      setPendingUserId(null);
+    }
   }
 
   async function handleMessage(userId: number) {
@@ -54,6 +64,7 @@ export default function FriendsPage({ user }: { user: any }) {
   return (
     <div className="friends-page">
       <h2>👥 Connections</h2>
+      {actionError && <p className="error-msg" role="alert">{actionError}</p>}
       <div className="admin-tabs">
         <button className={`btn ${tab === 'friends' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('friends')}>
           Friends ({friends.length})
@@ -89,7 +100,7 @@ export default function FriendsPage({ user }: { user: any }) {
                 {isVerified && (
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn btn-ghost btn-sm" onClick={() => handleMessage(u.id)} title="Send message">💬</button>
-                    <button className={`btn ${isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={() => toggleFollow(u.id, isFollowing)}>
+                    <button className={`btn ${isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={() => toggleFollow(u.id, isFollowing)} disabled={pendingUserId === u.id}>
                       {isFollowing ? 'Unfollow' : 'Follow'}
                     </button>
                   </div>

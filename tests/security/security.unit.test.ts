@@ -14,6 +14,58 @@ import {
   parseTokenExpiryUtc,
   utcExpiryFromNow,
 } from '../../server/tokenExpiry.js';
+import {
+  isStoredSessionUnexpired,
+  parseStoredSessionExpiry,
+  sessionExpiryEpochMs,
+} from '../../server/sessionExpiry.js';
+import { destroyBrowserSession } from '../../server/browserSession.js';
+import { RouteRequestGate, routeFailureState, routeStateForKey } from '../../src/routeLoadState.js';
+
+test('route load failures distinguish unavailable objects from retryable failures', () => {
+  assert.equal(routeFailureState({ status: 404 }), 'unavailable');
+  assert.equal(routeFailureState({ status: 403 }), 'unavailable');
+  assert.equal(routeFailureState({ status: 429 }), 'error');
+  assert.equal(routeFailureState({ status: 500 }), 'error');
+  assert.equal(routeFailureState(new TypeError('network failed')), 'error');
+});
+
+test('route-key changes hide prior loaded and unavailable states immediately', () => {
+  assert.equal(routeStateForKey('valid', 'valid', 'loaded'), 'loaded');
+  assert.equal(routeStateForKey('missing', 'valid', 'loaded'), 'loading');
+  assert.equal(routeStateForKey('missing', 'missing', 'unavailable'), 'unavailable');
+  assert.equal(routeStateForKey('valid', 'missing', 'unavailable'), 'loading');
+  assert.equal(routeStateForKey('valid', 'valid', 'error'), 'error');
+});
+
+test('route request generations reject obsolete and unmounted completions', async () => {
+  const gate = new RouteRequestGate();
+  const commits: string[] = [];
+  let releaseOld!: (value: string) => void;
+  let releaseNew!: (value: string) => void;
+  const oldResponse = new Promise<string>(resolve => { releaseOld = resolve; });
+  const newResponse = new Promise<string>(resolve => { releaseNew = resolve; });
+
+  const oldIsCurrent = gate.begin();
+  const oldCommit = oldResponse.then(value => {
+    if (oldIsCurrent()) commits.push(value);
+  });
+  const newIsCurrent = gate.begin();
+  const newCommit = newResponse.then(value => {
+    if (newIsCurrent()) commits.push(value);
+  });
+
+  releaseNew('new route');
+  await newCommit;
+  releaseOld('old route');
+  await oldCommit;
+  assert.deepEqual(commits, ['new route']);
+
+  const retryIsCurrent = gate.begin();
+  assert.equal(retryIsCurrent(), true);
+  gate.invalidate();
+  assert.equal(retryIsCurrent(), false);
+});
 
 test('Google OAuth state accepts once and rejects replay', () => {
   const now = 1_800_000_000_000;
@@ -92,6 +144,51 @@ test('new token expiries are explicit UTC and do not extend the requested TTL', 
   const expires = utcExpiryFromNow(1, now);
   assert.equal(expires, '2026-09-08T13:00:00.000Z');
   assert.equal(parseTokenExpiryUtc(expires), now + 60 * 60 * 1000);
+});
+
+test('session expiry uses epoch milliseconds with exact-boundary and legacy handling', () => {
+  const beforeMidnight = Date.UTC(2026, 8, 8, 23, 59, 59, 999);
+  const midnight = Date.UTC(2026, 8, 9, 0, 0, 0, 0);
+  assert.equal(isStoredSessionUnexpired(midnight, beforeMidnight), true);
+  assert.equal(isStoredSessionUnexpired(midnight, midnight), false);
+  assert.equal(isStoredSessionUnexpired(midnight, midnight + 1), false);
+  assert.equal(parseStoredSessionExpiry(String(midnight)), midnight);
+  assert.equal(parseStoredSessionExpiry('2026-09-09T00:00:00.000Z'), midnight);
+  assert.equal(parseStoredSessionExpiry('2026-09-09 00:00:00'), midnight);
+  assert.equal(parseStoredSessionExpiry('2026-09-09T00:00:00'), null);
+  assert.equal(parseStoredSessionExpiry('not-a-session-expiry'), null);
+  assert.equal(parseStoredSessionExpiry(0), null);
+});
+
+test('session touch expiry preserves explicit expiry and slides max-age fallback', () => {
+  const now = Date.UTC(2026, 8, 8, 12, 0, 0);
+  const absolute = now + 30_000;
+  assert.equal(sessionExpiryEpochMs({ cookie: { expires: new Date(absolute), originalMaxAge: 60_000 } }, now), absolute);
+  assert.equal(sessionExpiryEpochMs({ cookie: { expires: new Date(absolute).toISOString(), originalMaxAge: 60_000 } }, now), absolute);
+  assert.equal(sessionExpiryEpochMs({ cookie: { originalMaxAge: 60_000 } }, now), now + 60_000);
+  assert.equal(sessionExpiryEpochMs({ cookie: { originalMaxAge: 60_000 } }, now + 1), now + 60_001);
+});
+
+test('browser-session teardown reports Passport and store failures', async () => {
+  let destroyCalled = false;
+  await assert.rejects(destroyBrowserSession({
+    logout: (done: (err: Error) => void) => done(new Error('passport failure')),
+    session: { destroy: () => { destroyCalled = true; } },
+  } as any), /passport failure/);
+  assert.equal(destroyCalled, false);
+
+  await assert.rejects(destroyBrowserSession({
+    logout: (done: (err: null) => void) => done(null),
+    session: { destroy: (done: (err: Error) => void) => done(new Error('store failure')) },
+  } as any), /store failure/);
+
+  const successful: any = {
+    user: { id: 1 },
+    logout: (done: (err: null) => void) => done(null),
+    session: { destroy: (done: (err: null) => void) => done(null) },
+  };
+  await destroyBrowserSession(successful);
+  assert.equal(successful.user, undefined);
 });
 
 test('React Router v7 retains the declarative APIs used by RefugeCloud', () => {

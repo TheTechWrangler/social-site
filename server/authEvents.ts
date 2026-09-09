@@ -15,6 +15,7 @@ export type AuthEventType =
   | 'register_success'
   | 'oauth_success'
   | 'oauth_failure'
+  | 'provider_account_reclaimed'
   | 'password_reset_requested'
   | 'password_reset_completed'
   | 'admin_ban'

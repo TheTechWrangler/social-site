@@ -1,35 +1,97 @@
+import type { CanonicalProfileDto } from '../../shared/profile';
+
 const BASE = '/api';
+
+export type ApiErrorKind = 'http' | 'network' | 'invalid-response';
+
+export class ApiError extends Error {
+  readonly kind: ApiErrorKind;
+  readonly status?: number;
+  readonly data?: unknown;
+  readonly malformedResponse: boolean;
+
+  constructor(
+    message: string,
+    options: { kind: ApiErrorKind; status?: number; data?: unknown; malformedResponse?: boolean; cause?: unknown },
+  ) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    this.name = 'ApiError';
+    this.kind = options.kind;
+    this.status = options.status;
+    this.data = options.data;
+    this.malformedResponse = options.malformedResponse ?? false;
+  }
+}
+
+function safeErrorMessage(body: unknown, fallback: string): string {
+  if (!body || typeof body !== 'object') return fallback;
+  const value = (body as any).error ?? (body as any).message;
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
 
 /**
  * Core fetch wrapper. Auth is handled via HttpOnly cookie automatically sent
  * by the browser with credentials:'include'. No Authorization header or
  * localStorage token involved.
  */
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   // Don't set Content-Type for FormData — browser sets the correct multipart boundary.
   const isFormData = options?.body instanceof FormData;
   const headers: Record<string, string> = isFormData ? {} : { 'Content-Type': 'application/json' };
 
-  const res = await fetch(`${BASE}${url}`, {
-    ...options,
-    credentials: 'include',  // Always send the HttpOnly auth cookie
-    headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) },
-  });
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const err: any = new Error((body as any).error || `HTTP ${res.status}`);
-    err.status = res.status;
-    err.data = body;
-    throw err;
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      ...options,
+      credentials: 'include',
+      headers: { ...headers, ...(options?.headers as Record<string, string> ?? {}) },
+    });
+  } catch (cause) {
+    throw new ApiError('Network request failed. Please check your connection and try again.', {
+      kind: 'network',
+      cause,
+    });
   }
-  return res.json();
+
+  const text = await res.text().catch(cause => {
+    throw new ApiError('Could not read the server response.', {
+      kind: 'invalid-response',
+      status: res.status,
+      cause,
+    });
+  });
+  let body: unknown;
+  let malformedResponse = false;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      malformedResponse = true;
+    }
+  }
+  if (!res.ok) {
+    throw new ApiError(
+      safeErrorMessage(body, `Request failed (HTTP ${res.status}).`),
+      { kind: 'http', status: res.status, data: body, malformedResponse },
+    );
+  }
+  if (!text) return undefined as T;
+  if (malformedResponse) {
+    throw new ApiError('The server returned an unexpected response.', {
+      kind: 'invalid-response',
+      status: res.status,
+    });
+  }
+  return body as T;
 }
 
 // Auth
 export const api = {
   get: <T>(url: string) => request<T>(url),
   post: <T>(url: string, body?: any) => request<T>(url, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
+  put: <T>(url: string, body?: any) => request<T>(url, { method: 'PUT', body: body === undefined ? undefined : JSON.stringify(body) }),
+  patch: <T>(url: string, body?: any) => request<T>(url, { method: 'PATCH', body: body === undefined ? undefined : JSON.stringify(body) }),
+  delete: <T>(url: string) => request<T>(url, { method: 'DELETE' }),
   register: (data: { username: string; displayName: string; email: string; password: string }) =>
     request<{ user: any; needsEmailVerification?: boolean }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
   login: (data: { username: string; password: string }) =>
@@ -58,17 +120,17 @@ export const api = {
   deletePost: (id: number) => request<{ ok: boolean }>(`/posts/${id}`, { method: 'DELETE' }),
 
   // Users
-  getUser: (username: string) => request<{ user: any }>(`/users/${username}`),
+  getUser: (username: string) => request<{ user: CanonicalProfileDto; message?: string }>(`/users/${username}`),
   getUserPosts: (username: string) => request<{ posts: any[] }>(`/users/${username}/posts`),
   updateProfile: (data: {
-    displayName?: string; bio?: string; profileVisibility?: string;
+    displayName?: string; bio?: string | null; profileVisibility?: string;
     feedExposure?: string; worldHomeInjection?: string; gameDiscoveryEnabled?: boolean;
-    avatar_url?: string; dmPrivacy?: string;
+    avatar_url?: ''; dmPrivacy?: string;
     profileData?: {
       techInterests?: string; platforms?: string; lookingFor?: string;
       currentProjects?: string; favoriteGenres?: string; websiteUrl?: string;
-    };
-  }) => request<{ user: any }>('/users/profile', { method: 'PUT', body: JSON.stringify(data) }),
+    } | null;
+  }) => request<{ user: CanonicalProfileDto; authUser: any }>('/users/profile', { method: 'PUT', body: JSON.stringify(data) }),
   searchUsers: (q: string) => request<{ users: any[] }>(`/users?q=${encodeURIComponent(q)}`),
   getMyGames: () => request<{ gamePrefs: any[] }>('/users/me/games'),
   getFriends: () => request<{ users: any[] }>('/users/me/friends'),
@@ -82,6 +144,11 @@ export const api = {
   // Likes
   like: (postId: number) => request<{ liked: boolean; likeCount: number }>(`/likes/${postId}`, { method: 'POST' }),
   unlike: (postId: number) => request<{ liked: boolean; likeCount: number; counts?: any }>(`/likes/${postId}`, { method: 'DELETE' }),
+  react: (postId: number, reactionType: string) =>
+    request<{ counts: Record<string, number>; userReaction: string }>(`/likes/${postId}`, {
+      method: 'POST',
+      body: JSON.stringify({ reactionType }),
+    }),
 
   // Comments
   addComment: (postId: number, content: string) =>
@@ -137,6 +204,8 @@ export const api = {
   getReports: () => request<{ reports: any[] }>('/admin/reports'),
   reportPost: (postId: number, reason: string, details: string) =>
     request<{ ok: boolean }>('/reports', { method: 'POST', body: JSON.stringify({ targetType: 'post', targetId: postId, reason, details }) }),
+  reportContent: (targetType: 'post' | 'comment', targetId: number, reason: string, details: string) =>
+    request<{ ok: boolean }>('/reports', { method: 'POST', body: JSON.stringify({ targetType, targetId, reason, details }) }),
   getAuthEvents: (params?: { eventType?: string; success?: string; userId?: number; page?: number; limit?: number }) => {
     const qs = params ? new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([,v]) => v !== undefined && v !== '').map(([k,v]) => [k, String(v)]))).toString() : '';
     return request<{ events: any[]; page: number; limit: number; total: number; totalPages: number }>(`/admin/auth-events${qs ? `?${qs}` : ''}`);
@@ -160,28 +229,16 @@ export const api = {
     request<{ ok: boolean; message: string }>('/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, newPassword }) }),
 
   // Media — uses credentials:'include' via request() for cookie auth
-  uploadImage: async (file: File): Promise<{ media: any }> => {
+  uploadImage: async (file: File, postId?: number): Promise<{ media: any }> => {
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch('/api/uploads/image', {
-      method: 'POST',
-      credentials: 'include',
-      body: form,
-      // No Content-Type — browser sets multipart/form-data with boundary automatically
-    });
-    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error((body as any).error || 'Upload failed'); }
-    return res.json();
+    if (postId !== undefined) form.append('postId', String(postId));
+    return request<{ media: any }>('/uploads/image', { method: 'POST', body: form });
   },
   uploadAvatar: async (file: File): Promise<{ media: any }> => {
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch('/api/uploads/image', {
-      method: 'POST',
-      credentials: 'include',
-      body: form,
-    });
-    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error((body as any).error || 'Upload failed'); }
-    return res.json();
+    return request<{ media: any }>('/uploads/avatar', { method: 'POST', body: form });
   },
   attachYouTube: (url: string, postId?: number) =>
     request<{ media: any }>('/uploads/external-video', { method: 'POST', body: JSON.stringify({ url, postId }) }),

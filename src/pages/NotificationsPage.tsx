@@ -55,6 +55,7 @@ function notifDest(n: Notif): string {
 export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Props) {
   const [notifs, setNotifs] = useState<Notif[]>([]);
   const [marking, setMarking] = useState(false);
+  const [markError, setMarkError] = useState('');
 
   useEffect(() => {
     api.getNotifications().then(r => setNotifs(r.notifications)).catch(() => {});
@@ -64,12 +65,13 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
 
   async function handleMarkAllRead() {
     setMarking(true);
+    setMarkError('');
     try {
       await api.readAll();
       setNotifs(prev => prev.map(n => ({ ...n, read: 1 })));
       onMarkAllRead();
-    } catch {
-      // badge self-corrects on next poll
+    } catch (e: any) {
+      setMarkError(e.message || 'Could not mark notifications as read.');
     } finally {
       setMarking(false);
     }
@@ -77,9 +79,12 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
 
   function handleNotifClick(n: Notif) {
     if (!n.read) {
-      api.markNotificationRead(n.id).catch(() => {});
-      setNotifs(prev => prev.map(x => x.id === n.id ? { ...x, read: 1 } : x));
-      onMarkOneRead();
+      void api.markNotificationRead(n.id).then(() => {
+        setNotifs(prev => prev.map(x => x.id === n.id ? { ...x, read: 1 } : x));
+        onMarkOneRead();
+      }).catch((e: any) => {
+        setMarkError(e.message || 'Could not mark notification as read.');
+      });
     }
   }
 
@@ -93,6 +98,7 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
           </button>
         )}
       </div>
+      {markError && <p className="error-msg" role="alert">{markError}</p>}
       {notifs.length === 0 ? (
         <p className="muted">No notifications yet.</p>
       ) : (

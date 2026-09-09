@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 import WorldCard from '../components/WorldCard';
+import { attachComposerMedia, SubmissionLock, submitComposerPost, type AttachmentResult } from '../postComposerSubmission';
 
 const LEVELS = [
   { key: 'everyone', label: 'Community', help: 'All public posts from verified members. Mute, block, or follow to shape what you see.' },
@@ -17,7 +18,7 @@ const WORLD_HOME_OPTIONS = [
 const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
 const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
 
-export default function HomePage({ user }: { user: any }) {
+export default function HomePage({ user, onUserChange }: { user: any; onUserChange: (user: any) => void }) {
   const [posts, setPosts] = useState<any[]>([]);
   const [worldItems, setWorldItems] = useState<any[]>([]);
   const [feedItems, setFeedItems] = useState<any[]>([]);
@@ -37,7 +38,11 @@ export default function HomePage({ user }: { user: any }) {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [composerError, setComposerError] = useState('');
+  const [partialPostId, setPartialPostId] = useState<number | null>(null);
+  const [preferenceError, setPreferenceError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const submissionLock = useRef(new SubmissionLock());
   const isVerified = user?.isVerified ?? user?.is_verified;
 
   useEffect(() => { loadFeed(); }, []);
@@ -59,10 +64,21 @@ export default function HomePage({ user }: { user: any }) {
   }
 
   async function handleLevelChange(lv: string) {
+    const previous = level;
     setLevel(lv);
+    setPreferenceError('');
     setLoading(true);
     try {
-      await fetch('/api/users/profile', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedExposure: lv }) });
+      const updated = await api.updateProfile({ feedExposure: lv });
+      onUserChange(updated.authUser);
+    } catch (e: any) {
+      console.error(e);
+      setLevel(previous);
+      setPreferenceError(e.message || 'Could not update feed preference.');
+      setLoading(false);
+      return;
+    }
+    try {
       const r = await api.feed({ limit: 50, offset: 0, level: lv } as any);
       const nativePosts = Array.isArray(r.posts) ? r.posts : [];
       const normalizedItems = Array.isArray(r.items)
@@ -71,20 +87,29 @@ export default function HomePage({ user }: { user: any }) {
       setPosts(nativePosts);
       setWorldItems(Array.isArray(r.worldItems) ? r.worldItems : []);
       setFeedItems(normalizedItems);
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      console.error(e);
+      setPreferenceError('Feed preference was saved, but the feed could not be refreshed.');
+    }
     setLoading(false);
   }
 
   async function handleWorldHomeChange(value: string) {
+    const previous = worldHomeInjection;
     setWorldHomeInjection(value);
+    setPreferenceError('');
     setLoading(true);
     try {
-      await fetch('/api/users/profile', {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ worldHomeInjection: value }),
-      });
+      const updated = await api.updateProfile({ worldHomeInjection: value });
+      onUserChange(updated.authUser);
+    } catch (e: any) {
+      console.error(e);
+      setWorldHomeInjection(previous);
+      setPreferenceError(e.message || 'Could not update World Feed preference.');
+      setLoading(false);
+      return;
+    }
+    try {
       const r = await api.feed({ limit: 50, offset: 0, level } as any);
       const nativePosts = Array.isArray(r.posts) ? r.posts : [];
       const normalizedItems = Array.isArray(r.items)
@@ -93,7 +118,10 @@ export default function HomePage({ user }: { user: any }) {
       setPosts(nativePosts);
       setWorldItems(Array.isArray(r.worldItems) ? r.worldItems : []);
       setFeedItems(normalizedItems);
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      console.error(e);
+      setPreferenceError('World Feed preference was saved, but the feed could not be refreshed.');
+    }
     setLoading(false);
   }
 
@@ -125,21 +153,71 @@ export default function HomePage({ user }: { user: any }) {
 
   async function handlePost(e: React.FormEvent) {
     e.preventDefault();
+    if (partialPostId !== null) {
+      await retryAttachments();
+      return;
+    }
     if ((!content.trim() && !imageFile) || !isVerified) return;
+    if (!submissionLock.current.tryAcquire()) return;
     setPosting(true);
+    setComposerError('');
     try {
-      const postR = await api.createPost(content.trim() || '(image)');
-      const postId = postR.post.id;
-      if (imageFile) {
-        const form = new FormData(); form.append('file', imageFile); form.append('postId', String(postId));
-        await fetch('/api/uploads/image', { method: 'POST', credentials: 'include', body: form });
-      }
-      if (youtubeUrl.trim()) { try { await api.attachYouTube(youtubeUrl.trim(), postId); } catch (e) {} }
-      setContent(''); setImageFile(null); setImagePreview(null); setYoutubeUrl('');
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      const result = await submitComposerPost(content, { imageFile, youtubeUrl }, {
+        createPost: api.createPost,
+        uploadImage: api.uploadImage,
+        attachYouTube: api.attachYouTube,
+      });
+      applyAttachmentResult(result);
       await loadFeed();
-    } catch (e: any) { console.error(e); alert(e.message || 'Post failed'); }
-    setPosting(false);
+    } catch (e: any) {
+      console.error(e);
+      setComposerError(e.message || 'Could not create post. Your draft was preserved.');
+    } finally {
+      setPosting(false);
+      submissionLock.current.release();
+    }
+  }
+
+  function applyAttachmentResult(result: AttachmentResult) {
+    setContent('');
+    if (result.attached.includes('image')) removeImage();
+    if (result.attached.includes('video')) setYoutubeUrl('');
+    if (result.failures.length > 0) {
+      setPartialPostId(result.postId);
+      const labels = result.failures.map(f => f.kind === 'image' ? 'image' : 'YouTube attachment').join(' and ');
+      setComposerError(`Post created, but the ${labels} failed. Retry will attach to post #${result.postId} without creating another post.`);
+      return;
+    }
+    setPartialPostId(null);
+    setComposerError('');
+    removeImage();
+    setYoutubeUrl('');
+  }
+
+  async function retryAttachments() {
+    if (partialPostId === null || !submissionLock.current.tryAcquire()) return;
+    setPosting(true);
+    setComposerError('');
+    try {
+      const result = await attachComposerMedia(partialPostId, { imageFile, youtubeUrl }, {
+        uploadImage: api.uploadImage,
+        attachYouTube: api.attachYouTube,
+      });
+      applyAttachmentResult(result);
+      await loadFeed();
+    } catch (e: any) {
+      setComposerError(e.message || 'Could not retry the attachment.');
+    } finally {
+      setPosting(false);
+      submissionLock.current.release();
+    }
+  }
+
+  function dismissFailedAttachments() {
+    setPartialPostId(null);
+    setComposerError('');
+    removeImage();
+    setYoutubeUrl('');
   }
 
   async function handleRepopulate() {
@@ -204,6 +282,7 @@ export default function HomePage({ user }: { user: any }) {
         <div className="verify-banner">⚠️ Your account is pending verification. You can browse, but posting and interactions are disabled until your account is approved.</div>
       )}
       <div className="feed-controls">
+        {preferenceError && <p className="error-msg" role="alert">{preferenceError}</p>}
         <div className="feed-exposure">
           {LEVELS.map(lv => (
             <button key={lv.key} className={`btn btn-sm ${level === lv.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleLevelChange(lv.key)}>{lv.label}</button>
@@ -223,13 +302,21 @@ export default function HomePage({ user }: { user: any }) {
 
       {isVerified && level !== 'world' && (
         <form className="post-composer" onSubmit={handlePost}>
-          <textarea className="input" placeholder="What's on your mind?" value={content} onChange={e => setContent(e.target.value)} rows={3} />
+          <textarea className="input" placeholder="What's on your mind?" value={content} onChange={e => setContent(e.target.value)} rows={3} disabled={partialPostId !== null} />
           {imagePreview && (<div className="image-preview-wrap"><img src={imagePreview} alt="Preview" className="image-preview" /><button type="button" className="btn btn-sm" onClick={removeImage}>✕ Remove</button></div>)}
           <div className="composer-actions">
             <label className="composer-upload-btn">🖼 Image<input type="file" ref={fileInputRef} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleFileSelect} style={{ display: 'none' }} /></label>
             <input className="input" placeholder="YouTube link (optional)" value={youtubeUrl} onChange={e => setYoutubeUrl(e.target.value)} style={{ flex: 1 }} />
-            <button className="btn btn-primary" disabled={posting || (!content.trim() && !imageFile)}>{posting ? 'Posting...' : 'Post'}</button>
+            <button className="btn btn-primary" disabled={posting || (partialPostId === null && !content.trim() && !imageFile)}>
+              {posting ? 'Working...' : partialPostId !== null ? 'Retry attachment' : 'Post'}
+            </button>
           </div>
+          {composerError && <p className="error-msg" role="alert">{composerError}</p>}
+          {partialPostId !== null && (
+            <button type="button" className="btn btn-sm btn-ghost" onClick={dismissFailedAttachments} disabled={posting}>
+              Keep post without attachment
+            </button>
+          )}
           {isYoutubeInvalid && <p className="muted" style={{ fontSize: '0.8rem', marginTop: 4 }}>Paste a valid YouTube link to preview it.</p>}
           {youtubePreview && (<div className="youtube-preview"><div className="youtube-preview-header"><span>🎬 YouTube preview</span><button type="button" className="btn btn-sm btn-ghost" onClick={() => setYoutubeUrl('')}>✕ Remove</button></div><div className="post-video-wrap" style={{ maxWidth: 400 }}><iframe src={youtubePreview} allowFullScreen loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" className="post-video-embed" title="YouTube preview" /></div></div>)}
         </form>

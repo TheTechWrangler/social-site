@@ -23,6 +23,10 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   const [reportDetails, setReportDetails] = useState('');
   const [reportSubmitted, setReportSubmitted] = useState(false);
   const [reportError, setReportError] = useState('');
+  const [mutationError, setMutationError] = useState('');
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [commentSubmitting, setCommentSubmitting] = useState(false);
+  const [reportSubmitting, setReportSubmitting] = useState(false);
 
   const isVerified = currentUser?.is_verified ?? currentUser?.isVerified;
   const reactions = post.reactions || {};
@@ -36,6 +40,9 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
 
   async function handleReaction(type: string) {
     if (!isVerified) { alert('Account verification required before you can react.'); return; }
+    if (pendingAction) return;
+    setPendingAction('reaction');
+    setMutationError('');
     try {
       // If same reaction, remove it
       if (post.userReaction === type) {
@@ -43,17 +50,17 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
         setPost({ ...post, userReaction: null, liked: false, reactions: r.counts || {} });
         onUpdate?.({ ...post, userReaction: null, liked: false, reactions: r.counts || {} });
       } else {
-        const r = await fetch(`/api/likes/${post.id}`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reactionType: type }),
-        }).then(r => r.json());
+        const r = await api.react(post.id, type);
         setPost({ ...post, userReaction: type, liked: true, reactions: r.counts });
         onUpdate?.({ ...post, userReaction: type, liked: true, reactions: r.counts });
       }
-    } catch (e) { console.error(e); }
-    setShowReactions(false);
+      setShowReactions(false);
+    } catch (e: any) {
+      console.error(e);
+      setMutationError(e.message || 'Could not update reaction.');
+    } finally {
+      setPendingAction(null);
+    }
   }
 
   async function handleRepost() {
@@ -79,17 +86,35 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
 
   async function addComment(e: React.FormEvent) {
     e.preventDefault();
-    if (!commentText.trim()) return;
+    if (!commentText.trim() || commentSubmitting) return;
+    setCommentSubmitting(true);
+    setMutationError('');
     try {
       const r = await api.addComment(post.id, commentText.trim());
       setComments(prev => [...prev, r.comment]); setCommentText('');
       setPost({ ...post, commentCount: post.commentCount + 1 });
-    } catch (err) { console.error(err); }
+    } catch (err: any) {
+      console.error(err);
+      setMutationError(err.message || 'Could not add comment.');
+    } finally {
+      setCommentSubmitting(false);
+    }
   }
 
   async function handleDelete() {
     if (!confirm('Delete this post?')) return;
-    try { await api.deletePost(post.id); setPost({ ...post, deleted: true }); } catch (e) { console.error(e); }
+    if (pendingAction) return;
+    setPendingAction('delete');
+    setMutationError('');
+    try {
+      await api.deletePost(post.id);
+      setPost({ ...post, deleted: true });
+    } catch (e: any) {
+      console.error(e);
+      setMutationError(e.message || 'Could not delete post.');
+    } finally {
+      setPendingAction(null);
+    }
   }
 
   function openReportModal(target: any, type: 'post' | 'comment') {
@@ -111,36 +136,33 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   async function submitReport() {
     if (!reportReason || !reportDetails.trim() || reportDetails.trim().length < 5) { setReportError(REPORT_ERROR); return; }
     setReportError('');
+    if (reportSubmitting) return;
+    setReportSubmitting(true);
     try {
-      const res = await fetch('/api/reports', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetType: reportTargetType, targetId: reportTarget?.id, reason: reportReason, details: reportDetails.trim() }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setReportError(body.error || REPORT_ERROR);
-        return;
-      }
+      await api.reportContent(reportTargetType, reportTarget?.id, reportReason, reportDetails.trim());
       setReportSubmitted(true);
-    } catch (e) { console.error(e); setReportError(REPORT_ERROR); }
+    } catch (e: any) {
+      console.error(e);
+      setReportError(e.message || REPORT_ERROR);
+    } finally {
+      setReportSubmitting(false);
+    }
   }
 
   async function handleMuteUser() {
     if (!confirm(`Mute @${post.username}? You will stop seeing their posts.`)) return;
     try {
-      await fetch(`/api/users/${post.userId}/mute`, { method: 'POST', credentials: 'include' });
+      await api.post(`/users/${post.userId}/mute`);
       window.location.reload();
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setMutationError(e.message || 'Could not mute user.'); }
   }
 
   async function handleBlockUser() {
     if (!confirm(`Block @${post.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
     try {
-      await fetch(`/api/users/${post.userId}/block`, { method: 'POST', credentials: 'include' });
+      await api.post(`/users/${post.userId}/block`);
       window.location.reload();
-    } catch (e) { console.error(e); }
+    } catch (e: any) { console.error(e); setMutationError(e.message || 'Could not block user.'); }
   }
 
   if ((post as any).deleted) return null;
@@ -187,7 +209,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
             <div className="reaction-picker">
               {REACTIONS.map(r => (
                 <button key={r} className={`reaction-btn ${post.userReaction === r ? 'active' : ''}`}
-                  title={LABELS[r]} onClick={() => handleReaction(r)}>
+                  title={LABELS[r]} onClick={() => handleReaction(r)} disabled={pendingAction === 'reaction'}>
                   {EMOJI[r]} <span className="reaction-count">{reactions[r] || 0}</span>
                 </button>
               ))}
@@ -196,7 +218,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
         </div>
         <button className="action-btn" onClick={loadComments}>💬 {post.commentCount || 0}</button>
         <button className="action-btn" onClick={handleRepost}>🔄 {post.repostCount || 0}</button>
-        {(currentUser?.id === post.userId || currentUser?.role === 'admin') && <button className="action-btn danger" onClick={handleDelete}>🗑</button>}
+        {(currentUser?.id === post.userId || currentUser?.role === 'admin') && <button className="action-btn danger" onClick={handleDelete} disabled={pendingAction === 'delete'}>🗑</button>}
         {currentUser && currentUser.id !== post.userId && <button className="action-btn" onClick={() => openReportModal(post, 'post')} title="Report">🚩</button>}
         {currentUser?.id !== post.userId && currentUser && (
           <>
@@ -205,6 +227,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
           </>
         )}
       </div>
+      {mutationError && <p className="error-msg" role="alert">{mutationError}</p>}
 
       {showComments && (
         <div className="comments-section">
@@ -219,7 +242,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
           ))}
           <form className="comment-form" onSubmit={addComment}>
             <input className="input" placeholder="Write a comment..." value={commentText} onChange={e => setCommentText(e.target.value)} />
-            <button className="btn btn-sm" disabled={!commentText.trim()}>Reply</button>
+            <button className="btn btn-sm" disabled={!commentText.trim() || commentSubmitting}>{commentSubmitting ? 'Posting...' : 'Reply'}</button>
           </form>
         </div>
       )}
@@ -257,7 +280,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
                 {reportError && <p className="error-msg">{reportError}</p>}
                 <div className="modal-actions">
                   <button className="btn btn-ghost" onClick={closeReportModal}>Cancel</button>
-                  <button className="btn btn-primary" onClick={submitReport}>Submit Report</button>
+                  <button className="btn btn-primary" onClick={submitReport} disabled={reportSubmitting}>{reportSubmitting ? 'Submitting...' : 'Submit Report'}</button>
                 </div>
               </>
             )}

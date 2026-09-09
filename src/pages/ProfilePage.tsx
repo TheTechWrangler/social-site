@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
+import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
+import type { CanonicalProfileDto } from '../../shared/profile';
 
 const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
 const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
@@ -69,11 +71,25 @@ function ProfileSectionCards({ data }: { data: any }) {
   );
 }
 
-export default function ProfilePage({ user: currentUser }: { user: any }) {
+export default function ProfilePage({
+  user: currentUser,
+  onUserChange,
+}: {
+  user: any;
+  onUserChange: (user: any) => void;
+}) {
   const { username } = useParams<{ username: string }>();
   const navigate = useNavigate();
-  const [profile, setProfile] = useState<any>(null);
+  const routeKey = `${username || ''}:${currentUser?.id ?? 'anonymous'}`;
+  const currentRouteKey = useRef(routeKey);
+  currentRouteKey.current = routeKey;
+  const [profile, setProfile] = useState<CanonicalProfileDto | null>(null);
   const [posts, setPosts] = useState<any[]>([]);
+  const [loadState, setLoadState] = useState<RouteLoadState>('loading');
+  const [stateRouteKey, setStateRouteKey] = useState(routeKey);
+  const [postsLoadState, setPostsLoadState] = useState<RouteLoadState | 'idle'>('idle');
+  const requestGate = useRef(new RouteRequestGate());
+  const mutationGate = useRef(new RouteRequestGate());
   const [editing, setEditing] = useState(false);
   const [bio, setBio] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -87,50 +103,120 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   const [editingGameSlug, setEditingGameSlug] = useState<string | null>(null);
   const [gameForm, setGameForm] = useState(emptyGameForm);
   const [gameMessage, setGameMessage] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const gameDiscoveryEnabled =
     currentUser?.game_discovery_enabled === 1 ||
     currentUser?.gameDiscoveryEnabled === true;
 
-  useEffect(() => { loadProfile(); }, [username]);
+  useEffect(() => {
+    void loadProfile();
+    return () => {
+      requestGate.current.invalidate();
+      mutationGate.current.invalidate();
+    };
+  }, [routeKey]);
+
+  function applyCanonicalProfile(nextProfile: CanonicalProfileDto) {
+    setProfile(nextProfile);
+    setBio(nextProfile.bio || '');
+    setDisplayName(nextProfile.displayName || '');
+    setProfileVis(nextProfile.profileVisibility || 'public');
+    const pd = nextProfile.profileData || {};
+    setSectionForm({
+      techInterests: pd.techInterests || '',
+      platforms: pd.platforms || '',
+      lookingFor: pd.lookingFor || '',
+      currentProjects: pd.currentProjects || '',
+      favoriteGenres: pd.favoriteGenres || '',
+      websiteUrl: pd.websiteUrl || '',
+    });
+  }
 
   async function loadProfile() {
+    const requestedRouteKey = routeKey;
+    if (currentRouteKey.current !== requestedRouteKey) return;
+    const isCurrent = requestGate.current.begin();
+    const requestedUsername = username || '';
+    setStateRouteKey(requestedRouteKey);
+    setLoadState('loading');
+    setPostsLoadState('idle');
+    setProfile(null);
+    setPosts([]);
+    setEditing(false);
+    setSaveError('');
+    setSaving(false);
+    setAvatarUploading(false);
+    setActionError('');
+    setPendingProfileAction(null);
+    if (!username) {
+      if (isCurrent()) setLoadState('unavailable');
+      return;
+    }
+
+    let loadedProfile: CanonicalProfileDto;
     try {
-      const r = await api.getUser(username!);
-      setProfile(r.user);
-      setBio(r.user.bio || '');
-      setDisplayName(r.user.displayName || '');
-      setProfileVis(r.user.profileVisibility || 'public');
-      const pd = r.user.profileData || {};
-      setSectionForm({
-        techInterests: pd.techInterests || '',
-        platforms: pd.platforms || '',
-        lookingFor: pd.lookingFor || '',
-        currentProjects: pd.currentProjects || '',
-        favoriteGenres: pd.favoriteGenres || '',
-        websiteUrl: pd.websiteUrl || '',
-      });
-      if (r.user.limited) { setPosts([]); return; }
-      const profilePosts = await api.getUserPosts(username!);
-      setPosts(profilePosts.posts);
-    } catch (e) { console.error(e); }
+      const response = await api.getUser(username);
+      if (!isCurrent()) return;
+      loadedProfile = response.user;
+      applyCanonicalProfile(loadedProfile);
+      setLoadState('loaded');
+    } catch (error) {
+      if (isCurrent()) setLoadState(routeFailureState(error));
+      return;
+    }
+
+    if (loadedProfile.limited) {
+      if (isCurrent()) setPostsLoadState('loaded');
+      return;
+    }
+    setPostsLoadState('loading');
+    try {
+      const response = await api.getUserPosts(username);
+      if (!isCurrent()) return;
+      setPosts(response.posts || []);
+      setPostsLoadState('loaded');
+    } catch (error) {
+      if (!isCurrent()) return;
+      setPosts([]);
+      setPostsLoadState(routeFailureState(error));
+    }
   }
 
   async function handleFollow() {
+    if (!profile || pendingProfileAction) return;
+    setPendingProfileAction('follow');
+    setActionError('');
     try {
       await (profile.isFollowing ? api.unfollow(profile.id) : api.follow(profile.id));
       await loadProfile();
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      console.error(e);
+      setActionError(e.message || 'Could not update follow status.');
+    } finally {
+      setPendingProfileAction(null);
+    }
   }
 
   async function handleMute() {
+    if (!profile || pendingProfileAction) return;
     if (!confirm(`Mute @${profile.username}? You will stop seeing their posts.`)) return;
+    setPendingProfileAction('mute');
+    setActionError('');
     try {
-      await fetch(`/api/users/${profile.id}/mute`, { method: 'POST', credentials: 'include' });
+      await api.post(`/users/${profile.id}/mute`);
       alert('User muted.');
-    } catch (e: any) { alert(e.message || 'Failed'); }
+    } catch (e: any) {
+      setActionError(e.message || 'Could not mute user.');
+    } finally {
+      setPendingProfileAction(null);
+    }
   }
 
   async function handleMessage() {
+    if (!profile) return;
     try {
       const r = await api.startConversation(profile.id);
       navigate(`/messages/${r.conversationId}`);
@@ -140,19 +226,51 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   }
 
   async function handleBlock() {
+    if (!profile || pendingProfileAction) return;
     if (!confirm(`Block @${profile.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
+    setPendingProfileAction('block');
+    setActionError('');
     try {
-      await fetch(`/api/users/${profile.id}/block`, { method: 'POST', credentials: 'include' });
+      await api.post(`/users/${profile.id}/block`);
       window.location.reload();
-    } catch (e: any) { alert(e.message || 'Failed'); }
+    } catch (e: any) {
+      setActionError(e.message || 'Could not block user.');
+    } finally {
+      setPendingProfileAction(null);
+    }
   }
 
   async function handleSaveProfile() {
+    const isCurrent = mutationGate.current.begin();
+    setSaveError('');
+    setSaving(true);
     try {
       const r = await api.updateProfile({ displayName, bio, profileVisibility: profileVis, profileData: sectionForm });
-      setProfile({ ...profile, ...r.user, avatarUrl: profile.avatarUrl, profileData: sectionForm });
+      if (!isCurrent()) return;
+      applyCanonicalProfile(r.user);
+      onUserChange(r.authUser);
       setEditing(false);
-    } catch (e) { console.error(e); }
+    } catch (e: any) {
+      if (isCurrent()) setSaveError(e.message || 'Could not save profile.');
+    } finally {
+      if (isCurrent()) setSaving(false);
+    }
+  }
+
+  async function handleAvatarReset() {
+    const isCurrent = mutationGate.current.begin();
+    setSaveError('');
+    setAvatarUploading(true);
+    try {
+      const r = await api.updateProfile({ avatar_url: '' });
+      if (!isCurrent()) return;
+      applyCanonicalProfile(r.user);
+      onUserChange(r.authUser);
+    } catch (e: any) {
+      if (isCurrent()) setSaveError(e.message || 'Could not remove avatar.');
+    } finally {
+      if (isCurrent()) setAvatarUploading(false);
+    }
   }
 
   async function handleAvatarUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -161,13 +279,19 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
     const ext = file.name.split('.').pop()?.toLowerCase();
     if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { alert(IMAGE_UPLOAD_ERROR); if (avatarInputRef.current) avatarInputRef.current.value = ''; return; }
     if (file.size > 2 * 1024 * 1024) { alert('Avatar must be under 2MB.'); return; }
+    const isCurrent = mutationGate.current.begin();
     setAvatarUploading(true);
     try {
       const r = await api.uploadAvatar(file);
-      await api.updateProfile({ avatar_url: r.media.url });
-      setProfile({ ...profile, avatarUrl: r.media.url });
-    } catch (e: any) { alert(e.message || 'Avatar upload failed'); }
-    setAvatarUploading(false);
+      if (!isCurrent()) return;
+      setProfile(previous => {
+        if (!previous || previous.username !== username) return previous;
+        return { ...previous, avatarUrl: r.media.url };
+      });
+    } catch (e: any) {
+      if (isCurrent()) alert(e.message || 'Avatar upload failed');
+    }
+    if (isCurrent()) setAvatarUploading(false);
   }
 
   async function searchGames(q: string) {
@@ -243,7 +367,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
   async function removeGame(gameId: number, slug: string) {
     if (!confirm('Remove this game from your profile?')) return;
     try {
-      await fetch(`/api/games/${slug}/profile`, { method: 'DELETE', credentials: 'include' });
+      await api.delete(`/games/${slug}/profile`);
       setGameMessage('Game removed.');
       await loadProfile();
     } catch (e: any) { setGameMessage(e.message || 'Could not remove game.'); }
@@ -257,7 +381,22 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
     }
   }
 
-  if (!profile) return <div className="loading">Loading...</div>;
+  const visibleLoadState = routeStateForKey(routeKey, stateRouteKey, loadState);
+  if (visibleLoadState === 'loading') {
+    return <div className="loading">Loading...</div>;
+  }
+  if (visibleLoadState === 'unavailable') return (
+    <div className="profile-page">
+      <p className="muted">This profile is not available.</p>
+    </div>
+  );
+  if (visibleLoadState === 'error') return (
+    <div className="profile-page">
+      <p className="error-msg" role="alert">Could not load this profile.</p>
+      <button className="btn btn-ghost" onClick={() => void loadProfile()}>Try again</button>
+    </div>
+  );
+  if (!profile) return null;
   const isOwn = currentUser?.id === profile.id;
   const isLimited = !!profile.limited;
 
@@ -312,12 +451,12 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
           <div className="profile-actions">
             {!isOwn && currentUser && (
               <>
-                <button className={`btn ${profile.isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={handleFollow}>
+                <button className={`btn ${profile.isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={handleFollow} disabled={pendingProfileAction === 'follow'}>
                   {profile.isFollowing ? 'Following' : 'Follow'}
                 </button>
                 <button className="btn btn-ghost btn-sm" onClick={handleMessage}>💬 Message</button>
-                <button className="btn btn-ghost btn-sm" onClick={handleMute}>🔇 Mute</button>
-                <button className="btn btn-ghost btn-sm" onClick={handleBlock}>🚫 Block</button>
+                <button className="btn btn-ghost btn-sm" onClick={handleMute} disabled={pendingProfileAction === 'mute'}>🔇 Mute</button>
+                <button className="btn btn-ghost btn-sm" onClick={handleBlock} disabled={pendingProfileAction === 'block'}>🚫 Block</button>
               </>
             )}
             {isOwn && !editing && (
@@ -326,6 +465,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
           </div>
         </div>
       </div>
+      {actionError && <p className="error-msg" role="alert">{actionError}</p>}
 
       {/* ─── Structured sections (read view) ─── */}
       {(!isLimited || isOwn) && !editing && (
@@ -342,6 +482,7 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
             placeholder="Display Name"
             value={displayName}
             onChange={e => setDisplayName(e.target.value)}
+            maxLength={80}
           />
           <textarea
             className="input"
@@ -425,9 +566,17 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
           </div>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-            <button className="btn btn-primary" onClick={handleSaveProfile}>Save</button>
+            <button className="btn btn-primary" onClick={handleSaveProfile} disabled={saving || avatarUploading || !displayName.trim()}>
+              {saving ? 'Saving&' : 'Save'}
+            </button>
+            {profile.avatarUrl && (
+              <button className="btn btn-ghost" onClick={handleAvatarReset} disabled={avatarUploading}>
+                Remove avatar
+              </button>
+            )}
             <button className="btn btn-ghost" onClick={() => setEditing(false)}>Cancel</button>
           </div>
+          {saveError && <p className="error-msg" role="alert">{saveError}</p>}
         </div>
       )}
 
@@ -551,7 +700,14 @@ export default function ProfilePage({ user: currentUser }: { user: any }) {
 
       {/* ─── Posts ─── */}
       {!isLimited && <h3>Posts</h3>}
-      {!isLimited && (posts.length === 0
+      {!isLimited && postsLoadState === 'loading' && <div className="loading">Loading posts&</div>}
+      {!isLimited && (postsLoadState === 'error' || postsLoadState === 'unavailable') && (
+        <div>
+          <p className="muted">Posts are not available right now.</p>
+          <button className="btn btn-ghost" onClick={() => void loadProfile()}>Try again</button>
+        </div>
+      )}
+      {!isLimited && postsLoadState === 'loaded' && (posts.length === 0
         ? <p className="muted">No posts yet.</p>
         : posts.map(p => <PostCard key={p.id} post={p} currentUser={currentUser} />)
       )}

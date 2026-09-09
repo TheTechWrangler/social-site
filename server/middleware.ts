@@ -1,22 +1,10 @@
 import type { Request, Response, NextFunction } from 'express';
-import { verifyToken, getUserById } from './auth.js';
+import { authenticateApplicationToken } from './auth.js';
 
 // Mirrors clearAuthCookie in routes/auth.ts — kept here to avoid a circular import.
 const IS_PROD = process.env.NODE_ENV === 'production';
 function clearStaleCookie(res: Response): void {
   res.clearCookie(AUTH_COOKIE_NAME, { httpOnly: true, secure: IS_PROD, sameSite: 'lax', path: '/' });
-}
-
-/**
- * Returns true when a token's issued-at time predates the user's last password
- * change, meaning the token should no longer be trusted.
- * iat is in Unix seconds; password_changed_at is a UTC datetime string from SQLite.
- */
-function isStaleToken(iat: number | undefined, passwordChangedAt: string | null): boolean {
-  if (!iat) return true; // no iat — reject defensively
-  if (!passwordChangedAt) return false; // no password change recorded — token is valid
-  const changedAtMs = new Date(passwordChangedAt + 'Z').getTime();
-  return iat * 1000 < changedAtMs;
 }
 
 declare global {
@@ -54,29 +42,25 @@ export function getAuthCookieValue(req: Request): string | undefined {
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  // Passport may have populated req.user from its temporary OAuth session. The
+  // application viewer always starts empty and can only come from the app JWT.
+  (req as any).user = undefined;
   const token = getAuthCookieValue(req);
   if (!token) {
     res.status(401).json({ error: 'Authentication required.' });
     return;
   }
-  const payload = verifyToken(token);
-  if (!payload) {
-    res.status(401).json({ error: 'Invalid or expired token.' });
-    return;
-  }
-  const user = getUserById(payload.id);
-  if (!user || user.banned) {
-    res.status(403).json({ error: 'Account banned or not found.' });
-    return;
-  }
-  // Revoke tokens issued before the user's last password change.
-  // Uses the JWT iat (issued-at) claim vs password_changed_at in the DB.
-  // Existing users with null password_changed_at are unaffected.
-  if (isStaleToken(payload.iat, user.password_changed_at)) {
+  const authenticated = authenticateApplicationToken(token);
+  if (!authenticated.ok) {
     clearStaleCookie(res);
+    if (authenticated.reason === 'unavailable') {
+      res.status(403).json({ error: 'Account banned or not found.' });
+      return;
+    }
     res.status(401).json({ error: 'Invalid or expired token.' });
     return;
   }
+  const user = authenticated.user;
   (req as any).user = {
     id: user.id,
     username: user.username,
@@ -88,23 +72,23 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 }
 
 export function optionalAuth(req: Request, res: Response, next: NextFunction): void {
+  // Never inherit Passport identity on application routes. Passport sessions are
+  // limited to OAuth state/callback/handoff mechanics.
+  (req as any).user = undefined;
   const token = getAuthCookieValue(req);
   if (token) {
-    const payload = verifyToken(token);
-    if (payload) {
-      const user = getUserById(payload.id);
-      if (user && !user.banned && !isStaleToken(payload.iat, user.password_changed_at)) {
-        (req as any).user = {
-          id: user.id,
-          username: user.username,
-          role: user.role,
-          is_verified: user.is_verified,
-          game_discovery_enabled: user.game_discovery_enabled,
-        };
-      } else if (user && isStaleToken(payload.iat, user.password_changed_at)) {
-        // Silently clear the stale cookie so the browser stops sending it.
-        clearStaleCookie(res);
-      }
+    const authenticated = authenticateApplicationToken(token);
+    if (authenticated.ok) {
+      const user = authenticated.user;
+      (req as any).user = {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        is_verified: user.is_verified,
+        game_discovery_enabled: user.game_discovery_enabled,
+      };
+    } else {
+      clearStaleCookie(res);
     }
   }
   next();

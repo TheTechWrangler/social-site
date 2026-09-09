@@ -29,6 +29,7 @@ export default function App() {
   const [unread, setUnread] = useState(0);
   const [dmUnread, setDmUnread] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
   const navigate = useNavigate();
   const location = useLocation();
   usePageTracking();
@@ -79,13 +80,17 @@ export default function App() {
 
   useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
 
-  function logout() {
-    // Ask server to clear the HttpOnly auth cookie. Fire-and-forget — we clear
-    // local state immediately regardless of the network outcome so logout never
-    // gets stuck.
-    api.logout().catch(() => {});
-    setUser(null);
-    navigate('/login');
+  async function logout() {
+    setLogoutError('');
+    try {
+      await api.logout();
+      setUser(null);
+      setUnread(0);
+      setDmUnread(0);
+      navigate('/login');
+    } catch {
+      setLogoutError('Could not log out. Please try again.');
+    }
   }
 
   // Show a brief loading screen while we wait for the /me check on startup.
@@ -133,6 +138,7 @@ export default function App() {
             <>
               <span className="user-info">{user.display_name}</span>
               <button onClick={logout} className="btn-link">Log out</button>
+              {logoutError && <span className="error-msg" role="alert">{logoutError}</span>}
             </>
           ) : (
             <>
@@ -147,8 +153,8 @@ export default function App() {
         <Routes>
           <Route path="/login" element={!user ? <LoginPage onLogin={setUser} /> : <Navigate to="/" />} />
           <Route path="/register" element={!user ? <RegisterPage onLogin={setUser} /> : <Navigate to="/" />} />
-          <Route path="/" element={user ? <HomePage user={user} /> : <LandingPage />} />
-          <Route path="/profile/:username" element={user ? <ProfilePage user={user} /> : <Navigate to="/login" />} />
+          <Route path="/" element={user ? <HomePage user={user} onUserChange={setUser} /> : <LandingPage />} />
+          <Route path="/profile/:username" element={user ? <ProfilePage user={user} onUserChange={setUser} /> : <Navigate to="/login" />} />
           <Route path="/groups" element={user ? <GroupsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/groups/:id" element={user ? <GroupPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/notifications" element={user ? <NotificationsPage onMarkAllRead={() => setUnread(0)} onMarkOneRead={() => setUnread(prev => Math.max(0, prev - 1))} /> : <Navigate to="/login" />} />
@@ -158,7 +164,7 @@ export default function App() {
           <Route path="/friends" element={user ? <FriendsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage user={user} />} />
-          <Route path="/settings" element={user ? <SettingsPage user={user} /> : <Navigate to="/login" />} />
+          <Route path="/settings" element={user ? <SettingsPage user={user} onUserChange={setUser} /> : <Navigate to="/login" />} />
           <Route path="/messages" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/posts/:id" element={user ? <PostDetailPage user={user} /> : <Navigate to="/login" />} />

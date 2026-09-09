@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { getDb } from '../database.js';
 import { ensureUploadsDirectory, getStorageConfig } from '../config.js';
 import { optionalAuth, requireAuth, requireVerified } from '../middleware.js';
@@ -56,6 +57,26 @@ const imageUpload = multer({
   },
 });
 
+const avatarUpload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOADS_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `avatar-${randomBytes(16).toString('hex')}${ext}`);
+    },
+  }),
+  limits: { fileSize: (parseInt(process.env.MAX_AVATAR_UPLOAD_MB || '2', 10)) * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const mimetype = (file.mimetype || '').toLowerCase();
+    if (mimetype === 'image/svg+xml' || ext === '.svg') {
+      cb(new Error(IMAGE_UPLOAD_ERROR)); return;
+    }
+    if (ALLOWED_IMAGE_MIME.has(mimetype) && ALLOWED_IMAGE_EXT.has(ext)) { cb(null, true); }
+    else { cb(new Error(IMAGE_UPLOAD_ERROR)); }
+  },
+});
+
 function handleImageUpload(req: Request, res: Response, next: NextFunction): void {
   imageUpload.single('file')(req, res, (err: any) => {
     if (err) {
@@ -64,6 +85,24 @@ function handleImageUpload(req: Request, res: Response, next: NextFunction): voi
     }
     next();
   });
+}
+
+function handleAvatarUpload(req: Request, res: Response, next: NextFunction): void {
+  avatarUpload.single('file')(req, res, (err: any) => {
+    if (err) {
+      res.status(400).json({ error: IMAGE_UPLOAD_ERROR });
+      return;
+    }
+    next();
+  });
+}
+
+function requireImageUploadsEnabled(_req: Request, res: Response, next: NextFunction): void {
+  if (!isEnabled('ENABLE_IMAGE_UPLOADS', 'true')) {
+    res.status(403).json({ error: 'Image uploads are currently disabled.' });
+    return;
+  }
+  next();
 }
 
 function isPathInUploads(filePath: string): boolean {
@@ -131,6 +170,47 @@ function validateUploadedImageBytes(req: Request, res: Response, next: NextFunct
 }
 
 const router = Router();
+
+// POST /api/uploads/avatar — create and atomically assign an owned avatar.
+// Avatar ownership is established by the authenticated upload itself; existing
+// local URLs can never be adopted through client-supplied profile data.
+router.post('/avatar', requireAuth, requireImageUploadsEnabled, handleAvatarUpload, validateUploadedImageBytes, (req, res) => {
+  if (!req.file) { res.status(400).json({ error: 'No image file provided.' }); return; }
+
+  const user = (req as any).user;
+  const url = `/uploads/${req.file.filename}`;
+  try {
+    const assignAvatar = getDb().transaction(() => {
+      const result = getDb().prepare(`
+        INSERT INTO user_avatar_uploads (user_id, url, mime_type, file_size_bytes)
+        VALUES (?, ?, ?, ?)
+      `).run(user.id, url, req.file!.mimetype, req.file!.size);
+      getDb().prepare("UPDATE users SET avatar_url = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(url, user.id);
+      return Number(result.lastInsertRowid);
+    });
+    const id = assignAvatar();
+
+    logUsage({ eventType: 'upload_completed', userId: user.id, featureArea: 'profile' });
+    res.status(201).json({
+      media: {
+        id,
+        post_id: null,
+        media_type: 'image',
+        url,
+        provider: null,
+        original_url: null,
+        mime_type: req.file.mimetype,
+        file_size_bytes: req.file.size,
+      },
+    });
+  } catch (err: any) {
+    deleteRejectedUpload(req.file);
+    logUsage({ eventType: 'upload_failed', userId: user.id, featureArea: 'profile', errorCode: 'SERVER_ERROR' });
+    console.error('[uploads] Avatar upload error:', err.message);
+    res.status(500).json({ error: 'Avatar upload failed.' });
+  }
+});
 
 // ─── YouTube URL Detection ───
 function parseYouTubeUrl(input: string): string | null {
@@ -296,11 +376,8 @@ uploadsFileRouter.get('/:filename', optionalAuth, (req, res) => {
   const urlKey = `/uploads/${filename}`;
   const viewer = (req as any).user ?? null;
 
-  // 1. Is it an avatar? Avatars are public profile metadata — serve to everyone.
-  const avatarRow = db.prepare('SELECT id FROM users WHERE avatar_url = ? LIMIT 1').get(urlKey);
-  if (avatarRow) { sendUploadFile(res, filePath, filename); return; }
-
-  // 2. Is it tracked post media?
+  // 1. Post ownership and visibility are authoritative. A secondary reference
+  // must never broaden the access policy of post media.
   const mediaRow = db.prepare('SELECT post_id FROM post_media WHERE url = ? LIMIT 1').get(urlKey) as any;
 
   if (mediaRow) {
@@ -314,7 +391,19 @@ uploadsFileRouter.get('/:filename', optionalAuth, (req, res) => {
     sendUploadFile(res, filePath, filename); return;
   }
 
-  // 3. File exists on disk but isn't in the DB — don't serve it.
+  // 2. Serve only server-issued avatar uploads that are still selected by their
+  // owner. A users.avatar_url value by itself is intentionally not proof of
+  // ownership, so legacy local references are not grandfathered implicitly.
+  const avatarRow = db.prepare(`
+    SELECT a.id
+    FROM user_avatar_uploads a
+    JOIN users u ON u.id = a.user_id AND u.avatar_url = a.url
+    WHERE a.url = ?
+    LIMIT 1
+  `).get(urlKey);
+  if (avatarRow) { sendUploadFile(res, filePath, filename); return; }
+
+  // 3. File exists on disk but isn't attached to an authorized resource.
   res.status(404).end();
 });
 

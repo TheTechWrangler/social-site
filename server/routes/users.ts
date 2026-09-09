@@ -8,6 +8,7 @@ import {
   type Viewer,
 } from '../visibility.js';
 import { enrichPost } from './posts.js';
+import { getCanonicalProfile } from '../profileDto.js';
 
 const router = Router();
 
@@ -134,7 +135,7 @@ router.get('/me/games', requireAuth, (req: AuthRequest, res) => {
 // GET /api/users/:username/posts — profile-scoped posts only
 router.get('/:username/posts', optionalAuth, (req: AuthRequest, res) => {
   const target = getDb().prepare(`
-    SELECT id, profile_visibility, banned FROM users WHERE username = ?
+    SELECT id, profile_visibility, banned FROM users WHERE username = ? COLLATE NOCASE
   `).get(req.params.username) as any;
   if (!target || getUserVisibility(req.user as any, target) !== 'full') {
     res.status(404).json({ error: 'User not found.' });
@@ -152,112 +153,84 @@ router.get('/:username/posts', optionalAuth, (req: AuthRequest, res) => {
 
 // GET /api/users/:username
 router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
-  const row = getDb().prepare(`
-    SELECT id, username, display_name, email, bio, avatar_url, role, banned,
-      is_verified, profile_visibility, created_at, profile_data
-    FROM users WHERE username = ?
-  `).get(req.params.username) as any;
-  if (!row) { res.status(404).json({ error: 'User not found.' }); return; }
-
-  const isOwner = req.user?.id === row.id;
-  const isFollowing = isOwner ? false : req.user ? !!(getDb().prepare('SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?').get(req.user.id, row.id)) : false;
-  const isPrivate = row.profile_visibility === 'private';
-  const visibility = getUserVisibility(req.user as any, row);
-  if (visibility === 'hidden') {
+  const result = getCanonicalProfile(req.user, { username: req.params.username });
+  if (!result) {
     res.status(404).json({ error: 'User not found.' });
     return;
   }
-
-  if (visibility === 'limited') {
-    return res.json({
-      user: {
-        id: row.id, username: row.username, displayName: row.display_name,
-        avatarUrl: row.avatar_url, isPrivate: true, isFollowing,
-        limited: true,
-      },
-      message: 'This profile is private.'
-    });
-  }
-
-  const connectionVisibility = userVisibilitySql(req.user, 'u', 'identity');
-  const followers = getDb().prepare(`SELECT COUNT(*) as c FROM follows f
-    JOIN users u ON u.id = f.follower_id
-    WHERE f.following_id = ? AND ${connectionVisibility.sql}
-  `).get(row.id, ...connectionVisibility.params) as any;
-  const following = getDb().prepare(`SELECT COUNT(*) as c FROM follows f
-    JOIN users u ON u.id = f.following_id
-    WHERE f.follower_id = ? AND ${connectionVisibility.sql}
-  `).get(row.id, ...connectionVisibility.params) as any;
-  const postCount = getDb().prepare(
-    'SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL AND group_id IS NULL AND hidden = 0',
-  ).get(row.id) as any;
-
-  const gameVisibilityClause = isOwner || req.user?.role === 'admin' ? '' : 'AND p.display_on_profile = 1';
-  const gamePrefs = getDb().prepare(`
-    SELECT p.*, g.name as game_name, g.slug as game_slug,
-      EXISTS (
-        SELECT 1 FROM user_game_preferences mine
-        WHERE mine.user_id = ? AND mine.game_id = p.game_id
-      ) as shared_game
-    FROM user_game_preferences p JOIN games g ON p.game_id = g.id
-    WHERE p.user_id = ? ${gameVisibilityClause} ORDER BY p.is_favorite DESC, g.name
-  `).all(req.user?.id || 0, row.id);
-
-  let profileData: any = null;
-  try { profileData = row.profile_data ? JSON.parse(row.profile_data) : null; } catch { profileData = null; }
-
-  res.json({
-    user: {
-      id: row.id, username: row.username, displayName: row.display_name,
-      bio: row.bio, avatarUrl: row.avatar_url, role: row.role, isVerified: !!row.is_verified,
-      profileVisibility: row.profile_visibility, isPrivate: isPrivate,
-      followerCount: followers?.c ?? 0, followingCount: following?.c ?? 0,
-      postCount: postCount?.c ?? 0, isFollowing,
-      gamePrefs,
-      profileData,
-    }
-  });
+  res.json({ user: result.profile, ...(result.message ? { message: result.message } : {}) });
 });
 
 // PUT /api/users/profile
 router.put('/profile', requireAuth, (req: AuthRequest, res) => {
   const { displayName, bio, profileVisibility, feedExposure, worldHomeInjection, gameDiscoveryEnabled, avatar_url, dmPrivacy, profileData } = req.body;
-  const vis = profileVisibility === 'private' ? 'private' : 'public';
+  if (displayName !== undefined && !String(displayName ?? '').trim()) {
+    res.status(400).json({ error: 'Display name cannot be empty.' });
+    return;
+  }
+  if (profileVisibility !== undefined && !['public', 'private'].includes(profileVisibility)) {
+    res.status(400).json({ error: 'Invalid profile visibility.' });
+    return;
+  }
+  if (
+    profileData !== undefined &&
+    profileData !== null &&
+    (typeof profileData !== 'object' || Array.isArray(profileData))
+  ) {
+    res.status(400).json({ error: 'Invalid profile data.' });
+    return;
+  }
+  const vis = profileVisibility as 'public' | 'private' | undefined;
   const fex = ['friends_only', 'mixed', 'everyone', 'friends', 'extended', 'world'].includes(feedExposure) ? feedExposure : 'extended';
   const whi = ['world_home_off', 'world_home_few', 'world_home_balanced'].includes(worldHomeInjection) ? worldHomeInjection : undefined;
   const dmp = ['noone', 'friends', 'friends_of_friends', 'everyone'].includes(dmPrivacy) ? dmPrivacy : undefined;
   const fields: string[] = [];
   const vals: any[] = [];
   if (displayName !== undefined) { fields.push('display_name = ?'); vals.push(String(displayName).trim().slice(0, 80)); }
-  if (bio !== undefined) { fields.push('bio = ?'); vals.push(String(bio).trim().slice(0, 500)); }
-  if (avatar_url !== undefined) { fields.push('avatar_url = ?'); vals.push(avatar_url); }
+  if (bio !== undefined) { fields.push('bio = ?'); vals.push(bio == null ? '' : String(bio).trim().slice(0, 500)); }
+  if (avatar_url !== undefined) {
+    // Local avatars must be created and assigned by the dedicated upload route.
+    // This endpoint only supports clearing the current avatar; provider avatars
+    // are assigned server-side during OAuth account creation.
+    if (avatar_url !== '') {
+      res.status(400).json({ error: 'Upload a new avatar using the avatar upload endpoint.' });
+      return;
+    }
+    fields.push("avatar_url = ''");
+  }
   if (profileVisibility !== undefined) { fields.push('profile_visibility = ?'); vals.push(vis); }
   if (feedExposure !== undefined) { fields.push('feed_exposure = ?'); vals.push(fex); }
   if (whi !== undefined) { fields.push('world_home_injection = ?'); vals.push(whi); }
   if (gameDiscoveryEnabled !== undefined) { fields.push('game_discovery_enabled = ?'); vals.push(gameDiscoveryEnabled ? 1 : 0); }
   if (dmp !== undefined) { fields.push('dm_privacy = ?'); vals.push(dmp); }
   // profileData: structured profile sections stored as JSON blob
-  if (profileData !== undefined && typeof profileData === 'object' && profileData !== null) {
+  if (profileData !== undefined) {
     const PD_LIMITS: Record<string, number> = {
       techInterests: 200, platforms: 100, lookingFor: 200,
       currentProjects: 300, favoriteGenres: 150, websiteUrl: 200,
     };
     const pd: Record<string, string> = {};
     for (const [key, max] of Object.entries(PD_LIMITS)) {
-      if (typeof profileData[key] === 'string') {
-        pd[key] = profileData[key].trim().slice(0, max);
+      if (profileData && typeof profileData[key] === 'string') {
+        const value = profileData[key].trim().slice(0, max);
+        if (value) pd[key] = value;
       }
     }
     // websiteUrl must be http(s):// if provided
-    if (pd.websiteUrl && !/^https?:\/\/.+/.test(pd.websiteUrl)) { pd.websiteUrl = ''; }
+    if (pd.websiteUrl && !/^https?:\/\/.+/.test(pd.websiteUrl)) { delete pd.websiteUrl; }
     fields.push('profile_data = ?');
     vals.push(JSON.stringify(pd));
   }
   fields.push("updated_at = datetime('now')");
   vals.push(req.user!.id);
   getDb().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
-  const user = getUserById(req.user!.id);
-  res.json({ user });
+  const result = getCanonicalProfile(req.user, { id: req.user!.id });
+  const authUser = getUserById(req.user!.id);
+  if (!result || !authUser) {
+    res.status(500).json({ error: 'Could not load saved profile.' });
+    return;
+  }
+  res.json({ user: result.profile, authUser });
 });
 
 // GET /api/users/search?q=...

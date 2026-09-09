@@ -2,8 +2,20 @@ import { Router } from 'express';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Response } from 'express';
 import { getDb } from '../database.js';
-import { registerUser, generateToken, verifyToken, verifyPassword, getUserByUsername, getUserById, hashPassword } from '../auth.js';
+import {
+  authenticateApplicationToken,
+  registerUser,
+  generateToken,
+  verifyToken,
+  verifyPassword,
+  getUserByUsername,
+  getUserById,
+  hashPassword,
+  revokeAllApplicationSessions,
+  revokeApplicationToken,
+} from '../auth.js';
 import { requireAuth, getAuthCookieValue, AUTH_COOKIE_NAME, type AuthRequest } from '../middleware.js';
+import { clearPassportSessionCookie, destroyBrowserSession } from '../browserSession.js';
 import { logAuthEvent, getClientIp } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
 import { sendEmail, buildVerificationEmail, buildPasswordResetEmail, isEmailConfigured } from '../email.js';
@@ -138,7 +150,7 @@ router.post('/register', async (req, res) => {
 });
 
 // POST /api/auth/login
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const ip = getClientIp(req);
   const ua = req.headers['user-agent'];
   try {
@@ -156,6 +168,10 @@ router.post('/login', (req, res) => {
       logAuthEvent({ eventType: 'login_failure', userId: user.id, success: false, reason: 'ACCOUNT_BANNED', ip, userAgent: ua, meta: { username: user.username } });
       res.status(403).json({ error: 'Account is banned.' }); return;
     }
+    // A password login is an explicit application-account switch. Discard any
+    // temporary or stale Passport identity before issuing the application JWT.
+    await destroyBrowserSession(req);
+    clearPassportSessionCookie(res);
     getDb().prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(user.id);
     logAuthEvent({ eventType: 'login_success', userId: user.id, ip, userAgent: ua, meta: { username: user.username } });
     logUsage({ eventType: 'login_success', userId: user.id, featureArea: 'account' });
@@ -167,6 +183,40 @@ router.post('/login', (req, res) => {
   } catch (err: any) {
     console.error('[auth] Login error:', err.message);
     res.status(500).json({ error: 'Login failed.' });
+  }
+});
+
+// POST /api/auth/change-password — rotate the password and every application session.
+router.post('/change-password', requireAuth, async (req: AuthRequest, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword || String(newPassword).length < 8) {
+    res.status(400).json({ error: 'Current password and a new password (min 8 characters) are required.' });
+    return;
+  }
+  const user = getUserByUsername(req.user!.username);
+  if (!user || !user.password_hash || !verifyPassword(String(currentPassword), user.password_hash)) {
+    res.status(401).json({ error: 'Current password is incorrect.' });
+    return;
+  }
+
+  const newPasswordHash = hashPassword(String(newPassword));
+  const changedAt = new Date().toISOString();
+  try {
+    const db = getDb();
+    db.transaction(() => {
+      const changed = db.prepare(`
+        UPDATE users SET password_hash = ?, password_changed_at = ? WHERE id = ?
+      `).run(newPasswordHash, changedAt, user.id);
+      if (changed.changes !== 1) throw new Error('PASSWORD_UPDATE_FAILED');
+      revokeAllApplicationSessions(user.id);
+    })();
+    try { await destroyBrowserSession(req); } catch { /* app credentials are already revoked */ }
+    clearAuthCookie(res);
+    clearPassportSessionCookie(res);
+    res.json({ ok: true, message: 'Password updated. Please log in again.' });
+  } catch (err: any) {
+    console.error('[auth] Password change error:', err.message);
+    res.status(500).json({ error: 'Could not change password.' });
   }
 });
 
@@ -284,8 +334,11 @@ router.post('/reset-password', (req, res) => {
       const tokenUpdate = db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL").run(row.id);
       if (tokenUpdate.changes !== 1) return { ok: false };
 
-      const passwordUpdate = db.prepare("UPDATE users SET password_hash = ?, password_changed_at = datetime('now') WHERE id = ?").run(newPasswordHash, user.id);
+      const passwordUpdate = db.prepare(
+        'UPDATE users SET password_hash = ?, password_changed_at = ? WHERE id = ?'
+      ).run(newPasswordHash, new Date().toISOString(), user.id);
       if (passwordUpdate.changes !== 1) throw new Error('PASSWORD_UPDATE_FAILED');
+      revokeAllApplicationSessions(user.id);
 
       return { ok: true, user: { id: user.id, username: user.username } };
     })();
@@ -354,6 +407,14 @@ router.get('/verify-email', (req, res) => {
     // Raw JWT is never returned in JSON — only set as an HttpOnly cookie.
     const updatedUser = getUserById(result.userId);
     if (updatedUser && !updatedUser.banned) {
+      const currentToken = getAuthCookieValue(req);
+      const currentAuth = currentToken ? authenticateApplicationToken(currentToken) : null;
+      if (currentAuth?.ok && currentAuth.user.id !== updatedUser.id) {
+        // Verify the target account without silently replacing a different active
+        // application identity in this browser.
+        res.json({ ok: true });
+        return;
+      }
       const freshToken = generateToken(updatedUser);
       setAuthCookie(res, freshToken);
       res.json({ ok: true, user: updatedUser });
@@ -407,7 +468,7 @@ router.post('/resend-verification', requireAuth, async (req: AuthRequest, res) =
 // returns the full user object. Token is NEVER exposed to JavaScript.
 // The server stored the JWT in session during the OAuth callback (not in the URL).
 // This endpoint claims it once, sets the cookie, clears the session data, returns the user.
-router.get('/oauth-token', (req, res) => {
+router.get('/oauth-token', async (req, res) => {
   const session = (req as any).session;
   const token: string | undefined = session?.oauthHandoffToken;
   const username: string | undefined = session?.oauthHandoffUsername;
@@ -418,32 +479,35 @@ router.get('/oauth-token', (req, res) => {
     return;
   }
 
-  // Consume immediately — one-time use. Delete before responding to prevent replay.
-  delete session.oauthHandoffToken;
-  delete session.oauthHandoffUsername;
-  session.save(() => {});
-
-  // Verify the stored token and fetch the canonical user
-  const payload = verifyToken(token);
-  if (!payload) {
+  // Verify the stored application token and fetch canonical, revocation-aware state.
+  const authenticated = authenticateApplicationToken(token);
+  if (!authenticated.ok || authenticated.user.username !== username) {
+    try { await destroyBrowserSession(req); } catch { /* fail closed below */ }
+    clearPassportSessionCookie(res);
     res.status(401).json({ error: 'OAuth session expired. Please try logging in again.' });
     return;
   }
-  const user = getUserById(payload.id);
-  if (!user || user.banned) {
-    res.status(401).json({ error: 'Account unavailable. Please try logging in again.' });
+
+  // Consuming the handoff destroys the entire temporary OAuth/Passport session.
+  // No Passport identity survives alongside the new application credential.
+  try {
+    await destroyBrowserSession(req);
+  } catch (err: any) {
+    console.error('[auth] Failed to consume OAuth handoff session:', err.message);
+    res.status(500).json({ error: 'Could not complete OAuth login. Please try again.' });
     return;
   }
 
   // Set the HttpOnly auth cookie — token never sent to frontend JS.
   setAuthCookie(res, token);
-  res.json({ ok: true, user });
+  clearPassportSessionCookie(res);
+  res.json({ ok: true, user: authenticated.user });
 });
 
 // POST /api/auth/logout — clears the HttpOnly auth cookie and audit-logs the event.
 // Always clears the cookie regardless of whether auth is valid, so logout never
 // "traps" a user with an expired/missing token. Returns { ok: true } unconditionally.
-router.post('/logout', (req, res) => {
+router.post('/logout', async (req, res) => {
   // Soft-auth: try to identify the user for audit purposes but don't block on failure.
   const token = getAuthCookieValue(req);
   if (token) {
@@ -463,8 +527,18 @@ router.post('/logout', (req, res) => {
       }
     } catch { /* never block logout */ }
   }
-  clearAuthCookie(res);
-  res.json({ ok: true });
+  try {
+    // Destroy Passport/Express state first. If this fails, keep the application
+    // credential intact and return failure so the client cannot claim success.
+    await destroyBrowserSession(req);
+    if (token) revokeApplicationToken(token);
+    clearAuthCookie(res);
+    clearPassportSessionCookie(res);
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('[auth] Logout failed:', err.message);
+    res.status(500).json({ error: 'Logout failed. Please try again.' });
+  }
 });
 
 // GET /api/auth/me

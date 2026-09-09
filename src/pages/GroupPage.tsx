@@ -1,11 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
+import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
 
 export default function GroupPage({ user }: { user: any }) {
   const { id } = useParams<{ id: string }>();
+  const routeKey = `${id || ''}:${user?.id ?? 'anonymous'}`;
+  const currentRouteKey = useRef(routeKey);
+  currentRouteKey.current = routeKey;
   const [group, setGroup] = useState<any>(null);
+  const [loadState, setLoadState] = useState<RouteLoadState>('loading');
+  const [stateRouteKey, setStateRouteKey] = useState(routeKey);
+  const requestGate = useRef(new RouteRequestGate());
   const [members, setMembers] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
   const [content, setContent] = useState('');
@@ -13,26 +20,59 @@ export default function GroupPage({ user }: { user: any }) {
   const [postError, setPostError] = useState('');
   const [membershipError, setMembershipError] = useState('');
   const [showMembers, setShowMembers] = useState(false);
-  const [notFound, setNotFound] = useState(false);
 
   const isVerified = user?.is_verified === 1 || user?.isVerified === true;
 
-  useEffect(() => { loadGroup(); }, [id]);
+  useEffect(() => {
+    setShowMembers(false);
+    setMembershipError('');
+    setPostError('');
+    void loadGroup();
+    return () => requestGate.current.invalidate();
+  }, [routeKey]);
 
   async function loadGroup() {
+    const requestedRouteKey = routeKey;
+    if (currentRouteKey.current !== requestedRouteKey) return;
+    const isCurrent = requestGate.current.begin();
+    setStateRouteKey(requestedRouteKey);
+    setLoadState('loading');
+    setGroup(null);
+    setMembers([]);
+    setPosts([]);
+    const groupId = Number(id);
+    if (!Number.isSafeInteger(groupId) || groupId <= 0) {
+      if (isCurrent()) setLoadState('unavailable');
+      return;
+    }
     try {
-      const r = await api.getGroup(Number(id));
+      const r = await api.getGroup(groupId);
+      if (!isCurrent()) return;
       setGroup(r.group); setMembers(r.members); setPosts(r.posts);
-    } catch (e) { setNotFound(true); }
+      setLoadState('loaded');
+    } catch (error) {
+      if (isCurrent()) setLoadState(routeFailureState(error));
+    }
   }
 
-  if (notFound) return (
+  const visibleLoadState = routeStateForKey(routeKey, stateRouteKey, loadState);
+  if (visibleLoadState === 'loading') {
+    return <div className="loading">Loading…</div>;
+  }
+  if (visibleLoadState === 'unavailable') return (
     <div className="group-page">
       <Link to="/groups" className="btn-ghost">← Groups</Link>
-      <p className="muted" style={{ marginTop: 24 }}>Group not found.</p>
+      <p className="muted" style={{ marginTop: 24 }}>This group is not available.</p>
     </div>
   );
-  if (!group) return <div className="loading">Loading…</div>;
+  if (visibleLoadState === 'error') return (
+    <div className="group-page">
+      <Link to="/groups" className="btn-ghost">← Groups</Link>
+      <p className="error-msg" role="alert">Could not load this group.</p>
+      <button className="btn btn-ghost" onClick={() => void loadGroup()}>Try again</button>
+    </div>
+  );
+  if (!group) return null;
 
   const isMember = members.some((m: any) => m.id === user.id);
   const isOwner = group.owner_id === user.id;

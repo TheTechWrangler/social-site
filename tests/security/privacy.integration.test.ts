@@ -89,7 +89,9 @@ async function request(
 ): Promise<{ response: Response; body: any }> {
   const headers = new Headers(options.headers);
   if (username) headers.set('cookie', cookie(username));
-  if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
+  if (options.body && !(options.body instanceof FormData) && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
   const response = await fetch(`${baseUrl}${pathname}`, {
     redirect: 'manual',
     ...options,
@@ -356,6 +358,97 @@ test('profile policy covers anonymous, limited, follower, self, admin, block, an
   assert.equal((await request('/api/users/private', 'blocker')).response.status, 404);
   assert.equal((await request('/api/users/blocker', 'private')).response.status, 404);
   assert.equal((await request('/api/users/banned', 'admin')).response.status, 404);
+});
+
+test('profile updates return canonical saved profile and refreshed auth state', async () => {
+  const original = db.prepare(`
+    SELECT display_name, bio, avatar_url, profile_visibility, profile_data,
+      game_discovery_enabled
+    FROM users WHERE id = ?
+  `).get(ids.public) as any;
+
+  try {
+    const longDisplayName = `  ${'N'.repeat(90)}  `;
+    const longProject = `  ${'P'.repeat(310)}  `;
+    const saved = await request('/api/users/profile', 'public', {
+      method: 'PUT',
+      body: JSON.stringify({
+        displayName: longDisplayName,
+        bio: '  canonical bio  ',
+        profileVisibility: 'private',
+        gameDiscoveryEnabled: false,
+        profileData: {
+          techInterests: '  TypeScript  ',
+          platforms: '',
+          currentProjects: longProject,
+          websiteUrl: 'javascript:alert(1)',
+        },
+      }),
+    });
+    assert.equal(saved.response.status, 200);
+    assert.equal(saved.body.user.displayName, 'N'.repeat(80));
+    assert.equal(saved.body.user.bio, 'canonical bio');
+    assert.equal(saved.body.user.profileVisibility, 'private');
+    assert.equal(saved.body.user.isPrivate, true);
+    assert.deepEqual(saved.body.user.profileData, {
+      techInterests: 'TypeScript',
+      currentProjects: 'P'.repeat(300),
+    });
+    assert.equal(saved.body.authUser.display_name, 'N'.repeat(80));
+    assert.equal(saved.body.authUser.profile_visibility, 'private');
+    assert.equal(saved.body.authUser.game_discovery_enabled, 0);
+
+    const refetched = await request('/api/users/public', 'public');
+    assert.equal(refetched.response.status, 200);
+    assert.deepEqual(refetched.body.user, saved.body.user);
+    assert.equal((await request('/api/users/PUBLIC', 'public')).response.status, 200);
+    assert.equal((await request('/api/users/PUBLIC/posts', 'public')).response.status, 200);
+
+    const cleared = await request('/api/users/profile', 'public', {
+      method: 'PUT',
+      body: JSON.stringify({
+        bio: null,
+        profileVisibility: 'public',
+        profileData: null,
+        avatar_url: '',
+      }),
+    });
+    assert.equal(cleared.response.status, 200);
+    assert.equal(cleared.body.user.bio, '');
+    assert.equal(cleared.body.user.avatarUrl, '');
+    assert.equal(cleared.body.user.profileVisibility, 'public');
+    assert.deepEqual(cleared.body.user.profileData, {});
+
+    const clearedRefetch = await request('/api/users/public', 'public');
+    assert.equal(clearedRefetch.body.user.bio, '');
+    assert.equal(clearedRefetch.body.user.avatarUrl, '');
+    assert.deepEqual(clearedRefetch.body.user.profileData, {});
+
+    const emptyName = await request('/api/users/profile', 'public', {
+      method: 'PUT',
+      body: JSON.stringify({ displayName: '   ' }),
+    });
+    assert.equal(emptyName.response.status, 400);
+    const invalidVisibility = await request('/api/users/profile', 'public', {
+      method: 'PUT',
+      body: JSON.stringify({ profileVisibility: 'secret' }),
+    });
+    assert.equal(invalidVisibility.response.status, 400);
+  } finally {
+    db.prepare(`
+      UPDATE users SET display_name = ?, bio = ?, avatar_url = ?,
+        profile_visibility = ?, profile_data = ?, game_discovery_enabled = ?
+      WHERE id = ?
+    `).run(
+      original.display_name,
+      original.bio,
+      original.avatar_url,
+      original.profile_visibility,
+      original.profile_data,
+      original.game_discovery_enabled,
+      ids.public,
+    );
+  }
 });
 
 test('search and connection discovery never upgrade limited or hidden identities', async () => {
@@ -757,6 +850,156 @@ test('attached files prohibit browser caching and recheck changed visibility', a
     db.prepare('INSERT OR IGNORE INTO follows (follower_id, following_id) VALUES (?, ?)').run(ids.follower, ids.private);
     db.prepare('DELETE FROM posts WHERE id = ?').run(post);
     fs.unlinkSync(path.join(uploadsDir, filename));
+  }
+});
+
+test('local upload URLs cannot be adopted to broaden media access', async () => {
+  const png = Buffer.from('89504e470d0a1a0a', 'hex');
+  const filenames = {
+    other: 'avatar-bypass-other.png',
+    private: 'avatar-bypass-private.png',
+    hidden: 'avatar-bypass-hidden.png',
+    blocked: 'avatar-bypass-blocked.png',
+    orphan: 'avatar-bypass-orphan.png',
+  };
+  for (const filename of Object.values(filenames)) {
+    fs.writeFileSync(path.join(uploadsDir, filename), png);
+  }
+
+  const hiddenPost = Number(db.prepare(
+    'INSERT INTO posts (user_id, content, hidden) VALUES (?, ?, 1)',
+  ).run(ids.public, 'HIDDEN AVATAR BYPASS TEST').lastInsertRowid);
+  const blockedPost = Number(db.prepare(
+    'INSERT INTO posts (user_id, content) VALUES (?, ?)',
+  ).run(ids.private, 'BLOCKED AVATAR BYPASS TEST').lastInsertRowid);
+  const mediaIds = [
+    Number(db.prepare("INSERT INTO post_media (post_id, media_type, url) VALUES (?, 'image', ?)").run(
+      postIds.public, `/uploads/${filenames.other}`,
+    ).lastInsertRowid),
+    Number(db.prepare("INSERT INTO post_media (post_id, media_type, url) VALUES (?, 'image', ?)").run(
+      postIds.private, `/uploads/${filenames.private}`,
+    ).lastInsertRowid),
+    Number(db.prepare("INSERT INTO post_media (post_id, media_type, url) VALUES (?, 'image', ?)").run(
+      hiddenPost, `/uploads/${filenames.hidden}`,
+    ).lastInsertRowid),
+    Number(db.prepare("INSERT INTO post_media (post_id, media_type, url) VALUES (?, 'image', ?)").run(
+      blockedPost, `/uploads/${filenames.blocked}`,
+    ).lastInsertRowid),
+  ];
+
+  const original = db.prepare(
+    'SELECT avatar_url, bio, is_verified FROM users WHERE id = ?',
+  ).get(ids.stranger) as any;
+  const providerAvatar = 'https://example.invalid/provider-avatar.png';
+  const createdAvatarFiles: string[] = [];
+  let collisionPost = 0;
+  let collisionMedia = 0;
+
+  const uploadAvatar = async (username: string) => {
+    const form = new FormData();
+    form.append('file', new Blob([png], { type: 'image/png' }), 'avatar.png');
+    const result = await request('/api/uploads/avatar', username, { method: 'POST', body: form });
+    if (result.body?.media?.url) createdAvatarFiles.push(path.basename(result.body.media.url));
+    return result;
+  };
+
+  try {
+    db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(providerAvatar, ids.stranger);
+    db.prepare(`
+      INSERT INTO user_auth_providers (
+        user_id, provider, provider_user_id, provider_email, provider_display_name, provider_avatar_url
+      ) VALUES (?, 'google', ?, ?, ?, ?)
+    `).run(ids.stranger, 'avatar-provider-test', 'stranger@test.invalid', 'Stranger User', providerAvatar);
+
+    const profileUpdate = await request('/api/users/profile', 'stranger', {
+      method: 'PUT', body: JSON.stringify({ bio: 'provider avatar preserved' }),
+    });
+    assert.equal(profileUpdate.response.status, 200);
+    assert.equal(
+      (db.prepare('SELECT avatar_url FROM users WHERE id = ?').get(ids.stranger) as any).avatar_url,
+      providerAvatar,
+    );
+
+    const attempts = [filenames.other, filenames.private, filenames.hidden, filenames.blocked, filenames.orphan];
+    for (const filename of attempts) {
+      const result = await request('/api/users/profile', 'stranger', {
+        method: 'PUT', body: JSON.stringify({ avatar_url: `/uploads/${filename}` }),
+      });
+      assert.equal(result.response.status, 400);
+      assert.equal(
+        (db.prepare('SELECT avatar_url FROM users WHERE id = ?').get(ids.stranger) as any).avatar_url,
+        providerAvatar,
+      );
+    }
+    const externalAttempt = await request('/api/users/profile', 'stranger', {
+      method: 'PUT', body: JSON.stringify({ avatar_url: 'https://attacker.invalid/avatar.png' }),
+    });
+    assert.equal(externalAttempt.response.status, 400);
+
+    assert.equal((await request(`/uploads/${filenames.private}`)).response.status, 404);
+    assert.equal((await request(`/uploads/${filenames.hidden}`)).response.status, 404);
+    assert.equal((await request(`/uploads/${filenames.blocked}`, 'blocker')).response.status, 404);
+    assert.equal((await request(`/uploads/${filenames.orphan}`)).response.status, 404);
+
+    db.prepare('UPDATE users SET is_verified = 0 WHERE id = ?').run(ids.stranger);
+    const unverifiedAttempt = await request('/api/users/profile', 'stranger', {
+      method: 'PUT', body: JSON.stringify({ avatar_url: `/uploads/${filenames.private}` }),
+    });
+    assert.equal(unverifiedAttempt.response.status, 400);
+    assert.equal((await request(`/uploads/${filenames.private}`)).response.status, 404);
+    db.prepare('UPDATE users SET is_verified = ? WHERE id = ?').run(original.is_verified, ids.stranger);
+
+    const firstUpload = await uploadAvatar('stranger');
+    assert.equal(firstUpload.response.status, 201);
+    const firstUrl = firstUpload.body.media.url as string;
+    assert.match(firstUrl, /^\/uploads\/avatar-[a-f0-9]{32}\.png$/);
+    assert.equal(
+      (db.prepare('SELECT user_id FROM user_avatar_uploads WHERE url = ?').get(firstUrl) as any).user_id,
+      ids.stranger,
+    );
+    assert.equal((await request(firstUrl)).response.status, 200);
+
+    collisionPost = Number(db.prepare(
+      'INSERT INTO posts (user_id, content, hidden) VALUES (?, ?, 1)',
+    ).run(ids.stranger, 'AVATAR CLASSIFICATION COLLISION').lastInsertRowid);
+    collisionMedia = Number(db.prepare(
+      "INSERT INTO post_media (post_id, media_type, url) VALUES (?, 'image', ?)",
+    ).run(collisionPost, firstUrl).lastInsertRowid);
+    assert.equal((await request(firstUrl)).response.status, 404);
+    db.prepare('DELETE FROM post_media WHERE id = ?').run(collisionMedia);
+    collisionMedia = 0;
+    assert.equal((await request(firstUrl)).response.status, 200);
+
+    const secondUpload = await uploadAvatar('stranger');
+    assert.equal(secondUpload.response.status, 201);
+    const secondUrl = secondUpload.body.media.url as string;
+    assert.notEqual(secondUrl, firstUrl);
+    assert.equal((await request(firstUrl)).response.status, 404);
+    assert.equal((await request(secondUrl)).response.status, 200);
+
+    const reset = await request('/api/users/profile', 'stranger', {
+      method: 'PUT', body: JSON.stringify({ avatar_url: '' }),
+    });
+    assert.equal(reset.response.status, 200);
+    assert.equal(
+      (db.prepare('SELECT avatar_url FROM users WHERE id = ?').get(ids.stranger) as any).avatar_url,
+      '',
+    );
+    assert.equal((await request(secondUrl)).response.status, 404);
+  } finally {
+    if (collisionMedia) db.prepare('DELETE FROM post_media WHERE id = ?').run(collisionMedia);
+    if (collisionPost) db.prepare('DELETE FROM posts WHERE id = ?').run(collisionPost);
+    db.prepare('DELETE FROM user_avatar_uploads WHERE user_id = ?').run(ids.stranger);
+    db.prepare('DELETE FROM user_auth_providers WHERE user_id = ? AND provider_user_id = ?')
+      .run(ids.stranger, 'avatar-provider-test');
+    db.prepare('UPDATE users SET avatar_url = ?, bio = ?, is_verified = ? WHERE id = ?')
+      .run(original.avatar_url, original.bio, original.is_verified, ids.stranger);
+    for (const id of mediaIds) db.prepare('DELETE FROM post_media WHERE id = ?').run(id);
+    db.prepare('DELETE FROM posts WHERE id IN (?, ?)').run(hiddenPost, blockedPost);
+    for (const filename of [...Object.values(filenames), ...createdAvatarFiles]) {
+      const filePath = path.join(uploadsDir, filename);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
   }
 });
 

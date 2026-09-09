@@ -29,6 +29,7 @@ import messagesRoutes from './routes/messages.js';
 import usageRoutes from './routes/usage.js';
 import reportsRoutes from './routes/reports.js';
 import { SQLiteSessionStore } from './sessionStore.js';
+import { PASSPORT_SESSION_COOKIE_NAME } from './browserSession.js';
 import { isEmailConfigured } from './email.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -89,6 +90,10 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'social-site-session-dev-se
 
 const app = express();
 
+// Session/auth stores must exist before middleware constructors perform cleanup.
+initializeDatabase();
+runRetentionCleanup();
+
 // ─── Trust proxy (required for correct rate-limit IPs behind Nginx Proxy Manager) ───
 // Set TRUST_PROXY=1 in production when behind a single reverse proxy.
 const trustProxy = process.env.TRUST_PROXY === '1' ? 1 : false;
@@ -125,6 +130,7 @@ app.use(helmet({
 // and no longer emit the "MemoryStore is not designed for production" warning.
 // Cookie settings are unchanged: httpOnly, secure (prod only), sameSite=lax, 24 h maxAge.
 app.use(session({
+  name: PASSPORT_SESSION_COOKIE_NAME,
   store: new SQLiteSessionStore(),
   secret: SESSION_SECRET,
   resave: false,
@@ -149,6 +155,13 @@ if (isEmailConfigured()) {
 configurePassport();
 app.use(passport.initialize());
 app.use(passport.session());
+// Passport identity is temporary OAuth machinery, never an application viewer.
+// Provider callback authentication runs later inside its route and may repopulate
+// req.user for handleOAuthCallback; all other routes start with no inherited user.
+app.use((req, _res, next) => {
+  req.user = undefined;
+  next();
+});
 
 // ─── CORS ───
 const corsOrigin = process.env.WEB_BASE_URL || 'http://localhost:5174';
@@ -248,6 +261,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
   app.use('/api/auth/resend-verification', authLimiter);          // general fallback: 10 / window
   app.use('/api/auth/verify-email', authLimiter);
   // Upload endpoints
+  app.use('/api/uploads/avatar', uploadLimiter);
   app.use('/api/uploads/image', uploadLimiter);
   app.use('/api/uploads/video', uploadLimiter);
   app.use('/api/uploads/external-video', uploadLimiter);
@@ -293,6 +307,9 @@ function extractOriginFromUrl(url: string): string | null {
 }
 
 app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // OAuth initiation/callback and the one-time handoff currently use GET and are
+  // protected by unpredictable session-bound state. All POST/PUT/PATCH/DELETE
+  // application mutations continue through the origin policy below.
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) { next(); return; }
 
   const origin = req.headers.origin;
@@ -311,9 +328,10 @@ app.use('/api', (req: express.Request, res: express.Response, next: express.Next
   }
 
   // No Origin or Referer — tools/curl. Allow in dev or from localhost/127.0.0.1.
-  if (!IS_PROD) { next(); return; }
+  const enforcingInTests = !IS_PROD && process.env.CSRF_ENFORCE_IN_TESTS === 'true';
+  if (!IS_PROD && !enforcingInTests) { next(); return; }
   const host = (req.headers.host || '').split(':')[0];
-  if (host === 'localhost' || host === '127.0.0.1') { next(); return; }
+  if (!enforcingInTests && (host === 'localhost' || host === '127.0.0.1')) { next(); return; }
   res.status(403).json({ error: 'Invalid request origin.' });
 });
 
@@ -390,8 +408,6 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 // Start
-initializeDatabase();
-runRetentionCleanup();
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[server] Refuge Cloud running on http://0.0.0.0:${PORT}`);
 });

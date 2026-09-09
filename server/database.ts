@@ -21,6 +21,7 @@ export function initializeDatabase(): void {
       password_hash TEXT NOT NULL,
       bio TEXT DEFAULT '',
       avatar_url TEXT DEFAULT '',
+      auth_version INTEGER NOT NULL DEFAULT 0,
       role TEXT DEFAULT 'user' CHECK(role IN ('user','mod','admin')),
       banned INTEGER DEFAULT 0,
       is_verified INTEGER DEFAULT 0,
@@ -195,6 +196,16 @@ export function initializeDatabase(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_post_media_post ON post_media(post_id);
 
+    CREATE TABLE IF NOT EXISTS user_avatar_uploads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      url TEXT NOT NULL UNIQUE,
+      mime_type TEXT NOT NULL,
+      file_size_bytes INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_avatar_uploads_user ON user_avatar_uploads(user_id);
+
     CREATE TABLE IF NOT EXISTS games (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
@@ -310,6 +321,36 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_dm_messages_convo ON dm_messages(conversation_id, id);
   `);
 
+  // Identity comparisons are case-insensitive while stored username casing is
+  // preserved for display. Refuse to guess if a legacy database contains a
+  // collision; operators must review those identities before startup can proceed.
+  const usernameCollision = db.prepare(`
+    SELECT LOWER(username) AS normalized, COUNT(*) AS count
+    FROM users GROUP BY LOWER(username) HAVING COUNT(*) > 1 LIMIT 1
+  `).get();
+  const emailCollision = db.prepare(`
+    SELECT LOWER(email) AS normalized, COUNT(*) AS count
+    FROM users GROUP BY LOWER(email) HAVING COUNT(*) > 1 LIMIT 1
+  `).get();
+  const providerCollision = db.prepare(`
+    SELECT user_id, provider, COUNT(*) AS count
+    FROM user_auth_providers
+    GROUP BY user_id, provider HAVING COUNT(*) > 1 LIMIT 1
+  `).get();
+  if (usernameCollision || emailCollision || providerCollision) {
+    throw new Error(
+      'Identity uniqueness migration blocked: review case-insensitive user/email or per-user provider collisions.',
+    );
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase
+      ON users(username COLLATE NOCASE);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nocase
+      ON users(email COLLATE NOCASE);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_auth_providers_user_provider
+      ON user_auth_providers(user_id, provider);
+  `);
+
   const userColumns = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
   if (!userColumns.some(c => c.name === 'world_home_injection')) {
     db.exec("ALTER TABLE users ADD COLUMN world_home_injection TEXT DEFAULT 'world_home_few'");
@@ -328,6 +369,9 @@ export function initializeDatabase(): void {
   // requireAuth compares token iat against this to revoke pre-change cookies.
   if (!userColumns.some(c => c.name === 'password_changed_at')) {
     db.exec('ALTER TABLE users ADD COLUMN password_changed_at TEXT DEFAULT NULL');
+  }
+  if (!userColumns.some(c => c.name === 'auth_version')) {
+    db.exec('ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0');
   }
   // profile_data: JSON blob for structured profile sections (tech, platforms,
   // looking-for, current projects, genres, website). NULL means no sections set.
@@ -460,10 +504,27 @@ export function initializeDatabase(): void {
     CREATE TABLE IF NOT EXISTS sessions (
       sid  TEXT PRIMARY KEY,
       sess TEXT NOT NULL,
-      expire TEXT NOT NULL
+      expire INTEGER NOT NULL,
+      expire_ms INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_sessions_expire ON sessions(expire);
+
+    CREATE TABLE IF NOT EXISTS application_auth_sessions (
+      session_id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at_ms INTEGER NOT NULL,
+      revoked_at_ms INTEGER,
+      created_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_application_auth_sessions_user
+      ON application_auth_sessions(user_id, revoked_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_application_auth_sessions_expiry
+      ON application_auth_sessions(expires_at_ms);
   `);
+  const sessionColumns = db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+  if (!sessionColumns.some(c => c.name === 'expire_ms')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN expire_ms INTEGER');
+  }
 }
 
 // ─── Retention Cleanup ───
