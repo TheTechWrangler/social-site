@@ -189,10 +189,12 @@ export const api = {
     ),
   sendMessage: (conversationId: number, body: string) =>
     request<{ message: any }>(`/messages/${conversationId}`, { method: 'POST', body: JSON.stringify({ body }) }),
-  markConversationRead: (conversationId: number) =>
-    request<{ ok: boolean }>(`/messages/${conversationId}/read`, { method: 'POST' }),
+  markConversationRead: (conversationId: number, observedMessageId: number) =>
+    request<{ ok: boolean; lastReadMessageId: number }>(`/messages/${conversationId}/read`, {
+      method: 'POST', body: JSON.stringify({ observedMessageId }),
+    }),
   deleteMessage: (conversationId: number, messageId: number) =>
-    request<{ ok: boolean }>(`/messages/${conversationId}/messages/${messageId}`, { method: 'DELETE' }),
+    request<{ ok: boolean; lastMessage: any | null }>(`/messages/${conversationId}/messages/${messageId}`, { method: 'DELETE' }),
   dmUnreadCount: () => request<{ count: number }>('/messages/unread-count'),
 
   // Admin

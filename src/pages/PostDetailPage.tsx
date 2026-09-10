@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
+import { applyPostEntityMutation, postContainsAuthor, postContainsId, type PostEntityMutation } from '../postEntityState';
 
 interface Props {
   user: any;
@@ -64,6 +65,21 @@ export default function PostDetailPage({ user }: Props) {
     }
   }
 
+  function handlePostMutation(mutation: PostEntityMutation) {
+    const removesPrimary = !!post && (
+      (mutation.type === 'delete' && postContainsId(post, mutation.postId)) ||
+      (mutation.type === 'hide-author' && postContainsAuthor(post, mutation.userId))
+    );
+    if (removesPrimary) {
+      setPost(null);
+      setComments([]);
+      setLoadState('unavailable');
+      return;
+    }
+    setPost((previous: any) => previous ? (applyPostEntityMutation([previous], mutation)[0] || null) : previous);
+    setComments(previous => applyPostEntityMutation(previous, mutation));
+  }
+
   const visibleLoadState = routeStateForKey(routeKey, stateRouteKey, loadState);
   if (visibleLoadState === 'loading') {
     return <div className="loading">Loading…</div>;
@@ -90,7 +106,7 @@ export default function PostDetailPage({ user }: Props) {
   return (
     <div className="post-detail-page">
       <Link to="/" className="btn-ghost back-link">← Home</Link>
-      <PostCard post={post} currentUser={user} />
+      <PostCard post={post} currentUser={user} onMutation={handlePostMutation} />
       {commentsLoadState === 'loading' && <div className="loading">Loading comments…</div>}
       {(commentsLoadState === 'error' || commentsLoadState === 'unavailable') && (
         <div>
@@ -102,7 +118,7 @@ export default function PostDetailPage({ user }: Props) {
         <div className="post-detail-comments">
           <h4 className="comments-heading">Comments</h4>
           {comments.map(c => (
-            <PostCard key={c.id} post={c} currentUser={user} />
+            <PostCard key={c.id} post={c} currentUser={user} onMutation={handlePostMutation} />
           ))}
         </div>
       )}

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { RouteRequestGate } from '../routeLoadState';
 
 export default function DiscoverPage({ user }: { user?: any }) {
   const [query, setQuery] = useState('');
@@ -10,65 +11,101 @@ export default function DiscoverPage({ user }: { user?: any }) {
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState('');
   const [pendingUserId, setPendingUserId] = useState<number | null>(null);
+  const suggestionGate = useRef(new RouteRequestGate());
+  const searchGate = useRef(new RouteRequestGate());
+  const actionGate = useRef(new RouteRequestGate());
+  const currentAccountId = useRef(user?.id);
+  currentAccountId.current = user?.id;
+  const currentQuery = useRef(query);
+  currentQuery.current = query;
 
   const isVerified = !!user?.is_verified;
 
   // Load public members on mount so new users see people immediately — no search required.
   useEffect(() => {
+    const requestedAccountId = user?.id;
+    const isCurrent = suggestionGate.current.begin();
+    setSuggestions([]);
+    setResults([]);
+    setSearched(false);
+    setPendingUserId(null);
+    setActionError('');
     api.get<{ users: any[] }>('/users?q=&limit=20')
-      .then(r => {
+      .then(response => {
+        if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
         setSuggestions(
-          (r.users || [])
-            .filter((u: any) => u.profile_visibility === 'public' && u.id !== user?.id)
+          (response.users || [])
+            .filter((candidate: any) => candidate.profile_visibility === 'public' && candidate.id !== requestedAccountId)
             .slice(0, 12)
         );
       })
       .catch(() => {});
-  }, []);
+    return () => {
+      suggestionGate.current.invalidate();
+      searchGate.current.invalidate();
+      actionGate.current.invalidate();
+    };
+  }, [user?.id]);
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     const q = query.trim();
     if (q.length < 2) return;
+    const requestedAccountId = user?.id;
+    const isCurrent = searchGate.current.begin();
     setLoading(true); setSearched(true);
     try {
-      const r = await api.get<any>(`/users?q=${encodeURIComponent(q)}&limit=30`);
-      setResults(r.users || []);
-    } catch (e) { setResults([]); }
-    setLoading(false);
+      const response = await api.get<any>(`/users?q=${encodeURIComponent(q)}&limit=30`);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId || currentQuery.current.trim() !== q) return;
+      setResults(response.users || []);
+    } catch (e) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId && currentQuery.current.trim() === q) setResults([]);
+    } finally {
+      if (isCurrent() && currentAccountId.current === requestedAccountId && currentQuery.current.trim() === q) setLoading(false);
+    }
   }
 
   async function handleFollow(userId: number) {
     if (pendingUserId !== null) return;
+    const requestedAccountId = user?.id;
+    const isCurrent = actionGate.current.begin();
     setPendingUserId(userId);
     setActionError('');
     try {
       await api.follow(userId);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       const update = (arr: any[]) => arr.map(u => u.id === userId ? { ...u, isFollowing: true } : u);
       setResults(update);
       setSuggestions(update);
     } catch (e: any) {
-      console.error(e);
-      setActionError(e.message || 'Could not follow user.');
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        console.error(e);
+        setActionError(e.message || 'Could not follow user.');
+      }
     } finally {
-      setPendingUserId(null);
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setPendingUserId(null);
     }
   }
 
   async function handleUnfollow(userId: number) {
     if (pendingUserId !== null) return;
+    const requestedAccountId = user?.id;
+    const isCurrent = actionGate.current.begin();
     setPendingUserId(userId);
     setActionError('');
     try {
       await api.unfollow(userId);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       const update = (arr: any[]) => arr.map(u => u.id === userId ? { ...u, isFollowing: false } : u);
       setResults(update);
       setSuggestions(update);
     } catch (e: any) {
-      console.error(e);
-      setActionError(e.message || 'Could not unfollow user.');
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        console.error(e);
+        setActionError(e.message || 'Could not unfollow user.');
+      }
     } finally {
-      setPendingUserId(null);
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setPendingUserId(null);
     }
   }
 
@@ -101,7 +138,13 @@ export default function DiscoverPage({ user }: { user?: any }) {
       {actionError && <p className="error-msg" role="alert">{actionError}</p>}
       <form className="discover-search" onSubmit={handleSearch}>
         <input className="input" placeholder="Search by name or username..." value={query}
-          onChange={e => setQuery(e.target.value)} autoFocus />
+          onChange={e => {
+            setQuery(e.target.value);
+            searchGate.current.invalidate();
+            setResults([]);
+            setSearched(false);
+            setLoading(false);
+          }} autoFocus />
         <button className="btn btn-primary" disabled={query.trim().length < 2 || loading}>Search</button>
       </form>
 

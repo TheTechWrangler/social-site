@@ -3,6 +3,8 @@ import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 import WorldCard from '../components/WorldCard';
 import { attachComposerMedia, createClientOperationKey, SubmissionLock, submitComposerPost, type AttachmentResult } from '../postComposerSubmission';
+import { applyPostEntityMutation, type PostEntityMutation } from '../postEntityState';
+import { RouteRequestGate } from '../routeLoadState';
 
 const LEVELS = [
   { key: 'everyone', label: 'Community', help: 'All public posts from verified members. Mute, block, or follow to shape what you see.' },
@@ -46,86 +48,95 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   const [preferenceError, setPreferenceError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const submissionLock = useRef(new SubmissionLock());
+  const feedGate = useRef(new RouteRequestGate());
+  const preferenceGate = useRef(new RouteRequestGate());
+  const currentAccountId = useRef(user?.id);
+  currentAccountId.current = user?.id;
   const isVerified = user?.isVerified ?? user?.is_verified;
 
-  useEffect(() => { loadFeed(); }, []);
+  useEffect(() => {
+    const nextLevel = ['everyone', 'extended', 'friends', 'world'].includes(user?.feed_exposure)
+      ? user.feed_exposure
+      : 'everyone';
+    setLevel(nextLevel);
+    setWorldHomeInjection(user?.world_home_injection || 'world_home_few');
+    setPosts([]);
+    setWorldItems([]);
+    setFeedItems([]);
+    void loadFeed(nextLevel);
+    return () => {
+      feedGate.current.invalidate();
+      preferenceGate.current.invalidate();
+    };
+  }, [user?.id]);
 
-  async function loadFeed(lv?: string) {
-    const l = lv || level;
+  async function loadFeed(lv?: string, failureMessage?: string): Promise<boolean> {
+    const requestedAccountId = user?.id;
+    const requestedLevel = lv || level;
+    const isCurrent = feedGate.current.begin();
     setLoading(true);
     try {
-      const r = await api.feed({ limit: 50, offset: 0, level: l } as any);
-      const nativePosts = Array.isArray(r.posts) ? r.posts : [];
-      const normalizedItems = Array.isArray(r.items)
-        ? r.items
-        : nativePosts.map((p: any) => ({ ...p, type: p.type || 'post' }));
+      const response = await api.feed({ limit: 50, offset: 0, level: requestedLevel } as any);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return false;
+      const nativePosts = Array.isArray(response.posts) ? response.posts : [];
+      const normalizedItems = Array.isArray(response.items)
+        ? response.items
+        : nativePosts.map((post: any) => ({ ...post, type: post.type || 'post' }));
       setPosts(nativePosts);
-      setWorldItems(Array.isArray(r.worldItems) ? r.worldItems : []);
+      setWorldItems(Array.isArray(response.worldItems) ? response.worldItems : []);
       setFeedItems(normalizedItems);
-    } catch (e) { console.error(e); }
-    setLoading(false);
+      return true;
+    } catch (error) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        console.error(error);
+        if (failureMessage) setPreferenceError(failureMessage);
+      }
+      return false;
+    } finally {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setLoading(false);
+    }
   }
 
   async function handleLevelChange(lv: string) {
+    const requestedAccountId = user?.id;
     const previous = level;
+    const isCurrent = preferenceGate.current.begin();
     setLevel(lv);
     setPreferenceError('');
     setLoading(true);
     try {
       const updated = await api.updateProfile({ feedExposure: lv });
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       onUserChange(updated.authUser);
-    } catch (e: any) {
-      console.error(e);
+      await loadFeed(lv, 'Feed preference was saved, but the feed could not be refreshed.');
+    } catch (error: any) {
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
+      console.error(error);
       setLevel(previous);
-      setPreferenceError(e.message || 'Could not update feed preference.');
+      setPreferenceError(error.message || 'Could not update feed preference.');
       setLoading(false);
-      return;
     }
-    try {
-      const r = await api.feed({ limit: 50, offset: 0, level: lv } as any);
-      const nativePosts = Array.isArray(r.posts) ? r.posts : [];
-      const normalizedItems = Array.isArray(r.items)
-        ? r.items
-        : nativePosts.map((p: any) => ({ ...p, type: p.type || 'post' }));
-      setPosts(nativePosts);
-      setWorldItems(Array.isArray(r.worldItems) ? r.worldItems : []);
-      setFeedItems(normalizedItems);
-    } catch (e: any) {
-      console.error(e);
-      setPreferenceError('Feed preference was saved, but the feed could not be refreshed.');
-    }
-    setLoading(false);
   }
 
   async function handleWorldHomeChange(value: string) {
+    const requestedAccountId = user?.id;
     const previous = worldHomeInjection;
+    const isCurrent = preferenceGate.current.begin();
     setWorldHomeInjection(value);
     setPreferenceError('');
     setLoading(true);
     try {
       const updated = await api.updateProfile({ worldHomeInjection: value });
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       onUserChange(updated.authUser);
-    } catch (e: any) {
-      console.error(e);
+      await loadFeed(level, 'World Feed preference was saved, but the feed could not be refreshed.');
+    } catch (error: any) {
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
+      console.error(error);
       setWorldHomeInjection(previous);
-      setPreferenceError(e.message || 'Could not update World Feed preference.');
+      setPreferenceError(error.message || 'Could not update World Feed preference.');
       setLoading(false);
-      return;
     }
-    try {
-      const r = await api.feed({ limit: 50, offset: 0, level } as any);
-      const nativePosts = Array.isArray(r.posts) ? r.posts : [];
-      const normalizedItems = Array.isArray(r.items)
-        ? r.items
-        : nativePosts.map((p: any) => ({ ...p, type: p.type || 'post' }));
-      setPosts(nativePosts);
-      setWorldItems(Array.isArray(r.worldItems) ? r.worldItems : []);
-      setFeedItems(normalizedItems);
-    } catch (e: any) {
-      console.error(e);
-      setPreferenceError('World Feed preference was saved, but the feed could not be refreshed.');
-    }
-    setLoading(false);
   }
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -296,9 +307,22 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     setReplenishing(false);
   }
 
-  function handlePostUpdate(updated: any) {
-    setPosts(prev => prev.map(p => p.id === updated.id ? { ...updated, type: 'post' } : p));
-    setFeedItems(prev => prev.map(item => item.type === 'post' && item.id === updated.id ? { ...updated, type: 'post' } : item));
+  function handlePostMutation(mutation: PostEntityMutation) {
+    const reconcile = (items: any[]) => {
+      let next = applyPostEntityMutation(items, mutation);
+      if (mutation.type === 'repost' && !next.some(item => item.id === mutation.repost.id)) {
+        next = [{ ...mutation.repost, type: 'post' }, ...next];
+      }
+      return next;
+    };
+    setPosts(reconcile);
+    setFeedItems(previous => {
+      const world = previous.filter(item => item.type === 'world_item');
+      const native = reconcile(previous.filter(item => item.type !== 'world_item'));
+      return [...native, ...world].sort((a, b) =>
+        String(b.createdAt || b.publishedAt || '').localeCompare(String(a.createdAt || a.publishedAt || ''))
+      );
+    });
   }
   const currentLevel = LEVELS.find(l => l.key === level) || LEVELS[1];
   const currentWorldHome = WORLD_HOME_OPTIONS.find(o => o.key === worldHomeInjection) || WORLD_HOME_OPTIONS[1];
@@ -313,7 +337,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
         {preferenceError && <p className="error-msg" role="alert">{preferenceError}</p>}
         <div className="feed-exposure">
           {LEVELS.map(lv => (
-            <button key={lv.key} className={`btn btn-sm ${level === lv.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleLevelChange(lv.key)}>{lv.label}</button>
+            <button key={lv.key} className={`btn btn-sm ${level === lv.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleLevelChange(lv.key)} disabled={loading}>{lv.label}</button>
           ))}
         </div>
         <p className="muted" style={{ fontSize: '0.78rem', marginTop: 4 }}>{currentLevel.help}</p>
@@ -321,7 +345,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
           <span className="world-home-label">World Feed on Home</span>
           <div className="feed-exposure">
             {WORLD_HOME_OPTIONS.map(opt => (
-              <button key={opt.key} className={`btn btn-sm ${worldHomeInjection === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleWorldHomeChange(opt.key)}>{opt.label}</button>
+              <button key={opt.key} className={`btn btn-sm ${worldHomeInjection === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleWorldHomeChange(opt.key)} disabled={loading}>{opt.label}</button>
             ))}
           </div>
           <p className="muted" style={{ fontSize: '0.78rem', marginTop: 4 }}>{currentWorldHome.help}</p>
@@ -392,7 +416,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
           <div className="feed-list">
             {feedItems.map(item => item.type === 'world_item'
               ? <WorldCard key={`world-${item.id}`} item={item} />
-              : <PostCard key={`post-${item.id}`} post={item} currentUser={user} onUpdate={handlePostUpdate} />
+              : <PostCard key={`post-${item.id}`} post={item} currentUser={user} onMutation={handlePostMutation} />
             )}
           </div>
         )

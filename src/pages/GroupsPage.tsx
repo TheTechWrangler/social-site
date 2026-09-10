@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { RouteRequestGate } from '../routeLoadState';
 
 export default function GroupsPage({ user }: { user: any }) {
   const [groups, setGroups] = useState<any[]>([]);
@@ -11,10 +12,21 @@ export default function GroupsPage({ user }: { user: any }) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchGate = useRef(new RouteRequestGate());
+  const currentAccountId = useRef(user?.id);
+  currentAccountId.current = user?.id;
 
   const isVerified = user?.is_verified === 1 || user?.isVerified === true;
 
-  useEffect(() => { loadGroups(search); }, []);
+  useEffect(() => {
+    setGroups([]);
+    setSearch('');
+    void loadGroups('');
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+      searchGate.current.invalidate();
+    };
+  }, [user?.id]);
 
   function handleSearchChange(q: string) {
     setSearch(q);
@@ -23,7 +35,14 @@ export default function GroupsPage({ user }: { user: any }) {
   }
 
   async function loadGroups(q = '') {
-    try { const r = await api.getGroups(q || undefined); setGroups(r.groups); } catch (e) { console.error(e); }
+    const requestedAccountId = user?.id;
+    const isCurrent = searchGate.current.begin();
+    try {
+      const response = await api.getGroups(q || undefined);
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setGroups(response.groups);
+    } catch (e) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) console.error(e);
+    }
   }
 
   async function handleCreate(e: React.FormEvent) {

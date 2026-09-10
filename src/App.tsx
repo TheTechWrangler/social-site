@@ -2,6 +2,7 @@ import { Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-r
 import { useState, useEffect } from 'react';
 import { api } from './api/client';
 import { usePageTracking } from './hooks/usePageTracking';
+import { RouteRequestGate } from './routeLoadState';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -68,15 +69,35 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-    const poll = () => {
-      api.unreadCount().then(r => setUnread(r.count)).catch(() => {});
-      api.dmUnreadCount().then(r => setDmUnread(r.count)).catch(() => {});
+    const gate = new RouteRequestGate();
+    let inFlight = false;
+    if (!user) {
+      setUnread(0);
+      setDmUnread(0);
+      return () => gate.invalidate();
+    }
+    const accountId = user.id;
+    const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const isCurrent = gate.begin();
+      const [notificationResult, messageResult] = await Promise.allSettled([
+        api.unreadCount(),
+        api.dmUnreadCount(),
+      ]);
+      if (isCurrent() && user.id === accountId) {
+        if (notificationResult.status === 'fulfilled') setUnread(notificationResult.value.count);
+        if (messageResult.status === 'fulfilled') setDmUnread(messageResult.value.count);
+      }
+      inFlight = false;
     };
-    poll();
-    const interval = setInterval(poll, 30000);
-    return () => clearInterval(interval);
-  }, [user]);
+    void poll();
+    const interval = window.setInterval(() => void poll(), 30000);
+    return () => {
+      gate.invalidate();
+      window.clearInterval(interval);
+    };
+  }, [user?.id]);
 
   useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
 
@@ -165,8 +186,8 @@ export default function App() {
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage user={user} />} />
           <Route path="/settings" element={user ? <SettingsPage user={user} onUserChange={setUser} /> : <Navigate to="/login" />} />
-          <Route path="/messages" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
-          <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} /> : <Navigate to="/login" />} />
+          <Route path="/messages" element={user ? <MessagesPage user={user} onUnreadChange={setDmUnread} /> : <Navigate to="/login" />} />
+          <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} onUnreadChange={setDmUnread} /> : <Navigate to="/login" />} />
           <Route path="/posts/:id" element={user ? <PostDetailPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
           <Route path="/verify-email" element={<VerifyEmailPage onLogin={setUser} />} />

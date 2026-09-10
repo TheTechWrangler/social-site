@@ -11,6 +11,8 @@ import { logUsage } from '../usageEvents.js';
 import { isGoogleConfigured, isSteamConfigured } from '../authProviders.js';
 import { getStorageConfig } from '../config.js';
 import { boundedInteger } from '../pagination.js';
+import { validateGameServerCreate, validateGameServerPatch } from '../gameServerValidation.js';
+import { positiveIntegerParam, validationErrorMessage } from '../requestValidation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const runtimeStorage = getStorageConfig();
@@ -338,45 +340,88 @@ router.get('/game-servers', requireAuth, requireAdmin, (_req, res) => {
 });
 
 router.post('/game-servers', requireAuth, requireAdmin, (req, res) => {
-  const adminId = (req as any).user.id;
-  const { gameId, name, description, connectionHost, connectionPort, platform, status, maxPlayers,
-    currentPlayers, isFeatured, isActive, joinInstructions, rulesSummary, discordUrl, websiteUrl, serverType, playStyle, regionOrTimezone } = req.body;
-  if (!gameId || !name) { res.status(400).json({ error: 'gameId and name required.' }); return; }
-  const r = getDb().prepare(`INSERT INTO game_servers (game_id, name, description, connection_host, connection_port, platform, status, max_players, current_players, is_featured, is_active, join_instructions, rules_summary, discord_url, website_url, server_type, play_style, region_or_timezone)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(gameId, name, description||'', connectionHost||'', connectionPort||null, platform||'', status||'unknown',
-      maxPlayers||null, currentPlayers||0, isFeatured?1:0, isActive!==undefined?isActive:1,
-      joinInstructions||'', rulesSummary||'', discordUrl||'', websiteUrl||'', serverType||'', playStyle||'', regionOrTimezone||'');
-  const server = getDb().prepare('SELECT * FROM game_servers WHERE id = ?').get(r.lastInsertRowid);
-  logAuthEvent({ eventType: 'admin_game_server_create', userId: adminId, adminActorId: adminId, meta: { serverId: Number(r.lastInsertRowid), name } });
-  res.status(201).json({ server });
+  try {
+    const adminId = (req as any).user.id;
+    const input = validateGameServerCreate(req.body);
+    const game = getDb().prepare('SELECT id FROM games WHERE id = ?').get(input.gameId);
+    if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
+    if (input.maxPlayers !== null && input.currentPlayers > input.maxPlayers) {
+      res.status(400).json({ error: 'currentPlayers cannot exceed maxPlayers.' }); return;
+    }
+    const r = getDb().prepare(`INSERT INTO game_servers (game_id, name, description, connection_host, connection_port, platform, status, max_players, current_players, is_featured, is_active, join_instructions, rules_summary, discord_url, website_url, server_type, play_style, region_or_timezone)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(input.gameId, input.name, input.description, input.connectionHost, input.connectionPort, input.platform, input.status,
+        input.maxPlayers, input.currentPlayers, input.isFeatured ? 1 : 0, input.isActive ? 1 : 0,
+        input.joinInstructions, input.rulesSummary, input.discordUrl, input.websiteUrl, input.serverType, input.playStyle, input.regionOrTimezone);
+    const server = getDb().prepare('SELECT * FROM game_servers WHERE id = ?').get(r.lastInsertRowid);
+    logAuthEvent({ eventType: 'admin_game_server_create', userId: adminId, adminActorId: adminId, meta: { serverId: Number(r.lastInsertRowid), name: input.name } });
+    res.status(201).json({ server });
+  } catch (error) {
+    const message = validationErrorMessage(error);
+    if (message) { res.status(400).json({ error: message }); return; }
+    throw error;
+  }
 });
 
 router.patch('/game-servers/:id', requireAuth, requireAdmin, (req, res) => {
-  const adminId = (req as any).user.id;
-  const serverId = Number(req.params.id);
-  const fields = ['name','description','connection_host','connection_port','platform','status','max_players',
-    'current_players','is_featured','is_active','join_instructions','rules_summary','discord_url','website_url','server_type','play_style','region_or_timezone'];
-  const sets: string[] = [];
-  const vals: any[] = [];
-  for (const f of fields) {
-    const key = f.replace(/_./g, m => m[1].toUpperCase());
-    if (req.body[key] !== undefined) { sets.push(`${f} = ?`); vals.push(req.body[key]); }
+  try {
+    const adminId = (req as any).user.id;
+    const serverId = positiveIntegerParam(req.params.id, 'server id');
+    const existing = getDb().prepare('SELECT * FROM game_servers WHERE id = ?').get(serverId) as any;
+    if (!existing) { res.status(404).json({ error: 'Game server not found.' }); return; }
+    const input = validateGameServerPatch(req.body);
+    const finalMaxPlayers = input.maxPlayers === undefined ? existing.max_players : input.maxPlayers;
+    const finalCurrentPlayers = input.currentPlayers === undefined ? existing.current_players : input.currentPlayers;
+    if (finalMaxPlayers !== null && finalCurrentPlayers > finalMaxPlayers) {
+      res.status(400).json({ error: 'currentPlayers cannot exceed maxPlayers.' }); return;
+    }
+
+    const sets: string[] = [];
+    const vals: Array<string | number | null> = [];
+    if (input.name !== undefined) { sets.push('name = ?'); vals.push(input.name); }
+    if (input.description !== undefined) { sets.push('description = ?'); vals.push(input.description); }
+    if (input.connectionHost !== undefined) { sets.push('connection_host = ?'); vals.push(input.connectionHost); }
+    if (input.connectionPort !== undefined) { sets.push('connection_port = ?'); vals.push(input.connectionPort); }
+    if (input.platform !== undefined) { sets.push('platform = ?'); vals.push(input.platform); }
+    if (input.status !== undefined) { sets.push('status = ?'); vals.push(input.status); }
+    if (input.maxPlayers !== undefined) { sets.push('max_players = ?'); vals.push(input.maxPlayers); }
+    if (input.currentPlayers !== undefined) { sets.push('current_players = ?'); vals.push(input.currentPlayers); }
+    if (input.isFeatured !== undefined) { sets.push('is_featured = ?'); vals.push(input.isFeatured ? 1 : 0); }
+    if (input.isActive !== undefined) { sets.push('is_active = ?'); vals.push(input.isActive ? 1 : 0); }
+    if (input.joinInstructions !== undefined) { sets.push('join_instructions = ?'); vals.push(input.joinInstructions); }
+    if (input.rulesSummary !== undefined) { sets.push('rules_summary = ?'); vals.push(input.rulesSummary); }
+    if (input.discordUrl !== undefined) { sets.push('discord_url = ?'); vals.push(input.discordUrl); }
+    if (input.websiteUrl !== undefined) { sets.push('website_url = ?'); vals.push(input.websiteUrl); }
+    if (input.serverType !== undefined) { sets.push('server_type = ?'); vals.push(input.serverType); }
+    if (input.playStyle !== undefined) { sets.push('play_style = ?'); vals.push(input.playStyle); }
+    if (input.regionOrTimezone !== undefined) { sets.push('region_or_timezone = ?'); vals.push(input.regionOrTimezone); }
+    sets.push("updated_at = datetime('now')");
+    vals.push(serverId);
+    const updated = getDb().prepare(`UPDATE game_servers SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    if (updated.changes !== 1) { res.status(404).json({ error: 'Game server not found.' }); return; }
+    const server = getDb().prepare('SELECT * FROM game_servers WHERE id = ?').get(serverId);
+    logAuthEvent({ eventType: 'admin_game_server_update', userId: adminId, adminActorId: adminId, meta: { serverId } });
+    res.json({ ok: true, server });
+  } catch (error) {
+    const message = validationErrorMessage(error);
+    if (message) { res.status(400).json({ error: message }); return; }
+    throw error;
   }
-  if (sets.length === 0) { res.status(400).json({ error: 'No fields to update.' }); return; }
-  sets.push("updated_at = datetime('now')");
-  vals.push(req.params.id);
-  getDb().prepare(`UPDATE game_servers SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  logAuthEvent({ eventType: 'admin_game_server_update', userId: adminId, adminActorId: adminId, meta: { serverId } });
-  res.json({ ok: true });
 });
 
 router.delete('/game-servers/:id', requireAuth, requireAdmin, (req, res) => {
-  const adminId = (req as any).user.id;
-  const serverId = Number(req.params.id);
-  getDb().prepare('DELETE FROM game_servers WHERE id = ?').run(req.params.id);
-  logAuthEvent({ eventType: 'admin_game_server_delete', userId: adminId, adminActorId: adminId, meta: { serverId } });
-  res.json({ ok: true });
+  try {
+    const adminId = (req as any).user.id;
+    const serverId = positiveIntegerParam(req.params.id, 'server id');
+    const deleted = getDb().prepare('DELETE FROM game_servers WHERE id = ?').run(serverId);
+    if (deleted.changes !== 1) { res.status(404).json({ error: 'Game server not found.' }); return; }
+    logAuthEvent({ eventType: 'admin_game_server_delete', userId: adminId, adminActorId: adminId, meta: { serverId } });
+    res.json({ ok: true });
+  } catch (error) {
+    const message = validationErrorMessage(error);
+    if (message) { res.status(400).json({ error: message }); return; }
+    throw error;
+  }
 });
 
 // ─── Auth Event Log ───

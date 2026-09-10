@@ -1,14 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { RouteRequestGate } from '../routeLoadState';
+import type { PostEntityMutation } from '../postEntityState';
 
 const REACTIONS = ['like', 'love', 'laugh', 'wow', 'support', 'thoughtful'];
 const EMOJI: Record<string, string> = { like: '👍', love: '❤️', laugh: '😂', wow: '😮', support: '🙌', thoughtful: '🤔' };
 const LABELS: Record<string, string> = { like: 'Like', love: 'Love', laugh: 'Laugh', wow: 'Wow', support: 'Support', thoughtful: 'Think' };
 const REPORT_ERROR = 'Please select a reason and briefly explain the problem.';
 
-export default function PostCard({ post: initial, currentUser, onUpdate }: { post: any; currentUser: any; onUpdate?: (p: any) => void }) {
-  const [post, setPost] = useState(initial);
+export default function PostCard({ post, currentUser, onMutation }: { post: any; currentUser: any; onMutation: (mutation: PostEntityMutation) => void }) {
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<any[]>([]);
   const [commentText, setCommentText] = useState('');
@@ -17,7 +18,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   const [showRepostConfirm, setShowRepostConfirm] = useState(false);
   const [reposting, setReposting] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
-  const [reportTarget, setReportTarget] = useState<any>(initial);
+  const [reportTarget, setReportTarget] = useState<any>(null);
   const [reportTargetType, setReportTargetType] = useState<'post' | 'comment'>('post');
   const [reportReason, setReportReason] = useState('Spam');
   const [reportDetails, setReportDetails] = useState('');
@@ -27,39 +28,78 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [reportSubmitting, setReportSubmitting] = useState(false);
+  const entityId = useRef(post.id);
+  entityId.current = post.id;
+  const scopeKey = (currentUser?.id ?? 'anonymous') + ':' + post.id;
+  const currentScopeKey = useRef(scopeKey);
+  currentScopeKey.current = scopeKey;
+  const mediaGate = useRef(new RouteRequestGate());
+  const commentGate = useRef(new RouteRequestGate());
+  const mutationGate = useRef(new RouteRequestGate());
 
   const isVerified = currentUser?.is_verified ?? currentUser?.isVerified;
   const reactions = post.reactions || {};
   const totalReactions = Object.values(reactions).reduce((a: number, b: any) => a + (b || 0), 0);
 
-  useEffect(() => { loadMedia(); }, [post.id]);
+  useEffect(() => {
+    setMedia([]);
+    setComments([]);
+    setShowComments(false);
+    setCommentText('');
+    setMutationError('');
+    setPendingAction(null);
+    setCommentSubmitting(false);
+    setReportSubmitting(false);
+    setReposting(false);
+    mediaGate.current.invalidate();
+    commentGate.current.invalidate();
+    mutationGate.current.invalidate();
+    void loadMedia(post.id);
+    return () => {
+      mediaGate.current.invalidate();
+      commentGate.current.invalidate();
+      mutationGate.current.invalidate();
+    };
+  }, [scopeKey]);
 
-  async function loadMedia() {
-    try { const r = await api.getPostMedia(post.id); setMedia(r.media || []); } catch (e) { /* no media */ }
+  useEffect(() => {
+    if (showComments) void refreshComments(post.id);
+  }, [post.commentCount]);
+
+  async function loadMedia(postId: number) {
+    const isCurrent = mediaGate.current.begin();
+    try {
+      const r = await api.getPostMedia(postId);
+      if (isCurrent() && entityId.current === postId) setMedia(r.media || []);
+    } catch (e) { /* no media */ }
   }
 
   async function handleReaction(type: string) {
     if (!isVerified) { alert('Account verification required before you can react.'); return; }
     if (pendingAction) return;
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
     setPendingAction('reaction');
     setMutationError('');
     try {
       // If same reaction, remove it
       if (post.userReaction === type) {
         const r: any = await api.unlike(post.id);
-        setPost({ ...post, userReaction: null, liked: false, reactions: r.counts || {} });
-        onUpdate?.({ ...post, userReaction: null, liked: false, reactions: r.counts || {} });
+        if (!isCurrent() || currentScopeKey.current !== requestScope) return;
+        onMutation({ type: 'update', post: { ...post, userReaction: null, liked: false, reactions: r.counts || {} } });
       } else {
         const r = await api.react(post.id, type);
-        setPost({ ...post, userReaction: type, liked: true, reactions: r.counts });
-        onUpdate?.({ ...post, userReaction: type, liked: true, reactions: r.counts });
+        if (!isCurrent() || currentScopeKey.current !== requestScope) return;
+        onMutation({ type: 'update', post: { ...post, userReaction: type, liked: true, reactions: r.counts } });
       }
       setShowReactions(false);
     } catch (e: any) {
-      console.error(e);
-      setMutationError(e.message || 'Could not update reaction.');
+      if (isCurrent() && currentScopeKey.current === requestScope) {
+        console.error(e);
+        setMutationError(e.message || 'Could not update reaction.');
+      }
     } finally {
-      setPendingAction(null);
+      if (isCurrent() && currentScopeKey.current === requestScope) setPendingAction(null);
     }
   }
 
@@ -68,52 +108,76 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
   }
 
   async function confirmRepost() {
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
     setReposting(true);
     try {
-      await api.repost(post.id);
+      const result = await api.repost(post.id);
+      if (!isCurrent() || currentScopeKey.current !== requestScope) return;
+      onMutation({ type: 'repost', postId: post.id, repost: result.post });
       setShowRepostConfirm(false);
-      window.location.reload();
-    } catch (e) { console.error(e); alert('Repost failed'); }
-    setReposting(false);
+    } catch (e) {
+      if (isCurrent() && currentScopeKey.current === requestScope) { console.error(e); alert('Repost failed'); }
+    } finally {
+      if (isCurrent() && currentScopeKey.current === requestScope) setReposting(false);
+    }
   }
 
-  async function loadComments() {
-    setShowComments(!showComments);
-    if (!showComments && comments.length === 0) {
-      try { const r = await api.getComments(post.id); setComments(r.comments); } catch (e) { console.error(e); }
-    }
+  async function refreshComments(postId: number) {
+    const requestScope = scopeKey;
+    const isCurrent = commentGate.current.begin();
+    try {
+      const response = await api.getComments(postId);
+      if (isCurrent() && currentScopeKey.current === requestScope) setComments(response.comments);
+    } catch (e) { console.error(e); }
+  }
+
+  function loadComments() {
+    const opening = !showComments;
+    setShowComments(opening);
+    if (opening && comments.length === 0) void refreshComments(post.id);
   }
 
   async function addComment(e: React.FormEvent) {
     e.preventDefault();
     if (!commentText.trim() || commentSubmitting) return;
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
     setCommentSubmitting(true);
     setMutationError('');
     try {
       const r = await api.addComment(post.id, commentText.trim());
+      if (!isCurrent() || currentScopeKey.current !== requestScope) return;
       setComments(prev => [...prev, r.comment]); setCommentText('');
-      setPost({ ...post, commentCount: post.commentCount + 1 });
+      onMutation({ type: 'update', post: { ...post, commentCount: Number(post.commentCount || 0) + 1 } });
     } catch (err: any) {
-      console.error(err);
-      setMutationError(err.message || 'Could not add comment.');
+      if (isCurrent() && currentScopeKey.current === requestScope) {
+        console.error(err);
+        setMutationError(err.message || 'Could not add comment.');
+      }
     } finally {
-      setCommentSubmitting(false);
+      if (isCurrent() && currentScopeKey.current === requestScope) setCommentSubmitting(false);
     }
   }
 
   async function handleDelete() {
     if (!confirm('Delete this post?')) return;
     if (pendingAction) return;
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
     setPendingAction('delete');
     setMutationError('');
     try {
       await api.deletePost(post.id);
-      setPost({ ...post, deleted: true });
+      if (!isCurrent() || currentScopeKey.current !== requestScope) return;
+      onMutation({ type: 'delete', postId: post.id, parentId: post.parentId });
     } catch (e: any) {
-      console.error(e);
-      setMutationError(e.message || 'Could not delete post.');
+      if (isCurrent() && currentScopeKey.current === requestScope) {
+        console.error(e);
+        setMutationError(e.message || 'Could not delete post.');
+      }
     } finally {
-      setPendingAction(null);
+      if (isCurrent() && currentScopeKey.current === requestScope) setPendingAction(null);
     }
   }
 
@@ -137,35 +201,49 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
     if (!reportReason || !reportDetails.trim() || reportDetails.trim().length < 5) { setReportError(REPORT_ERROR); return; }
     setReportError('');
     if (reportSubmitting) return;
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
     setReportSubmitting(true);
     try {
       await api.reportContent(reportTargetType, reportTarget?.id, reportReason, reportDetails.trim());
+      if (!isCurrent() || currentScopeKey.current !== requestScope) return;
       setReportSubmitted(true);
     } catch (e: any) {
-      console.error(e);
-      setReportError(e.message || REPORT_ERROR);
+      if (isCurrent() && currentScopeKey.current === requestScope) {
+        console.error(e);
+        setReportError(e.message || REPORT_ERROR);
+      }
     } finally {
-      setReportSubmitting(false);
+      if (isCurrent() && currentScopeKey.current === requestScope) setReportSubmitting(false);
     }
   }
 
   async function handleMuteUser() {
     if (!confirm(`Mute @${post.username}? You will stop seeing their posts.`)) return;
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
     try {
       await api.post(`/users/${post.userId}/mute`);
-      window.location.reload();
-    } catch (e: any) { console.error(e); setMutationError(e.message || 'Could not mute user.'); }
+      if (!isCurrent() || currentScopeKey.current !== requestScope) return;
+      onMutation({ type: 'hide-author', userId: post.userId });
+    } catch (e: any) {
+      if (isCurrent() && currentScopeKey.current === requestScope) { console.error(e); setMutationError(e.message || 'Could not mute user.'); }
+    }
   }
 
   async function handleBlockUser() {
     if (!confirm(`Block @${post.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
     try {
       await api.post(`/users/${post.userId}/block`);
-      window.location.reload();
-    } catch (e: any) { console.error(e); setMutationError(e.message || 'Could not block user.'); }
+      if (!isCurrent() || currentScopeKey.current !== requestScope) return;
+      onMutation({ type: 'hide-author', userId: post.userId });
+    } catch (e: any) {
+      if (isCurrent() && currentScopeKey.current === requestScope) { console.error(e); setMutationError(e.message || 'Could not block user.'); }
+    }
   }
 
-  if ((post as any).deleted) return null;
   const time = post.createdAt ? new Date(post.createdAt + 'Z').toLocaleString() : '';
   const images = media.filter((m: any) => m.media_type === 'image');
   const videos = media.filter((m: any) => m.media_type === 'external_video');
@@ -184,7 +262,7 @@ export default function PostCard({ post: initial, currentUser, onUpdate }: { pos
       </div>
 
       {post.repostOf && post.repostedPost ? (
-        <PostCard post={post.repostedPost} currentUser={currentUser} />
+        <PostCard post={post.repostedPost} currentUser={currentUser} onMutation={onMutation} />
       ) : (
         <>
           <div className="post-content">{post.content}</div>

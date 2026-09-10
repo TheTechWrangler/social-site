@@ -1,9 +1,18 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, optionalAuth } from '../middleware.js';
 import { notMutedByViewerSql, userVisibilitySql } from '../visibility.js';
+import { validateLfgCreate, validateLfgExtend, validateLfgPatch } from '../lfgValidation.js';
+import { positiveIntegerParam, validationErrorMessage } from '../requestValidation.js';
 
 const router = Router();
+
+function sendValidationFailure(res: Response, error: unknown): boolean {
+  const message = validationErrorMessage(error);
+  if (!message) return false;
+  res.status(400).json({ error: message });
+  return true;
+}
 
 // GET /api/games — with optional search
 router.get('/', optionalAuth, (req, res) => {
@@ -116,76 +125,96 @@ router.get('/:slug/lfg', optionalAuth, (req, res) => {
   res.json({ posts });
 });
 
-const LFG_TITLE_MAX = 120;
-const LFG_BODY_MAX = 1000;
 const SHORT_FIELD_MAX = 80;
 const NOTES_MAX = 500;
 
 router.post('/:slug/lfg', requireAuth, requireVerified, (req, res) => {
-  const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
-  if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
-  const { title, body, platform, playStyle, desiredGroupSize, micRequired, durationHours } = req.body;
-  if (!title?.trim()) { res.status(400).json({ error: 'Title required.' }); return; }
-  const cleanTitle = title.trim().slice(0, LFG_TITLE_MAX);
-  const cleanBody = (body || '').trim().slice(0, LFG_BODY_MAX);
-  const cleanPlatform = (platform || '').trim().slice(0, SHORT_FIELD_MAX);
-  const cleanPlayStyle = (playStyle || '').trim().slice(0, SHORT_FIELD_MAX);
-  const hours = Math.min(Math.max(Number(durationHours) || 6, 1), 24);
-  const r = getDb().prepare(
-    'INSERT INTO game_lfg_posts (user_id, game_id, title, body, platform, play_style, desired_group_size, mic_required, expires_at) VALUES (?,?,?,?,?,?,?,?, datetime(\'now\', ?))'
-  ).run((req as any).user.id, game.id, cleanTitle, cleanBody, cleanPlatform, cleanPlayStyle, desiredGroupSize || null, micRequired ? 1 : 0, `+${hours} hours`);
-  const post = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ?').get(r.lastInsertRowid);
-  res.status(201).json({ post });
+  try {
+    const game = getDb().prepare('SELECT id FROM games WHERE slug = ?').get(req.params.slug) as any;
+    if (!game) { res.status(404).json({ error: 'Game not found.' }); return; }
+    const input = validateLfgCreate(req.body);
+    const r = getDb().prepare(
+      'INSERT INTO game_lfg_posts (user_id, game_id, title, body, platform, play_style, desired_group_size, mic_required, expires_at) VALUES (?,?,?,?,?,?,?,?, datetime(\'now\', ?))'
+    ).run((req as any).user.id, game.id, input.title, input.body, input.platform, input.playStyle,
+      input.desiredGroupSize, input.micRequired ? 1 : 0, `+${input.durationHours} hours`);
+    const post = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ?').get(r.lastInsertRowid);
+    res.status(201).json({ post });
+  } catch (error) {
+    if (!sendValidationFailure(res, error)) throw error;
+  }
 });
 
 router.patch('/lfg/:id', requireAuth, (req, res) => {
-  const post = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ? AND user_id = ?').get(req.params.id, (req as any).user.id) as any;
-  if (!post) { res.status(404).json({ error: 'Not found or not yours.' }); return; }
-  const { title, body, platform, playStyle, desiredGroupSize, micRequired, isActive } = req.body;
-  getDb().prepare(`
-    UPDATE game_lfg_posts SET title=COALESCE(?,title), body=COALESCE(?,body), platform=COALESCE(?,platform),
-    play_style=COALESCE(?,play_style), desired_group_size=COALESCE(?,desired_group_size),
-    mic_required=COALESCE(?,mic_required), is_active=COALESCE(?,is_active), updated_at=datetime('now')
-    WHERE id=?
-  `).run(title, body, platform, playStyle, desiredGroupSize, micRequired, isActive, req.params.id);
-  res.json({ ok: true });
+  try {
+    const user = (req as any).user;
+    const postId = positiveIntegerParam(req.params.id, 'LFG id');
+    const post = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ? AND user_id = ?').get(postId, user.id) as any;
+    if (!post) { res.status(404).json({ error: 'Not found or not yours.' }); return; }
+    const input = validateLfgPatch(req.body);
+    if (input.isActive === true && post.is_active !== 1 && user.role !== 'admin' && !user.is_verified) {
+      res.status(403).json({ error: 'Account verification required to reactivate an LFG post.' }); return;
+    }
+
+    const sets: string[] = [];
+    const values: Array<string | number | null> = [];
+    if (input.title !== undefined) { sets.push('title = ?'); values.push(input.title); }
+    if (input.body !== undefined) { sets.push('body = ?'); values.push(input.body); }
+    if (input.platform !== undefined) { sets.push('platform = ?'); values.push(input.platform); }
+    if (input.playStyle !== undefined) { sets.push('play_style = ?'); values.push(input.playStyle); }
+    if (input.desiredGroupSize !== undefined) { sets.push('desired_group_size = ?'); values.push(input.desiredGroupSize); }
+    if (input.micRequired !== undefined) { sets.push('mic_required = ?'); values.push(input.micRequired ? 1 : 0); }
+    if (input.isActive !== undefined) { sets.push('is_active = ?'); values.push(input.isActive ? 1 : 0); }
+    sets.push("updated_at = datetime('now')");
+    values.push(postId, user.id);
+    const updated = getDb().prepare(`UPDATE game_lfg_posts SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...values);
+    if (updated.changes !== 1) { res.status(404).json({ error: 'Not found or not yours.' }); return; }
+    const updatedPost = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ? AND user_id = ?').get(postId, user.id);
+    res.json({ ok: true, post: updatedPost });
+  } catch (error) {
+    if (!sendValidationFailure(res, error)) throw error;
+  }
 });
 
 router.delete('/lfg/:id', requireAuth, (req, res) => {
-  const user = (req as any).user;
-  const post = getDb().prepare(`
-    SELECT * FROM game_lfg_posts
-    WHERE id = ? AND (user_id = ? OR ? = 'admin')
-  `).get(req.params.id, user.id, user.role) as any;
-  if (!post) { res.status(404).json({ error: 'Not found.' }); return; }
-  getDb().prepare('DELETE FROM game_lfg_posts WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
+  try {
+    const user = (req as any).user;
+    const postId = positiveIntegerParam(req.params.id, 'LFG id');
+    const deleted = getDb().prepare(`
+      DELETE FROM game_lfg_posts
+      WHERE id = ? AND (user_id = ? OR ? = 'admin')
+    `).run(postId, user.id, user.role);
+    if (deleted.changes !== 1) { res.status(404).json({ error: 'Not found.' }); return; }
+    res.json({ ok: true });
+  } catch (error) {
+    if (!sendValidationFailure(res, error)) throw error;
+  }
 });
 
-const ALLOWED_EXTEND_HOURS = new Set([1, 3, 6, 12, 24]);
-
 // POST /api/games/lfg/:id/extend — extend or reactivate an LFG post
-router.post('/lfg/:id/extend', requireAuth, (req, res) => {
-  const user = (req as any).user;
-  const post = getDb().prepare(`
-    SELECT * FROM game_lfg_posts
-    WHERE id = ? AND (user_id = ? OR ? = 'admin')
-  `).get(req.params.id, user.id, user.role) as any;
-  if (!post) { res.status(404).json({ error: 'Not found.' }); return; }
-  const hours = Number(req.body.durationHours);
-  if (!ALLOWED_EXTEND_HOURS.has(hours)) {
-    res.status(400).json({ error: 'durationHours must be 1, 3, 6, 12, or 24.' }); return;
+router.post('/lfg/:id/extend', requireAuth, requireVerified, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const postId = positiveIntegerParam(req.params.id, 'LFG id');
+    const post = getDb().prepare(`
+      SELECT * FROM game_lfg_posts
+      WHERE id = ? AND (user_id = ? OR ? = 'admin')
+    `).get(postId, user.id, user.role) as any;
+    if (!post) { res.status(404).json({ error: 'Not found.' }); return; }
+    const { durationHours } = validateLfgExtend(req.body);
+    // Extend from current expiry (or from now if already expired), then reactivate.
+    const result = getDb().prepare(`
+      UPDATE game_lfg_posts
+      SET expires_at = datetime(max(expires_at, datetime('now')), ?),
+          is_active = 1,
+          updated_at = datetime('now')
+      WHERE id = ? AND (user_id = ? OR ? = 'admin')
+    `).run(`+${durationHours} hours`, postId, user.id, user.role);
+    if (result.changes !== 1) { res.status(404).json({ error: 'Not found.' }); return; }
+    const updated = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ?').get(postId);
+    res.json({ post: updated });
+  } catch (error) {
+    if (!sendValidationFailure(res, error)) throw error;
   }
-  // Extend from current expiry (or from now if already expired), then reactivate.
-  getDb().prepare(`
-    UPDATE game_lfg_posts
-    SET expires_at = datetime(max(expires_at, datetime('now')), ?),
-        is_active = 1,
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).run(`+${hours} hours`, post.id);
-  const updated = getDb().prepare('SELECT * FROM game_lfg_posts WHERE id = ?').get(post.id);
-  res.json({ post: updated });
 });
 
 // GET /api/games/:slug/lfg/mine — viewer's own LFG posts for this game (active + expired)

@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
 import { createClientOperationKey } from '../postComposerSubmission';
+import { applyPostEntityMutation, type PostEntityMutation } from '../postEntityState';
 
 export default function GroupPage({ user }: { user: any }) {
   const { id } = useParams<{ id: string }>();
@@ -69,6 +70,10 @@ export default function GroupPage({ user }: { user: any }) {
     } catch (error) {
       if (isCurrent()) setLoadState(routeFailureState(error));
     }
+  }
+
+  function handlePostMutation(mutation: PostEntityMutation) {
+    setPosts(previous => applyPostEntityMutation(previous, mutation));
   }
 
   const visibleLoadState = routeStateForKey(routeKey, stateRouteKey, loadState);
@@ -308,7 +313,7 @@ export default function GroupPage({ user }: { user: any }) {
         <h3 className="group-posts-heading">Posts</h3>
         {posts.length === 0
           ? <p className="muted">No posts yet.{isMember ? ' Be the first to post!' : ''}</p>
-          : posts.map(p => <PostCard key={p.id} post={p} currentUser={user} />)
+          : posts.map(p => <PostCard key={p.id} post={p} currentUser={user} onMutation={handlePostMutation} />)
         }
       </div>
     </div>

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { RouteRequestGate } from '../routeLoadState';
 
 export default function WorldPage({ user }: { user?: any }) {
   const [items, setItems] = useState<any[]>([]);
@@ -16,10 +17,26 @@ export default function WorldPage({ user }: { user?: any }) {
   const [mutationError, setMutationError] = useState('');
   const [pendingMutation, setPendingMutation] = useState<string | null>(null);
   const PAGE_SIZE = 30;
+  const feedGate = useRef(new RouteRequestGate());
+  const blockedGate = useRef(new RouteRequestGate());
+  const currentAccountId = useRef(user?.id ?? null);
+  currentAccountId.current = user?.id ?? null;
 
   const [discussions, setDiscussions] = useState<Record<number, { open: boolean; comments: any[]; loading: boolean; body: string }>>({});
 
-  useEffect(() => { loadSources(); loadFeed(); loadBlockedSources(); }, []);
+  useEffect(() => {
+    setItems([]);
+    setBlockedSources([]);
+    setSelectedCategory('');
+    setSelectedSource('');
+    setSelectedItemType('');
+    setDiscussions({});
+    setPage(0);
+    void loadSources();
+    void loadFeed();
+    if (user) void loadBlockedSources();
+    return () => { feedGate.current.invalidate(); blockedGate.current.invalidate(); };
+  }, [user?.id]);
 
   const isLoggedIn = !!user;
 
@@ -28,20 +45,31 @@ export default function WorldPage({ user }: { user?: any }) {
   }
 
   async function loadFeed(cat?: string, srcId?: string, p = 0, itemType?: string) {
+    const requestedAccountId = user?.id ?? null;
+    const isCurrent = feedGate.current.begin();
     setLoading(true);
     try {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(p * PAGE_SIZE) });
       if (cat) params.set('category', cat);
       if (srcId) params.set('sourceId', srcId);
       if (itemType) params.set('itemType', itemType);
-      const r = await api.get<any>(`/world-feed?${params}`);
-      if (p === 0) setItems(r.items); else setItems(prev => [...prev, ...r.items]);
-    } catch (e) {}
-    setLoading(false);
+      const response = await api.get<any>(`/world-feed?${params}`);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
+      if (p === 0) setItems(response.items);
+      else setItems(previous => [...previous, ...response.items]);
+    } catch (e) { /* keep the current feed on refresh failure */ }
+    finally {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setLoading(false);
+    }
   }
 
   async function loadBlockedSources() {
-    try { const r = await api.get<any>('/world-feed/blocked-sources'); setBlockedSources(r.blocked); } catch (e) {}
+    const requestedAccountId = user?.id ?? null;
+    const isCurrent = blockedGate.current.begin();
+    try {
+      const response = await api.get<any>('/world-feed/blocked-sources');
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setBlockedSources(response.blocked);
+    } catch (e) { /* unavailable for signed-out viewers */ }
   }
 
   function handleFilter(cat: string, srcId = '', itemType = '') { setSelectedCategory(cat); setSelectedSource(srcId); setSelectedItemType(itemType); setPage(0); loadFeed(cat, srcId, 0, itemType || undefined); }
@@ -70,7 +98,7 @@ export default function WorldPage({ user }: { user?: any }) {
     try {
       await api.delete(`/world-feed/sources/${sourceId}/block`);
       setBlockedSources(prev => prev.filter(s => s.id !== sourceId));
-      await loadFeed(selectedCategory, selectedSource, 0);
+      await loadFeed(selectedCategory, selectedSource, 0, selectedItemType || undefined);
     } catch (e: any) {
       setMutationError(e.message || 'Could not unblock source.');
     } finally {
@@ -214,7 +242,7 @@ export default function WorldPage({ user }: { user?: any }) {
             );
           })}
           {items.length >= PAGE_SIZE && (
-            <button className="btn btn-ghost" onClick={loadMore} style={{ display: 'block', margin: '16px auto' }}>Load more</button>
+            <button className="btn btn-ghost" onClick={loadMore} disabled={loading} style={{ display: 'block', margin: '16px auto' }}>Load more</button>
           )}
         </div>
       )}

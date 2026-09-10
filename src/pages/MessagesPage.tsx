@@ -1,8 +1,17 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { RouteRequestGate } from '../routeLoadState';
+import {
+  clearConversationUnread,
+  highestObservedMessageId,
+  mergeMessages,
+  reconcileConversationPreview,
+  setConversationDraft,
+} from '../messageState';
 
 const DM_MAX_LENGTH = 2000;
+export const MESSAGE_POLL_INTERVAL_MS = 8000;
 
 function Avatar({ user, size = 36 }: { user: any; size?: number }) {
   const name = user?.displayName || user?.display_name || user?.username || '?';
@@ -16,120 +25,305 @@ function Avatar({ user, size = 36 }: { user: any; size?: number }) {
   );
 }
 
-export default function MessagesPage({ user: currentUser }: { user: any }) {
+function conversationIdFromParam(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+export default function MessagesPage({
+  user: currentUser,
+  onUnreadChange,
+}: {
+  user: any;
+  onUnreadChange?: (count: number) => void;
+}) {
   const { conversationId: convIdParam } = useParams<{ conversationId: string }>();
   const navigate = useNavigate();
+  const accountId = Number(currentUser?.id);
+  const activeConvId = conversationIdFromParam(convIdParam);
+  const activeThreadKey = accountId + ':' + (activeConvId ?? '');
+  const currentAccountId = useRef(accountId);
+  currentAccountId.current = accountId;
+  const currentThreadKey = useRef(activeThreadKey);
+  currentThreadKey.current = activeThreadKey;
+
   const [conversations, setConversations] = useState<any[]>([]);
-  const [activeConvId, setActiveConvId] = useState<number | null>(convIdParam ? Number(convIdParam) : null);
   const [messages, setMessages] = useState<any[]>([]);
+  const [observedThrough, setObservedThrough] = useState<number | null>(null);
+  const messagesRef = useRef<any[]>([]);
+  messagesRef.current = messages;
   const [otherUser, setOtherUser] = useState<any>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingConvs, setLoadingConvs] = useState(true);
-  const [body, setBody] = useState('');
-  const [sending, setSending] = useState(false);
+  const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [sendingByConversation, setSendingByConversation] = useState<Record<number, boolean>>({});
+  const sendingInFlight = useRef(new Set<number>());
   const [sendError, setSendError] = useState('');
-  const [mobileView, setMobileView] = useState<'list' | 'thread'>(convIdParam ? 'thread' : 'list');
+  const [threadError, setThreadError] = useState('');
+  const [mobileView, setMobileView] = useState<'list' | 'thread'>(activeConvId ? 'thread' : 'list');
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const conversationGate = useRef(new RouteRequestGate());
+  const threadGate = useRef(new RouteRequestGate());
+  const olderGate = useRef(new RouteRequestGate());
+  const readGate = useRef(new RouteRequestGate());
+  const pollInFlight = useRef<string | null>(null);
+  const lastReadAttempt = useRef<Record<string, number>>({});
+
+  const body = activeConvId ? (drafts[activeConvId] || '') : '';
+  const sending = activeConvId ? !!sendingByConversation[activeConvId] : false;
 
   useEffect(() => {
-    loadConversations();
-  }, []);
-
-  useEffect(() => {
-    if (convIdParam) {
-      const id = Number(convIdParam);
-      setActiveConvId(id);
-      setMobileView('thread');
-      loadThread(id, true);
-    }
-  }, [convIdParam]);
-
-  async function loadConversations() {
-    setLoadingConvs(true);
-    try {
-      const r = await api.getConversations();
-      setConversations(r.conversations || []);
-    } catch (e) { console.error(e); }
-    setLoadingConvs(false);
-  }
-
-  const loadThread = useCallback(async (id: number, fresh = false) => {
-    setLoadingMsgs(true);
-    setSendError('');
-    try {
-      const oldest = fresh ? undefined : (messages[0]?.id as number | undefined);
-      const r = await api.getMessages(id, oldest);
-      setOtherUser(r.otherUser);
-      setHasMore(r.hasMore);
-      if (fresh) {
-        setMessages(r.messages);
-        setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'auto' }), 50);
-      } else {
-        setMessages(prev => [...r.messages, ...prev]);
-      }
-      await api.markConversationRead(id);
-      setConversations(prev => prev.map(c =>
-        c.id === id ? { ...c, unreadCount: 0 } : c
-      ));
-    } catch (e) { console.error(e); }
-    setLoadingMsgs(false);
-  }, [messages]);
-
-  async function openConversation(id: number) {
+    conversationGate.current.invalidate();
+    threadGate.current.invalidate();
+    olderGate.current.invalidate();
+    readGate.current.invalidate();
+    pollInFlight.current = null;
+    lastReadAttempt.current = {};
+    setConversations([]);
     setMessages([]);
+    setObservedThrough(null);
     setOtherUser(null);
     setHasMore(false);
+    setDrafts({});
+    setSendingByConversation({});
+    sendingInFlight.current.clear();
     setSendError('');
-    navigate(`/messages/${id}`);
+    setThreadError('');
+    setLoadingConvs(true);
+    void loadConversations(accountId, true);
+    return () => {
+      conversationGate.current.invalidate();
+      threadGate.current.invalidate();
+      olderGate.current.invalidate();
+      readGate.current.invalidate();
+    };
+  }, [accountId]);
+
+  useEffect(() => {
+    threadGate.current.invalidate();
+    olderGate.current.invalidate();
+    readGate.current.invalidate();
+    pollInFlight.current = null;
+    setMessages([]);
+    setObservedThrough(null);
+    setOtherUser(null);
+    setHasMore(false);
+    setLoadingMsgs(false);
+    setLoadingOlder(false);
+    setSendError('');
+    setThreadError('');
+    if (activeConvId) {
+      setMobileView('thread');
+      void loadLatestThread(activeConvId, accountId, 'initial');
+    } else {
+      setMobileView('list');
+    }
+    return () => {
+      threadGate.current.invalidate();
+      olderGate.current.invalidate();
+      readGate.current.invalidate();
+    };
+  }, [activeThreadKey]);
+
+  useEffect(() => {
+    if (!activeConvId) return;
+    const conversationId = activeConvId;
+    const viewerId = accountId;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible' || pollInFlight.current) return;
+      void loadLatestThread(conversationId, viewerId, 'poll');
+    }, MESSAGE_POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [activeThreadKey]);
+
+  useEffect(() => {
+    if (!activeConvId) return;
+    const observedMessageId = observedThrough;
+    if (observedMessageId === null) return;
+    const requestKey = activeThreadKey;
+    if ((lastReadAttempt.current[requestKey] || 0) >= observedMessageId) return;
+    lastReadAttempt.current[requestKey] = observedMessageId;
+    const isCurrent = readGate.current.begin();
+    void api.markConversationRead(activeConvId, observedMessageId)
+      .then(() => {
+        if (!isCurrent() || currentThreadKey.current !== requestKey) return;
+        setConversations(previous => clearConversationUnread(previous, activeConvId));
+        void loadConversations(accountId, false);
+      })
+      .catch(() => {
+        if (isCurrent() && currentThreadKey.current === requestKey) {
+          lastReadAttempt.current[requestKey] = Math.min(
+            lastReadAttempt.current[requestKey] || observedMessageId,
+            observedMessageId - 1,
+          );
+        }
+      });
+  }, [observedThrough, activeThreadKey]);
+
+  async function loadConversations(viewerId = accountId, showLoading = false) {
+    const isCurrent = conversationGate.current.begin();
+    if (showLoading) setLoadingConvs(true);
+    try {
+      const response = await api.getConversations();
+      if (!isCurrent() || currentAccountId.current !== viewerId) return;
+      const next = response.conversations || [];
+      setConversations(next);
+      onUnreadChange?.(next.filter((conversation: any) => conversation.unreadCount > 0).length);
+    } catch (error) {
+      if (isCurrent() && currentAccountId.current === viewerId) console.error(error);
+    } finally {
+      if (isCurrent() && currentAccountId.current === viewerId) setLoadingConvs(false);
+    }
+  }
+
+  async function loadLatestThread(id: number, viewerId: number, mode: 'initial' | 'poll' | 'refresh') {
+    const requestKey = viewerId + ':' + id;
+    if (mode === 'poll') pollInFlight.current = requestKey;
+    const isCurrent = threadGate.current.begin();
+    if (mode === 'initial') setLoadingMsgs(true);
+    setThreadError('');
+    try {
+      const response = await api.getMessages(id);
+      if (!isCurrent() || currentThreadKey.current !== requestKey) return;
+      setOtherUser(response.otherUser);
+      if (mode === 'initial') setHasMore(response.hasMore);
+      setObservedThrough(highestObservedMessageId(response.messages));
+      setMessages(previous => mode === 'initial'
+        ? response.messages
+        : mergeMessages(previous, response.messages));
+      if (mode === 'initial') {
+        window.setTimeout(() => {
+          if (currentThreadKey.current === requestKey) bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+        }, 50);
+      }
+      void loadConversations(viewerId, false);
+    } catch (error: any) {
+      if (isCurrent() && currentThreadKey.current === requestKey) {
+        console.error(error);
+        setThreadError(error.message || 'Could not load this conversation.');
+      }
+    } finally {
+      if (isCurrent() && currentThreadKey.current === requestKey) setLoadingMsgs(false);
+      if (mode === 'poll' && pollInFlight.current === requestKey) pollInFlight.current = null;
+    }
+  }
+
+  async function loadOlderMessages() {
+    if (!activeConvId || loadingOlder) return;
+    const id = activeConvId;
+    const requestKey = activeThreadKey;
+    const oldest = messagesRef.current[0]?.id as number | undefined;
+    if (!oldest) return;
+    const isCurrent = olderGate.current.begin();
+    setLoadingOlder(true);
+    try {
+      const response = await api.getMessages(id, oldest);
+      if (!isCurrent() || currentThreadKey.current !== requestKey) return;
+      setMessages(previous => mergeMessages(response.messages, previous));
+      setHasMore(response.hasMore);
+    } catch (error: any) {
+      if (isCurrent() && currentThreadKey.current === requestKey) {
+        setThreadError(error.message || 'Could not load older messages.');
+      }
+    } finally {
+      if (isCurrent() && currentThreadKey.current === requestKey) setLoadingOlder(false);
+    }
+  }
+
+  function openConversation(id: number) {
+    setMobileView('thread');
+    if (id === activeConvId) {
+      void loadLatestThread(id, accountId, 'refresh');
+      return;
+    }
+    navigate('/messages/' + id);
   }
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!body.trim() || !activeConvId || sending) return;
-    setSending(true);
+    if (!activeConvId || sending || sendingInFlight.current.has(activeConvId)) return;
+    const targetConversationId = activeConvId;
+    const targetAccountId = accountId;
+    const targetThreadKey = activeThreadKey;
+    const submittedBody = body.trim();
+    if (!submittedBody) return;
+    sendingInFlight.current.add(targetConversationId);
+    setSendingByConversation(previous => ({ ...previous, [targetConversationId]: true }));
     setSendError('');
     try {
-      const r = await api.sendMessage(activeConvId, body.trim());
-      setMessages(prev => [...prev, r.message]);
-      setBody('');
-      setConversations(prev => prev.map(c =>
-        c.id === activeConvId ? { ...c, lastMessage: { ...r.message, senderId: currentUser.id } } : c
+      const response = await api.sendMessage(targetConversationId, submittedBody);
+      if (currentAccountId.current !== targetAccountId) return;
+      setDrafts(previous => previous[targetConversationId]?.trim() === submittedBody
+        ? setConversationDraft(previous, targetConversationId, '')
+        : previous);
+      setConversations(previous => reconcileConversationPreview(
+        previous,
+        targetConversationId,
+        response.message,
       ));
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 30);
-    } catch (e: any) {
-      setSendError(e.message || 'Could not send message.');
+      if (currentThreadKey.current === targetThreadKey) {
+        setMessages(previous => mergeMessages(previous, [response.message]));
+        window.setTimeout(() => {
+          if (currentThreadKey.current === targetThreadKey) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 30);
+      }
+      void loadConversations(targetAccountId, false);
+    } catch (error: any) {
+      if (currentThreadKey.current === targetThreadKey) {
+        setSendError(error.message || 'Could not send message.');
+      }
+    } finally {
+      sendingInFlight.current.delete(targetConversationId);
+      if (currentAccountId.current === targetAccountId) {
+        setSendingByConversation(previous => ({ ...previous, [targetConversationId]: false }));
+      }
     }
-    setSending(false);
   }
 
   async function handleDelete(msgId: number) {
-    if (!activeConvId) return;
-    if (!confirm('Delete this message?')) return;
+    if (!activeConvId || !confirm('Delete this message?')) return;
+    const targetConversationId = activeConvId;
+    const targetAccountId = accountId;
+    const targetThreadKey = activeThreadKey;
     try {
-      await api.deleteMessage(activeConvId, msgId);
-      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, body: null, isDeleted: true } : m));
-    } catch (e: any) { alert(e.message || 'Could not delete.'); }
+      const response = await api.deleteMessage(targetConversationId, msgId);
+      if (currentAccountId.current !== targetAccountId) return;
+      if (currentThreadKey.current === targetThreadKey) {
+        setMessages(previous => previous.map(message => message.id === msgId
+          ? { ...message, body: null, isDeleted: true }
+          : message));
+      }
+      setConversations(previous => reconcileConversationPreview(
+        previous,
+        targetConversationId,
+        response.lastMessage || null,
+      ));
+      void loadConversations(targetAccountId, false);
+    } catch (error: any) {
+      if (currentThreadKey.current === targetThreadKey) alert(error.message || 'Could not delete.');
+    }
   }
 
   function formatTime(iso: string) {
-    const d = new Date(iso);
+    const date = new Date(iso);
     const now = new Date();
-    const isToday = d.toDateString() === now.toDateString();
-    if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (date.toDateString() === now.toDateString()) {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' '
+      + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   const canSend = otherUser && body.trim().length > 0 && !sending;
 
   return (
     <div className="messages-layout">
-      {/* Conversation list */}
       <div className={`conv-list ${mobileView === 'thread' ? 'conv-list--hidden-mobile' : ''}`}>
-        <div className="conv-list-header">
-          <h3>Messages</h3>
-        </div>
+        <div className="conv-list-header"><h3>Messages</h3></div>
         {loadingConvs ? (
           <p className="muted" style={{ padding: '12px 16px' }}>Loading…</p>
         ) : conversations.length === 0 ? (
@@ -138,24 +332,24 @@ export default function MessagesPage({ user: currentUser }: { user: any }) {
           </p>
         ) : (
           <div className="conv-list-items">
-            {conversations.map(c => {
-              const isActive = c.id === activeConvId;
-              const hasUnread = c.unreadCount > 0;
+            {conversations.map(conversation => {
+              const isActive = conversation.id === activeConvId;
+              const hasUnread = conversation.unreadCount > 0;
               return (
                 <button
-                  key={c.id}
+                  key={conversation.id}
                   className={`conv-item ${isActive ? 'conv-item--active' : ''} ${hasUnread ? 'conv-item--unread' : ''}`}
-                  onClick={() => openConversation(c.id)}
+                  onClick={() => openConversation(conversation.id)}
                 >
-                  <Avatar user={c.otherUser} size={38} />
+                  <Avatar user={conversation.otherUser} size={38} />
                   <div className="conv-item-info">
                     <div className="conv-item-name">
-                      <span>{c.otherUser?.displayName || c.otherUser?.username}</span>
-                      {hasUnread && <span className="badge">{c.unreadCount}</span>}
+                      <span>{conversation.otherUser?.displayName || conversation.otherUser?.username}</span>
+                      {hasUnread && <span className="badge">{conversation.unreadCount}</span>}
                     </div>
                     <div className="conv-item-preview">
-                      {c.lastMessage
-                        ? (c.lastMessage.body === null ? <em>Message deleted</em> : c.lastMessage.body)
+                      {conversation.lastMessage
+                        ? conversation.lastMessage.body
                         : <span className="muted">No messages yet</span>}
                     </div>
                   </div>
@@ -166,7 +360,6 @@ export default function MessagesPage({ user: currentUser }: { user: any }) {
         )}
       </div>
 
-      {/* Thread pane */}
       <div className={`conv-thread ${mobileView === 'list' ? 'conv-thread--hidden-mobile' : ''}`}>
         {!activeConvId ? (
           <div className="conv-thread-empty">
@@ -190,31 +383,33 @@ export default function MessagesPage({ user: currentUser }: { user: any }) {
             <div className="conv-messages">
               {hasMore && (
                 <div style={{ textAlign: 'center', padding: '8px 0' }}>
-                  <button className="btn btn-ghost btn-sm" onClick={() => loadThread(activeConvId, false)} disabled={loadingMsgs}>
-                    {loadingMsgs ? 'Loading…' : 'Load older messages'}
+                  <button className="btn btn-ghost btn-sm" onClick={loadOlderMessages} disabled={loadingOlder}>
+                    {loadingOlder ? 'Loading…' : 'Load older messages'}
                   </button>
                 </div>
               )}
-
-              {messages.length === 0 && !loadingMsgs && (
+              {threadError && (
+                <div style={{ textAlign: 'center' }}>
+                  <p className="error-msg" role="alert">{threadError}</p>
+                  <button className="btn btn-ghost btn-sm" onClick={() => loadLatestThread(activeConvId, accountId, 'refresh')}>Try again</button>
+                </div>
+              )}
+              {messages.length === 0 && !loadingMsgs && !threadError && (
                 <p className="muted" style={{ textAlign: 'center', padding: '24px 0', fontSize: '0.88rem' }}>
                   No messages yet. Say hello!
                 </p>
               )}
-
-              {messages.map(m => {
-                const isOwn = m.senderId === currentUser.id;
+              {messages.map(message => {
+                const isOwn = message.senderId === currentUser.id;
                 return (
-                  <div key={m.id} className={`msg-row ${isOwn ? 'msg-row--own' : 'msg-row--theirs'}`}>
+                  <div key={message.id} className={`msg-row ${isOwn ? 'msg-row--own' : 'msg-row--theirs'}`}>
                     {!isOwn && <Avatar user={otherUser} size={28} />}
-                    <div className={`msg-bubble ${isOwn ? 'msg-bubble--own' : 'msg-bubble--theirs'} ${m.isDeleted ? 'msg-bubble--deleted' : ''}`}>
-                      {m.isDeleted
-                        ? <em className="muted">Message deleted</em>
-                        : <span>{m.body}</span>}
+                    <div className={`msg-bubble ${isOwn ? 'msg-bubble--own' : 'msg-bubble--theirs'} ${message.isDeleted ? 'msg-bubble--deleted' : ''}`}>
+                      {message.isDeleted ? <em className="muted">Message deleted</em> : <span>{message.body}</span>}
                       <div className="msg-meta">
-                        <span className="msg-time">{formatTime(m.createdAt)}</span>
-                        {isOwn && !m.isDeleted && (
-                          <button className="msg-delete-btn" onClick={() => handleDelete(m.id)} title="Delete message">×</button>
+                        <span className="msg-time">{formatTime(message.createdAt)}</span>
+                        {isOwn && !message.isDeleted && (
+                          <button className="msg-delete-btn" onClick={() => handleDelete(message.id)} title="Delete message">×</button>
                         )}
                       </div>
                     </div>
@@ -234,8 +429,16 @@ export default function MessagesPage({ user: currentUser }: { user: any }) {
                   value={body}
                   maxLength={DM_MAX_LENGTH}
                   rows={2}
-                  onChange={e => { setBody(e.target.value); setSendError(''); }}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (canSend) handleSend(e as any); } }}
+                  onChange={event => {
+                    setDrafts(previous => setConversationDraft(previous, activeConvId, event.target.value));
+                    setSendError('');
+                  }}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault();
+                      if (canSend) void handleSend(event as any);
+                    }
+                  }}
                 />
                 <button type="submit" className="btn btn-primary" disabled={!canSend}>
                   {sending ? '…' : 'Send'}

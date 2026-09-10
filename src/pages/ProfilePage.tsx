@@ -3,6 +3,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
+import { applyPostEntityMutation, type PostEntityMutation } from '../postEntityState';
 import type { CanonicalProfileDto } from '../../shared/profile';
 
 const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
@@ -90,6 +91,7 @@ export default function ProfilePage({
   const [postsLoadState, setPostsLoadState] = useState<RouteLoadState | 'idle'>('idle');
   const requestGate = useRef(new RouteRequestGate());
   const mutationGate = useRef(new RouteRequestGate());
+  const gameSearchGate = useRef(new RouteRequestGate());
   const [editing, setEditing] = useState(false);
   const [bio, setBio] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -116,6 +118,7 @@ export default function ProfilePage({
     return () => {
       requestGate.current.invalidate();
       mutationGate.current.invalidate();
+      gameSearchGate.current.invalidate();
     };
   }, [routeKey]);
 
@@ -295,19 +298,26 @@ export default function ProfilePage({
   }
 
   async function searchGames(q: string) {
+    const requestedRouteKey = routeKey;
+    const isCurrent = gameSearchGate.current.begin();
     if (q.length < 1) { setGameResults([]); return; }
-    try { const r = await api.get<any>(`/games?q=${encodeURIComponent(q)}`); setGameResults(r.games || []); } catch (e) {}
+    try {
+      const response = await api.get<any>(`/games?q=${encodeURIComponent(q)}`);
+      if (isCurrent() && currentRouteKey.current === requestedRouteKey) setGameResults(response.games || []);
+    } catch (e) { /* search suggestions are optional */ }
   }
 
   function resetGameForm() {
     setShowGamePicker(false);
     setEditingGameSlug(null);
     setGameSearch('');
+    gameSearchGate.current.invalidate();
     setGameResults([]);
     setGameForm(emptyGameForm);
   }
 
   function startAddGame() {
+    gameSearchGate.current.invalidate();
     setGameMessage('');
     setEditingGameSlug(null);
     setGameForm(emptyGameForm);
@@ -317,12 +327,14 @@ export default function ProfilePage({
   }
 
   function selectGame(game: any) {
+    gameSearchGate.current.invalidate();
     setGameForm({ ...emptyGameForm, slug: game.slug, gameName: game.name });
     setGameSearch(game.name);
     setGameResults([]);
   }
 
   function startEditGame(game: any) {
+    gameSearchGate.current.invalidate();
     setGameMessage('');
     setShowGamePicker(true);
     setEditingGameSlug(game.game_slug);
@@ -379,6 +391,16 @@ export default function ProfilePage({
       alert('Turn on Game Discovery in Settings to find players who share your games.');
       return;
     }
+  }
+
+  function handlePostMutation(mutation: PostEntityMutation) {
+    setPosts(previous => {
+      let next = applyPostEntityMutation(previous, mutation);
+      if (mutation.type === 'repost' && profile?.id === currentUser.id && !next.some(post => post.id === mutation.repost.id)) {
+        next = [mutation.repost, ...next];
+      }
+      return next;
+    });
   }
 
   const visibleLoadState = routeStateForKey(routeKey, stateRouteKey, loadState);
@@ -709,7 +731,7 @@ export default function ProfilePage({
       )}
       {!isLimited && postsLoadState === 'loaded' && (posts.length === 0
         ? <p className="muted">No posts yet.</p>
-        : posts.map(p => <PostCard key={p.id} post={p} currentUser={currentUser} />)
+        : posts.map(p => <PostCard key={p.id} post={p} currentUser={currentUser} onMutation={handlePostMutation} />)
       )}
     </div>
   );

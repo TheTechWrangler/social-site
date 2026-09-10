@@ -19,7 +19,9 @@
     "backup:uploads": "bash scripts/backup-uploads.sh",
     "smoke": "bash scripts/smoke-test-isolated.sh",
     "smoke:live": "bash scripts/smoke-test.sh",
-    "test:security": "tsx --test --test-concurrency=1 tests/security/*.test.ts"
+    "test:security": "tsx --test --test-concurrency=1 tests/security/*.test.ts",
+    "test:batch08": "tsx --test --test-concurrency=1 tests/batch08/*.test.ts",
+    "test:batch09": "tsx --test --test-concurrency=1 tests/batch09/*.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

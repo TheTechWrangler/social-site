@@ -8,7 +8,7 @@ const parser = new Parser({
   headers: { 'User-Agent': 'SocialSite/0.1 World Feed Reader' },
 });
 
-interface RssSource {
+export interface RssSource {
   id: number; name: string; url: string; homepage_url: string;
   category: string; is_active: number; last_fetched_at: string | null;
 }
@@ -130,19 +130,30 @@ export function addSource(name: string, url: string, homepageUrl: string, catego
   return getDb().prepare('SELECT * FROM rss_sources WHERE id = ?').get(r.lastInsertRowid) as RssSource;
 }
 
-export function updateSource(id: number, updates: { name?: string; url?: string; homepage_url?: string; category?: string; is_active?: number }): RssSource | null {
+export interface RssSourceUpdate {
+  name?: string;
+  url?: string;
+  homepageUrl?: string;
+  category?: string;
+  isActive?: boolean;
+}
+
+export function updateSource(id: number, updates: RssSourceUpdate): RssSource | null {
   const fields: string[] = [];
-  const vals: any[] = [];
-  for (const [k, v] of Object.entries(updates)) {
-    if (v !== undefined) {
-      fields.push(`${k} = ?`);
-      vals.push(k === 'url' || k === 'homepage_url' ? sanitizeUrl(v) : v);
-    }
-  }
+  const vals: Array<string | number> = [];
+
+  // Every SQL identifier below is a server-owned literal. Request keys are
+  // validated at the route and can never be interpolated into this statement.
+  if (updates.name !== undefined) { fields.push('name = ?'); vals.push(updates.name); }
+  if (updates.url !== undefined) { fields.push('url = ?'); vals.push(sanitizeUrl(updates.url)); }
+  if (updates.homepageUrl !== undefined) { fields.push('homepage_url = ?'); vals.push(sanitizeUrl(updates.homepageUrl)); }
+  if (updates.category !== undefined) { fields.push('category = ?'); vals.push(updates.category); }
+  if (updates.isActive !== undefined) { fields.push('is_active = ?'); vals.push(updates.isActive ? 1 : 0); }
   if (fields.length === 0) return null;
   fields.push("updated_at = datetime('now')");
   vals.push(id);
-  getDb().prepare(`UPDATE rss_sources SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  const result = getDb().prepare(`UPDATE rss_sources SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  if (result.changes !== 1) return null;
   return getDb().prepare('SELECT * FROM rss_sources WHERE id = ?').get(id) as RssSource | null;
 }
 
@@ -307,10 +318,10 @@ export function getBlockedSourceIds(userId: number): number[] {
     .map(r => r.source_id);
 }
 
-export function blockSource(userId: number, sourceId: number): void {
-  getDb().prepare('INSERT OR IGNORE INTO user_rss_source_blocks (user_id, source_id) VALUES (?, ?)').run(userId, sourceId);
+export function blockSource(userId: number, sourceId: number): number {
+  return getDb().prepare('INSERT OR IGNORE INTO user_rss_source_blocks (user_id, source_id) VALUES (?, ?)').run(userId, sourceId).changes;
 }
 
-export function unblockSource(userId: number, sourceId: number): void {
-  getDb().prepare('DELETE FROM user_rss_source_blocks WHERE user_id = ? AND source_id = ?').run(userId, sourceId);
+export function unblockSource(userId: number, sourceId: number): number {
+  return getDb().prepare('DELETE FROM user_rss_source_blocks WHERE user_id = ? AND source_id = ?').run(userId, sourceId).changes;
 }

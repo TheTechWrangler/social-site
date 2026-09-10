@@ -30,6 +30,18 @@ function getMembership(conversationId: number, userId: number) {
   ).get(conversationId, userId) as any;
 }
 
+function getLastMessagePreview(conversationId: number) {
+  const row = getDb().prepare(
+    'SELECT id, sender_id, body, created_at FROM dm_messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1'
+  ).get(conversationId) as any;
+  return row ? {
+    id: row.id,
+    body: row.body,
+    senderId: row.sender_id,
+    createdAt: row.created_at,
+  } : null;
+}
+
 function findExisting1on1(userA: number, userB: number): number | null {
   const row = getDb().prepare(`
     SELECT m1.conversation_id FROM dm_conversation_members m1
@@ -89,9 +101,7 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
     const other = getVisibleOther(cid, req.user!);
     if (!other) return null;
 
-    const lastMsg = db.prepare(
-      'SELECT id, sender_id, body, created_at FROM dm_messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1'
-    ).get(cid) as any;
+    const lastMsg = getLastMessagePreview(cid);
 
     const unread = (db.prepare(`
       SELECT COUNT(*) as c FROM dm_messages
@@ -107,12 +117,7 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
         displayName: other.display_name,
         avatarUrl: other.avatar_url,
       },
-      lastMessage: lastMsg ? {
-        id: lastMsg.id,
-        body: lastMsg.deleted_at ? null : lastMsg.body,
-        senderId: lastMsg.sender_id,
-        createdAt: lastMsg.created_at,
-      } : null,
+      lastMessage: lastMsg,
       unreadCount: unread,
     };
   }).filter(Boolean);
@@ -121,7 +126,9 @@ router.get('/', requireAuth, (req: AuthRequest, res) => {
   conversations.sort((a: any, b: any) => {
     const aTime = a.lastMessage?.createdAt ?? '';
     const bTime = b.lastMessage?.createdAt ?? '';
-    return bTime.localeCompare(aTime) || b.id - a.id;
+    return bTime.localeCompare(aTime)
+      || Number(b.lastMessage?.id || 0) - Number(a.lastMessage?.id || 0)
+      || b.id - a.id;
   });
 
   res.json({ conversations });
@@ -274,16 +281,25 @@ router.post('/:conversationId/read', requireAuth, (req: AuthRequest, res) => {
     res.status(404).json({ error: 'Conversation not found.' }); return;
   }
 
-  const lastMsg = getDb().prepare(
-    'SELECT id FROM dm_messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1'
-  ).get(conversationId) as any;
-
-  if (lastMsg) {
-    getDb().prepare(
-      'UPDATE dm_conversation_members SET last_read_message_id = ? WHERE conversation_id = ? AND user_id = ?'
-    ).run(lastMsg.id, conversationId, userId);
+  const observedMessageId = Number(req.body?.observedMessageId);
+  if (!Number.isSafeInteger(observedMessageId) || observedMessageId <= 0) {
+    res.status(400).json({ error: 'A valid observedMessageId is required.' }); return;
   }
-  res.json({ ok: true });
+  const observed = getDb().prepare(
+    'SELECT id FROM dm_messages WHERE id = ? AND conversation_id = ?'
+  ).get(observedMessageId, conversationId) as any;
+  if (!observed) { res.status(404).json({ error: 'Message not found.' }); return; }
+
+  getDb().prepare(
+    `UPDATE dm_conversation_members
+     SET last_read_message_id = CASE
+       WHEN last_read_message_id IS NULL OR last_read_message_id < ? THEN ?
+       ELSE last_read_message_id
+     END
+     WHERE conversation_id = ? AND user_id = ?`
+  ).run(observedMessageId, observedMessageId, conversationId, userId);
+  const updated = getMembership(conversationId, userId);
+  res.json({ ok: true, lastReadMessageId: updated.last_read_message_id });
 });
 
 // DELETE /api/messages/:conversationId/messages/:messageId — soft-delete own message
@@ -307,7 +323,7 @@ router.delete('/:conversationId/messages/:messageId', requireAuth, (req: AuthReq
   if (msg.deleted_at) { res.status(400).json({ error: 'Message already deleted.' }); return; }
 
   getDb().prepare("UPDATE dm_messages SET deleted_at = datetime('now') WHERE id = ?").run(messageId);
-  res.json({ ok: true });
+  res.json({ ok: true, lastMessage: getLastMessagePreview(conversationId) });
 });
 
 export default router;

@@ -29,6 +29,11 @@ export class RouteRequestGate {
     return () => requestGeneration === this.generation;
   }
 
+  capture(): () => boolean {
+    const requestGeneration = this.generation;
+    return () => requestGeneration === this.generation;
+  }
+
   invalidate(): void {
     this.generation += 1;
   }

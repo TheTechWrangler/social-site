@@ -3,9 +3,62 @@ import { requireAuth, requireAdmin, optionalAuth, requireVerified } from '../mid
 import { getWorldFeed, getSources, getBlockedSourceIds, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
 import { boundedInteger } from '../pagination.js';
 import { logAuthEvent } from '../authEvents.js';
+import {
+  RequestValidationError,
+  booleanField,
+  positiveIntegerParam,
+  stringField,
+  validatedObjectBody,
+  validationErrorMessage,
+} from '../requestValidation.js';
+import type { RssSourceUpdate } from '../rssService.js';
 
 const publicRouter = Router();
 const adminRouter = Router();
+const RSS_NAME_MAX = 120;
+const RSS_URL_MAX = 2048;
+const RSS_CATEGORY_MAX = 80;
+const RSS_SOURCE_CREATE_FIELDS = ['name', 'url', 'homepageUrl', 'category'] as const;
+const RSS_SOURCE_UPDATE_FIELDS = ['name', 'url', 'homepageUrl', 'category', 'isActive'] as const;
+const WORLD_ITEM_TYPES = ['article', 'podcast'] as const;
+
+function httpUrlField(body: Record<string, unknown>, key: string, options: { required?: boolean; allowEmpty?: boolean } = {}): string | undefined {
+  const value = stringField(body, key, { required: options.required, maxLength: RSS_URL_MAX, allowEmpty: options.allowEmpty });
+  if (value === undefined || value === '') return value ?? undefined;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('unsupported protocol');
+  } catch {
+    throw new RequestValidationError(`${key} must be a valid HTTP or HTTPS URL.`);
+  }
+  return value;
+}
+
+function validateRssSourceCreate(value: unknown): { name: string; url: string; homepageUrl: string; category: string } {
+  const body = validatedObjectBody(value, RSS_SOURCE_CREATE_FIELDS);
+  return {
+    name: stringField(body, 'name', { required: true, maxLength: RSS_NAME_MAX })!,
+    url: httpUrlField(body, 'url', { required: true })!,
+    homepageUrl: httpUrlField(body, 'homepageUrl', { allowEmpty: true }) ?? '',
+    category: stringField(body, 'category', { maxLength: RSS_CATEGORY_MAX }) ?? 'general',
+  };
+}
+
+function validateRssSourceUpdate(value: unknown): RssSourceUpdate {
+  const body = validatedObjectBody(value, RSS_SOURCE_UPDATE_FIELDS);
+  const update: RssSourceUpdate = {};
+  const name = stringField(body, 'name', { maxLength: RSS_NAME_MAX });
+  const url = httpUrlField(body, 'url');
+  const homepageUrl = httpUrlField(body, 'homepageUrl', { allowEmpty: true });
+  const category = stringField(body, 'category', { maxLength: RSS_CATEGORY_MAX });
+  const isActive = booleanField(body, 'isActive');
+  if (name !== undefined) update.name = name;
+  if (url !== undefined) update.url = url;
+  if (homepageUrl !== undefined) update.homepageUrl = homepageUrl;
+  if (category !== undefined) update.category = category;
+  if (isActive !== undefined) update.isActive = isActive;
+  return update;
+}
 
 // ─── In-memory fetch-all job state ───
 // Prevents multiple overlapping fetch-all jobs; surfaces basic status to admin.
@@ -61,8 +114,13 @@ publicRouter.get('/', optionalAuth, (req, res) => {
     const category = req.query.category as string | undefined;
     const limit = boundedInteger(req.query.limit, 50, 1, 100);
     const offset = boundedInteger(req.query.offset, 0, 0, 100000);
+    const rawItemType = req.query.itemType;
+    if (rawItemType !== undefined && (typeof rawItemType !== 'string' || !WORLD_ITEM_TYPES.includes(rawItemType as typeof WORLD_ITEM_TYPES[number]))) {
+      res.status(400).json({ error: 'itemType must be article or podcast.' }); return;
+    }
+    const itemType = rawItemType as typeof WORLD_ITEM_TYPES[number] | undefined;
     const userId = (req as any).user?.id;
-    const items = getWorldFeed({ sourceId, category, limit, offset, userId });
+    const items = getWorldFeed({ sourceId, category, itemType, limit, offset, userId });
     res.json({ items });
   } catch (err: any) {
     logRssError('Load world feed error', err);
@@ -109,9 +167,16 @@ publicRouter.get('/blocked-sources', requireAuth, requireVerified, (req, res) =>
 publicRouter.post('/sources/:sourceId/block', requireAuth, requireVerified, (req, res) => {
   try {
     const user = (req as any).user;
-    blockSource(user.id, Number(req.params.sourceId));
+    const sourceId = positiveIntegerParam(req.params.sourceId, 'sourceId');
+    const source = getSources().find(item => item.id === sourceId);
+    if (!source) { res.status(404).json({ error: 'Source not found.' }); return; }
+    if (blockSource(user.id, sourceId) !== 1) {
+      res.status(409).json({ error: 'Source is already blocked.' }); return;
+    }
     res.json({ ok: true, blocked: true });
   } catch (err: any) {
+    const validationMessage = validationErrorMessage(err);
+    if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }
     logRssError('Block source error', err);
     res.status(500).json({ error: 'Could not block source.' });
   }
@@ -121,9 +186,14 @@ publicRouter.post('/sources/:sourceId/block', requireAuth, requireVerified, (req
 publicRouter.delete('/sources/:sourceId/block', requireAuth, requireVerified, (req, res) => {
   try {
     const user = (req as any).user;
-    unblockSource(user.id, Number(req.params.sourceId));
+    const sourceId = positiveIntegerParam(req.params.sourceId, 'sourceId');
+    if (unblockSource(user.id, sourceId) !== 1) {
+      res.status(404).json({ error: 'Blocked source not found.' }); return;
+    }
     res.json({ ok: true, blocked: false });
   } catch (err: any) {
+    const validationMessage = validationErrorMessage(err);
+    if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }
     logRssError('Unblock source error', err);
     res.status(500).json({ error: 'Could not unblock source.' });
   }
@@ -142,13 +212,14 @@ adminRouter.get('/sources', requireAuth, requireAdmin, (_req, res) => {
 
 adminRouter.post('/sources', requireAuth, requireAdmin, (req, res) => {
   try {
-    const { name, url, homepageUrl, category } = req.body;
-    if (!name || !url) { res.status(400).json({ error: 'Name and URL required.' }); return; }
+    const { name, url, homepageUrl, category } = validateRssSourceCreate(req.body);
     const source = addSource(name, url, homepageUrl || '', category || 'general');
     const adminId = (req as any).user.id;
     logAuthEvent({ eventType: 'admin_rss_source_add', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id, name } });
     res.status(201).json({ source });
   } catch (err: any) {
+    const validationMessage = validationErrorMessage(err);
+    if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }
     logRssError('Admin add source error', err);
     res.status(500).json({ error: 'Could not add RSS source.' });
   }
@@ -156,12 +227,16 @@ adminRouter.post('/sources', requireAuth, requireAdmin, (req, res) => {
 
 adminRouter.patch('/sources/:id', requireAuth, requireAdmin, (req, res) => {
   try {
-    const source = updateSource(Number(req.params.id), req.body);
+    const sourceId = positiveIntegerParam(req.params.id, 'sourceId');
+    const updates = validateRssSourceUpdate(req.body);
+    const source = updateSource(sourceId, updates);
     if (!source) { res.status(404).json({ error: 'Source not found.' }); return; }
     const adminId = (req as any).user.id;
     logAuthEvent({ eventType: 'admin_rss_source_update', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id } });
     res.json({ source });
   } catch (err: any) {
+    const validationMessage = validationErrorMessage(err);
+    if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }
     logRssError('Admin update source error', err);
     res.status(500).json({ error: 'Could not update RSS source.' });
   }

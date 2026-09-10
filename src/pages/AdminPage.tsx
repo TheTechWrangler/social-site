@@ -140,7 +140,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   const [reportActionError, setReportActionError] = useState('');
   const [reportNotes, setReportNotes] = useState<Record<number, string>>({});
   const [serverList, setServerList] = useState<any[]>([]);
-  const [srvForm, setSrvForm] = useState({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
+  const [srvForm, setSrvForm] = useState({ gameId: '', name: '', connectionHost: '', connectionPort: '', platform: '', status: 'online', maxPlayers: '', description: '', joinInstructions: '' });
   const [serverMutation, setServerMutation] = useState<string | null>(null);
 
   // Auth logs
@@ -265,7 +265,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   async function toggleSource(id: number, active: boolean) {
     try {
-      await api.patch(`/admin/rss/sources/${id}`, { is_active: active ? 0 : 1 });
+      await api.patch(`/admin/rss/sources/${id}`, { isActive: !active });
       await loadRss();
     } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not update RSS source.')); }
   }
@@ -399,8 +399,18 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     if (!srvForm.gameId || !srvForm.name || serverMutation) return;
     setServerMutation('create');
     try {
-      await api.post('/admin/game-servers', srvForm);
-      setSrvForm({ gameId: '', name: '', connection_host: '', connection_port: '', platform: '', status: 'online', max_players: '', description: '', join_instructions: '' });
+      await api.post('/admin/game-servers', {
+        gameId: Number(srvForm.gameId),
+        name: srvForm.name,
+        connectionHost: srvForm.connectionHost,
+        connectionPort: srvForm.connectionPort ? Number(srvForm.connectionPort) : null,
+        platform: srvForm.platform,
+        status: srvForm.status,
+        maxPlayers: srvForm.maxPlayers ? Number(srvForm.maxPlayers) : null,
+        description: srvForm.description,
+        joinInstructions: srvForm.joinInstructions,
+      });
+      setSrvForm({ gameId: '', name: '', connectionHost: '', connectionPort: '', platform: '', status: 'online', maxPlayers: '', description: '', joinInstructions: '' });
       await loadServers();
     } catch (e: any) {
       console.error(e);
@@ -414,7 +424,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     if (serverMutation) return;
     setServerMutation(`toggle:${id}`);
     try {
-      await api.patch(`/admin/game-servers/${id}`, { isActive: active ? 0 : 1 });
+      await api.patch(`/admin/game-servers/${id}`, { isActive: !active });
       await loadServers();
     } catch (e: any) {
       console.error(e);
@@ -895,8 +905,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
           <form className="rss-add-form" onSubmit={addServer}>
             <input className="input" placeholder="Game ID" value={srvForm.gameId} onChange={e => setSrvForm({ ...srvForm, gameId: e.target.value })} required />
             <input className="input" placeholder="Server Name" value={srvForm.name} onChange={e => setSrvForm({ ...srvForm, name: e.target.value })} required />
-            <input className="input" placeholder="Host/IP" value={srvForm.connection_host} onChange={e => setSrvForm({ ...srvForm, connection_host: e.target.value })} />
-            <input className="input" placeholder="Port" value={srvForm.connection_port} onChange={e => setSrvForm({ ...srvForm, connection_port: e.target.value })} style={{ width: 100 }} />
+            <input className="input" placeholder="Host/IP" value={srvForm.connectionHost} onChange={e => setSrvForm({ ...srvForm, connectionHost: e.target.value })} />
+            <input className="input" placeholder="Port" value={srvForm.connectionPort} onChange={e => setSrvForm({ ...srvForm, connectionPort: e.target.value })} style={{ width: 100 }} />
             <input className="input" placeholder="Platform" value={srvForm.platform} onChange={e => setSrvForm({ ...srvForm, platform: e.target.value })} style={{ width: 120 }} />
             <button className="btn btn-primary" disabled={serverMutation === 'create'}>{serverMutation === 'create' ? 'Adding...' : 'Add Server'}</button>
           </form>
