@@ -69,10 +69,10 @@ router.get('/:slug', optionalAuth, (req, res) => {
   const playerNotMuted = notMutedByViewerSql(viewer, 'u');
   const rawPlayers = viewerDiscoveryEnabled ? getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url, u.is_verified,
-      EXISTS (
-        SELECT 1 FROM follows f
+      COALESCE((
+        SELECT f.status FROM follows f
         WHERE f.follower_id = ? AND f.following_id = u.id
-      ) as is_following
+      ), 'none') as follow_status
     FROM user_game_preferences p JOIN users u ON p.user_id = u.id
     WHERE p.game_id = ?
       AND p.display_on_profile = 1
@@ -88,7 +88,10 @@ router.get('/:slug', optionalAuth, (req, res) => {
     ...playerProfile.params,
     ...playerNotMuted.params,
   ) : [];
-  const players = rawPlayers;
+  const players = (rawPlayers as any[]).map(player => ({
+    ...player,
+    is_following: player.follow_status === 'accepted' ? 1 : 0,
+  }));
 
   const servers = getDb().prepare(
     'SELECT * FROM game_servers WHERE game_id = ? AND is_active = 1 ORDER BY is_featured DESC, name'

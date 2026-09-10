@@ -134,8 +134,12 @@ export default function GameDetailPage({ user }: { user?: any }) {
 
   async function followPlayer(player: any) {
     try {
-      await api.follow(player.user_id);
-      setPlayers(prev => prev.map(p => p.user_id === player.user_id ? { ...p, is_following: 1 } : p));
+      const result = await api.follow(player.user_id);
+      setPlayers(prev => prev.map(p => p.user_id === player.user_id ? {
+        ...p,
+        is_following: result.following ? 1 : 0,
+        follow_status: result.relationshipStatus,
+      } : p));
     } catch (e: any) { alert(e.message || 'Could not follow player.'); }
   }
 
@@ -157,6 +161,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
     </div>
   );
   if (!game) return null;
+  const isPrivateProfile = (user?.profile_visibility || user?.profileVisibility) === 'private';
   const filteredPlayers = players.filter((p: any) => {
     if (playerPlatform && p.platform !== playerPlatform) return false;
     if (playerStyle && p.play_style !== playerStyle) return false;
@@ -221,6 +226,11 @@ export default function GameDetailPage({ user }: { user?: any }) {
           )}
           {showCreateLfg && (
             <form className="post-composer" onSubmit={createLfg}>
+              {isPrivateProfile && (
+                <p className="muted" style={{ fontSize: '0.82rem', margin: 0 }}>
+                  Active LFG listings are public discovery content, even when your profile is private.
+                </p>
+              )}
               <input className="input" placeholder="Title (e.g. Looking for 2 more — Valheim)" value={lfgTitle} onChange={e => setLfgTitle(e.target.value)} required />
               <textarea className="input" placeholder="Details..." value={lfgBody} onChange={e => setLfgBody(e.target.value)} rows={3} />
               <input className="input" placeholder="Platform (PC, Xbox, PS5...)" value={lfgPlatform} onChange={e => setLfgPlatform(e.target.value)} />
@@ -239,6 +249,11 @@ export default function GameDetailPage({ user }: { user?: any }) {
           {user && myLfgPosts.length > 0 && (
             <div className="my-lfg-section">
               <h4 className="my-lfg-heading">My LFG Posts</h4>
+              {isPrivateProfile && (
+                <p className="muted" style={{ fontSize: '0.82rem' }}>
+                  Extending or reactivating a listing keeps it visible in public discovery.
+                </p>
+              )}
               {myLfgPosts.map(p => {
                 const isExpired = new Date(p.expires_at + 'Z') <= new Date();
                 const extHours = extendDurations[p.id] ?? 6;
@@ -354,7 +369,9 @@ export default function GameDetailPage({ user }: { user?: any }) {
                     </div>
                   </div>
                   {isVerified && user?.id !== p.user_id && !p.is_following && (
-                    <button className="btn btn-sm btn-ghost" onClick={() => followPlayer(p)}>Follow</button>
+                    <button className="btn btn-sm btn-ghost" onClick={() => followPlayer(p)} disabled={p.follow_status === 'pending'}>
+                      {p.follow_status === 'pending' ? 'Pending' : 'Follow'}
+                    </button>
                   )}
                 </div>
               ))}

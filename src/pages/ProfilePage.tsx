@@ -193,7 +193,8 @@ export default function ProfilePage({
     setPendingProfileAction('follow');
     setActionError('');
     try {
-      await (profile.isFollowing ? api.unfollow(profile.id) : api.follow(profile.id));
+      const relationshipStatus = profile.followStatus || (profile.isFollowing ? 'accepted' : 'none');
+      await (relationshipStatus === 'none' ? api.follow(profile.id) : api.unfollow(profile.id));
       await loadProfile();
     } catch (e: any) {
       console.error(e);
@@ -455,7 +456,11 @@ export default function ProfilePage({
           <p className="muted profile-username">@{profile.username}</p>
 
           {isLimited && !isOwn && (
-            <div className="verify-banner" style={{ marginTop: 8 }}>🔒 This profile is private.</div>
+            <div className="verify-banner" style={{ marginTop: 8 }}>
+              🔒 {profile.followStatus === 'pending'
+                ? 'Follow request pending. Access begins only if the owner accepts it.'
+                : 'This profile is private. You can request access by following.'}
+            </div>
           )}
 
           {(!isLimited || isOwn) && profile.bio && (
@@ -474,7 +479,7 @@ export default function ProfilePage({
             {!isOwn && currentUser && (
               <>
                 <button className={`btn ${profile.isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={handleFollow} disabled={pendingProfileAction === 'follow'}>
-                  {profile.isFollowing ? 'Following' : 'Follow'}
+                  {profile.followStatus === 'pending' ? 'Pending — cancel' : profile.isFollowing ? 'Following' : 'Follow'}
                 </button>
                 <button className="btn btn-ghost btn-sm" onClick={handleMessage}>💬 Message</button>
                 <button className="btn btn-ghost btn-sm" onClick={handleMute} disabled={pendingProfileAction === 'mute'}>🔇 Mute</button>
@@ -519,7 +524,11 @@ export default function ProfilePage({
               <option value="public">Public</option>
               <option value="private">Private</option>
             </select>
-            <span className="muted" style={{ fontSize: '0.8rem' }}>Private profiles limit who can view your profile and posts.</span>
+            <span className="muted" style={{ fontSize: '0.8rem' }}>
+              {profileVis === 'private'
+                ? 'Private: people request to follow; you approve new followers. Accepted followers can view follower-gated profile details and posts. Posts in public groups, comments in accessible public threads, and active LFG listings remain public. Blocking is separate, and privacy changes cannot recall copies already seen or downloaded.'
+                : 'Public: anyone can view your profile and profile posts. Blocking still hides your account from specific people.'}
+            </span>
           </div>
 
           <p className="profile-sections-heading">Profile Sections <span className="muted">(optional — shown on your profile)</span></p>

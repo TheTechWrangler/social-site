@@ -89,8 +89,12 @@ Development commands force `NODE_ENV=development`; they do not inherit a product
 - `GET /api/users/me/games` — Current user's game preferences
 
 ### Follows
-- `POST /api/follows/:userId` — Follow
-- `DELETE /api/follows/:userId` — Unfollow
+- `POST /api/follows/:userId` — Follow a public profile or request approval from a private profile
+- `DELETE /api/follows/:userId` — Unfollow or cancel a pending request
+- `GET /api/follows/requests` — List follow requests addressed to the current user
+- `POST /api/follows/requests/:userId/accept` — Accept a follow request
+- `DELETE /api/follows/requests/:userId` — Decline a follow request
+- `DELETE /api/follows/followers/:userId` — Remove an accepted follower
 
 ### Likes
 - `POST /api/likes/:postId` — Like

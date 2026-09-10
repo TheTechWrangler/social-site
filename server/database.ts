@@ -61,6 +61,7 @@ export function initializeDatabase(): void {
     CREATE TABLE IF NOT EXISTS follows (
       follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       following_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'accepted' CHECK(status IN ('pending','accepted')),
       created_at TEXT DEFAULT (datetime('now')),
       PRIMARY KEY (follower_id, following_id)
     );
@@ -360,6 +361,44 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_dm_messages_convo ON dm_messages(conversation_id, id);
   `);
 
+  // Batch 11: legacy follow edges represent relationships that were already
+  // granted, so grandfather them as accepted. Refuse to migrate ambiguous or
+  // policy-invalid legacy graphs instead of guessing which edge should win.
+  const followColumns = db.prepare('PRAGMA table_info(follows)').all() as Array<{ name: string }>;
+  const followIntegrity = db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM follows WHERE follower_id = following_id) AS self_edges,
+      (SELECT COALESCE(SUM(c - 1), 0) FROM (
+        SELECT COUNT(*) AS c FROM follows
+        GROUP BY follower_id, following_id HAVING COUNT(*) > 1
+      )) AS duplicate_edges,
+      (SELECT COUNT(*) FROM follows f
+        LEFT JOIN users follower ON follower.id = f.follower_id
+        LEFT JOIN users target ON target.id = f.following_id
+        WHERE follower.id IS NULL OR target.id IS NULL) AS orphan_edges,
+      (SELECT COUNT(*) FROM follows f WHERE EXISTS (
+        SELECT 1 FROM user_relationship_blocks b
+        WHERE b.relationship_type = 'block' AND (
+          (b.blocker_user_id = f.follower_id AND b.blocked_user_id = f.following_id)
+          OR (b.blocker_user_id = f.following_id AND b.blocked_user_id = f.follower_id)
+        )
+      )) AS blocked_edges
+  `).get() as Record<string, number>;
+  if (Object.values(followIntegrity).some(value => value !== 0)) {
+    throw new Error(`Follow relationship migration refused invalid legacy edges: ${JSON.stringify(followIntegrity)}`);
+  }
+  if (!followColumns.some(column => column.name === 'status')) {
+    db.exec("ALTER TABLE follows ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted' CHECK(status IN ('pending','accepted'))");
+  }
+  const invalidFollowState = db.prepare(`
+    SELECT 1 FROM follows WHERE status IS NULL OR status NOT IN ('pending','accepted') LIMIT 1
+  `).get();
+  if (invalidFollowState) throw new Error('Follow relationship migration refused an invalid status.');
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_follows_following_status ON follows(following_id, status);
+    CREATE INDEX IF NOT EXISTS idx_follows_follower_status ON follows(follower_id, status);
+  `);
+
   // Batch 10: normalize legacy active-action duplicates before installing the
   // durable uniqueness invariants used by notification-producing mutations.
   // Source-linked notification rows intentionally represent active actions;
@@ -383,6 +422,7 @@ export function initializeDatabase(): void {
           SELECT 1 FROM follows f
           WHERE f.follower_id = notifications.actor_id
             AND f.following_id = notifications.user_id
+            AND f.status = 'accepted'
         ))
         OR (type = 'like' AND NOT EXISTS (
           SELECT 1 FROM likes l JOIN posts p ON p.id = l.post_id

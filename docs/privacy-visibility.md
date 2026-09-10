@@ -17,8 +17,8 @@ operations are likewise account-management surfaces rather than discovery.
 | Viewer | Public account | Private account | Banned account | Either-direction block |
 |---|---|---|---|---|
 | Anonymous | Full public profile | Hidden | Hidden | Not applicable |
-| Signed-in non-follower | Full public profile | Limited identity card | Hidden | Hidden |
-| Follower | Full public profile | Full profile | Hidden | Hidden |
+| Signed-in non-follower or pending requester | Full public profile | Limited identity card | Hidden | Hidden |
+| Accepted follower | Full public profile | Full profile | Hidden | Hidden |
 | Self | Full own profile | Full own profile | Authentication denies banned users | Not applicable |
 | Admin on a normal endpoint | Full profile | Full profile | Hidden | Hidden |
 | Admin/moderator on a dedicated moderation endpoint | Endpoint-specific moderation access | Endpoint-specific moderation access | Endpoint-specific moderation access | Endpoint-specific moderation access |
@@ -28,6 +28,16 @@ username, display name, avatar, private/limited flags, and relevant follow
 state. It does not contain bio, structured interests, verification or role,
 profile post/count data, game preferences, or follower/following details beyond
 the follow UI state.
+
+Private profiles use owner-approved followers. A verified user may create a
+pending request, but that request grants no profile, post, discovery, feed, or
+friendship-derived messaging access. Only acceptance creates a follower and the
+normal follow notification. Requesters may cancel; targets may accept, decline,
+or remove followers. Blocking in either direction removes pending and accepted
+edges, and unblocking does not restore them. Existing relationships from before
+this policy are grandfathered as accepted. Changing a private profile to public
+atomically accepts outstanding requests; changing public to private preserves
+existing accepted followers and requires approval for future requests.
 
 ## Content scopes
 
@@ -51,6 +61,11 @@ shape as nonexistent objects where practical, including report targets.
 All groups in the current schema are public contexts. If private or restricted
 groups are added, group access must be authorized before applying the
 public-context author rule; membership alone must not turn the group public.
+RefugeCloud does not currently offer private groups. Group composers and active
+LFG controls disclose their public-context behavior before publication, and
+private-profile comment composers explain that the comment is visible wherever
+its parent thread is visible. Switching a profile to private cannot retract
+copies that other people previously viewed, saved, or downloaded.
 
 ## Media and deferred upload work
 

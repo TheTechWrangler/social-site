@@ -10,6 +10,13 @@ const router = Router();
 
 const MAX_REPOST_DEPTH = 3;
 
+function visibleGroupOrigin(viewer: Viewer | null | undefined, groupId: number | null) {
+  if (!groupId || !canViewGroup(viewer, groupId)) return null;
+  const group = getDb().prepare('SELECT id, name FROM groups_table WHERE id = ?')
+    .get(groupId) as { id: number; name: string } | undefined;
+  return group ? { id: group.id, name: group.name } : null;
+}
+
 function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new Set<number>()): any {
   visited.add(row.id);
   const commentAuthor = userVisibilitySql(viewer, 'cu', 'public-context');
@@ -53,6 +60,7 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
     `).get(row.repost_of) as any;
     if (rp && canViewPost(viewer, rp.id)) repostedPost = enrichPost(rp, viewer, depth + 1, visited);
   }
+  const group = visibleGroupOrigin(viewer, row.group_id ?? null);
 
   return {
     id: row.id,
@@ -64,7 +72,9 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
     parentId: row.parent_id ?? null,
     repostOf: repostedPost ? row.repost_of : null,
     repostedPost,
-    groupId: row.group_id && canViewGroup(viewer, row.group_id) ? row.group_id : null,
+    isGroupPost: row.group_id !== null && row.group_id !== undefined,
+    groupId: group?.id ?? null,
+    group,
     hidden: !!row.hidden,
     likeCount: reactions.like + reactions.love + reactions.laugh + reactions.wow + reactions.support + reactions.thoughtful,
     commentCount: comments?.c ?? 0,

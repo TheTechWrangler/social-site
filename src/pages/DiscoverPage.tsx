@@ -72,9 +72,13 @@ export default function DiscoverPage({ user }: { user?: any }) {
     setPendingUserId(userId);
     setActionError('');
     try {
-      await api.follow(userId);
+      const result = await api.follow(userId);
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
-      const update = (arr: any[]) => arr.map(u => u.id === userId ? { ...u, isFollowing: true } : u);
+      const update = (arr: any[]) => arr.map(u => u.id === userId ? {
+        ...u,
+        isFollowing: result.following,
+        followStatus: result.relationshipStatus,
+      } : u);
       setResults(update);
       setSuggestions(update);
     } catch (e: any) {
@@ -96,7 +100,11 @@ export default function DiscoverPage({ user }: { user?: any }) {
     try {
       await api.unfollow(userId);
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
-      const update = (arr: any[]) => arr.map(u => u.id === userId ? { ...u, isFollowing: false } : u);
+      const update = (arr: any[]) => arr.map(u => u.id === userId ? {
+        ...u,
+        isFollowing: false,
+        followStatus: 'none',
+      } : u);
       setResults(update);
       setSuggestions(update);
     } catch (e: any) {
@@ -110,6 +118,7 @@ export default function DiscoverPage({ user }: { user?: any }) {
   }
 
   function renderCard(u: any) {
+    const relationshipStatus = u.followStatus || (u.isFollowing ? 'accepted' : 'none');
     return (
       <div key={u.id} className="discover-card">
         <div className="avatar-placeholder">{u.display_name?.[0] || '?'}</div>
@@ -123,9 +132,9 @@ export default function DiscoverPage({ user }: { user?: any }) {
         </div>
         {isVerified && user && user.id !== u.id && (
           <button className={`btn ${u.isFollowing ? 'btn-ghost' : 'btn-primary'}`}
-            onClick={() => u.isFollowing ? handleUnfollow(u.id) : handleFollow(u.id)}
+            onClick={() => relationshipStatus === 'none' ? handleFollow(u.id) : handleUnfollow(u.id)}
             disabled={pendingUserId === u.id}>
-            {u.isFollowing ? 'Following' : 'Follow'}
+            {relationshipStatus === 'pending' ? 'Pending — cancel' : u.isFollowing ? 'Following' : 'Follow'}
           </button>
         )}
       </div>

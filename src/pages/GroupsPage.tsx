@@ -71,6 +71,9 @@ export default function GroupsPage({ user }: { user: any }) {
 
       {showCreate && (
         <form className="post-composer groups-create-form" onSubmit={handleCreate}>
+          <p className="muted" style={{ fontSize: '0.82rem', margin: 0 }}>
+            Public group — RefugeCloud groups and posts published in them are public. Private groups are not available.
+          </p>
           <input className="input" placeholder="Group name" value={name} onChange={e => setName(e.target.value)} required maxLength={80} />
           <textarea className="input" placeholder="What is this group about? (optional)" value={desc} onChange={e => setDesc(e.target.value)} rows={2} maxLength={400} />
           {createError && <p className="error-msg">{createError}</p>}

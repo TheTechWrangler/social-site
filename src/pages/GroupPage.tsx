@@ -176,6 +176,7 @@ export default function GroupPage({ user }: { user: any }) {
       <div className="group-detail-header">
         <div className="group-detail-info">
           <h2 className="group-detail-name">{group.name}</h2>
+          <span className="group-member-badge">Public group</span>
           {group.description && <p className="group-detail-desc">{group.description}</p>}
           <div className="group-detail-meta">
             <span>{group.memberCount} {group.memberCount === 1 ? 'member' : 'members'}</span>
@@ -266,6 +267,9 @@ export default function GroupPage({ user }: { user: any }) {
       {/* Post composer — members only */}
       {isMember && isVerified && (
         <form className="post-composer" onSubmit={handlePost}>
+          <p className="muted" style={{ fontSize: '0.82rem', margin: 0 }}>
+            Public group — posts here may be visible to people who cannot view your private profile.
+          </p>
           <textarea className="input" placeholder="Post to this group…" value={content}
             onChange={e => { setContent(e.target.value); setPostSubmissionKey(null); }} rows={2} />
           {postError && <p className="error-msg">{postError}</p>}

@@ -16,6 +16,25 @@ export interface NotificationDto {
   created_at: string;
 }
 
+export type FollowStatus = 'none' | 'pending' | 'accepted';
+
+export interface FollowMutationResult {
+  ok: boolean;
+  relationshipStatus: FollowStatus;
+  following: boolean;
+  pending: boolean;
+  replayed?: boolean;
+  removed?: boolean;
+}
+
+export interface FollowRequestDto {
+  id: number;
+  username: string;
+  displayName: string;
+  avatarUrl: string;
+  requestedAt: string;
+}
+
 export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   readonly status?: number;
@@ -150,8 +169,12 @@ export const api = {
   getFollowers: () => request<{ users: any[] }>('/users/me/followers'),
 
   // Follows
-  follow: (userId: number) => request<{ ok: boolean }>(`/follows/${userId}`, { method: 'POST' }),
-  unfollow: (userId: number) => request<{ ok: boolean }>(`/follows/${userId}`, { method: 'DELETE' }),
+  follow: (userId: number) => request<FollowMutationResult>(`/follows/${userId}`, { method: 'POST' }),
+  unfollow: (userId: number) => request<FollowMutationResult>(`/follows/${userId}`, { method: 'DELETE' }),
+  getFollowRequests: () => request<{ requests: FollowRequestDto[] }>('/follows/requests'),
+  acceptFollowRequest: (userId: number) => request<FollowMutationResult>(`/follows/requests/${userId}/accept`, { method: 'POST' }),
+  declineFollowRequest: (userId: number) => request<{ ok: boolean; removed: boolean }>(`/follows/requests/${userId}`, { method: 'DELETE' }),
+  removeFollower: (userId: number) => request<{ ok: boolean; removed: boolean }>(`/follows/followers/${userId}`, { method: 'DELETE' }),
 
   // Likes
   like: (postId: number) => request<{ liked: boolean; likeCount: number }>(`/likes/${postId}`, { method: 'POST' }),

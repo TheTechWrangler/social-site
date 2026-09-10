@@ -5,6 +5,7 @@ export interface CanonicalProfileDto {
   avatarUrl: string;
   isPrivate: boolean;
   isFollowing: boolean;
+  followStatus?: 'pending';
   limited?: true;
   bio?: string;
   role?: string;

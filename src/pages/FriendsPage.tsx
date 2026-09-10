@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 
-type Tab = 'friends' | 'following' | 'followers';
+type Tab = 'friends' | 'following' | 'followers' | 'requests';
 
 export default function FriendsPage({ user }: { user: any }) {
   const navigate = useNavigate();
@@ -10,6 +10,7 @@ export default function FriendsPage({ user }: { user: any }) {
   const [friends, setFriends] = useState<any[]>([]);
   const [following, setFollowing] = useState<any[]>([]);
   const [followers, setFollowers] = useState<any[]>([]);
+  const [requests, setRequests] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionError, setActionError] = useState('');
   const [pendingUserId, setPendingUserId] = useState<number | null>(null);
@@ -19,24 +20,26 @@ export default function FriendsPage({ user }: { user: any }) {
   async function loadConnections() {
     setLoading(true);
     try {
-      const [fr, fg, fl] = await Promise.all([
+      const [fr, fg, fl, rq] = await Promise.all([
         api.getFriends(),
         api.getFollowing(),
         api.getFollowers(),
+        api.getFollowRequests(),
       ]);
       setFriends(fr.users || []);
       setFollowing(fg.users || []);
       setFollowers(fl.users || []);
+      setRequests(rq.requests || []);
     } catch (e) { console.error(e); }
     setLoading(false);
   }
 
-  async function toggleFollow(userId: number, isFollowing: boolean) {
+  async function toggleFollow(userId: number, relationshipStatus: 'none' | 'pending' | 'accepted') {
     if (pendingUserId !== null) return;
     setPendingUserId(userId);
     setActionError('');
     try {
-      await (isFollowing ? api.unfollow(userId) : api.follow(userId));
+      await (relationshipStatus === 'none' ? api.follow(userId) : api.unfollow(userId));
       await loadConnections();
     } catch (e: any) {
       console.error(e);
@@ -44,6 +47,28 @@ export default function FriendsPage({ user }: { user: any }) {
     } finally {
       setPendingUserId(null);
     }
+  }
+
+  async function manageRequest(userId: number, action: 'accept' | 'decline') {
+    if (pendingUserId !== null) return;
+    setPendingUserId(userId); setActionError('');
+    try {
+      await (action === 'accept' ? api.acceptFollowRequest(userId) : api.declineFollowRequest(userId));
+      await loadConnections();
+    } catch (e: any) {
+      setActionError(e.message || `Could not ${action} follow request.`);
+    } finally { setPendingUserId(null); }
+  }
+
+  async function removeFollower(userId: number) {
+    if (pendingUserId !== null) return;
+    setPendingUserId(userId); setActionError('');
+    try {
+      await api.removeFollower(userId);
+      await loadConnections();
+    } catch (e: any) {
+      setActionError(e.message || 'Could not remove follower.');
+    } finally { setPendingUserId(null); }
   }
 
   async function handleMessage(userId: number) {
@@ -57,9 +82,11 @@ export default function FriendsPage({ user }: { user: any }) {
 
   const isVerified = user?.isVerified ?? user?.is_verified;
   const displayList = tab === 'friends' ? friends
-    : tab === 'following' ? following : followers;
+    : tab === 'following' ? following
+      : tab === 'followers' ? followers : requests;
   const emptyText = tab === 'friends' ? 'No friends yet.'
-    : tab === 'following' ? 'You are not following anyone yet.' : 'No followers yet.';
+    : tab === 'following' ? 'You are not following anyone yet.'
+      : tab === 'followers' ? 'No followers yet.' : 'No pending follow requests.';
 
   return (
     <div className="friends-page">
@@ -75,6 +102,9 @@ export default function FriendsPage({ user }: { user: any }) {
         <button className={`btn ${tab === 'followers' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('followers')}>
           Followers ({followers.length})
         </button>
+        <button className={`btn ${tab === 'requests' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('requests')}>
+          Requests ({requests.length})
+        </button>
       </div>
 
       {loading ? <p className="muted">Loading...</p> : displayList.length === 0 ? (
@@ -83,6 +113,7 @@ export default function FriendsPage({ user }: { user: any }) {
         <div className="discover-results">
           {displayList.map((u: any) => {
             const isFollowing = !!u.isFollowing;
+            const relationshipStatus = u.followStatus || (isFollowing ? 'accepted' : 'none');
             const isFriend = !!u.isFollowing && !!u.followsMe;
             const displayName = u.displayName || u.display_name || u.username;
             return (
@@ -94,17 +125,36 @@ export default function FriendsPage({ user }: { user: any }) {
                     <span className="muted">@{u.username}</span>
                     {isFriend && <span className="verified-badge">🤝 Friend</span>}
                   </Link>
-                  {(u.isVerified ?? u.is_verified) ? <span className="verified-badge">✅ Verified</span> : <span className="muted">⚠ Unverified</span>}
+                  {tab !== 'requests' && ((u.isVerified ?? u.is_verified)
+                    ? <span className="verified-badge">✅ Verified</span>
+                    : <span className="muted">⚠ Unverified</span>)}
                   {u.bioSnippet && <p className="muted" style={{ fontSize: '0.82rem', marginTop: 4 }}>{u.bioSnippet}</p>}
                 </div>
-                {isVerified && (
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => handleMessage(u.id)} title="Send message">💬</button>
-                    <button className={`btn ${isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={() => toggleFollow(u.id, isFollowing)} disabled={pendingUserId === u.id}>
-                      {isFollowing ? 'Unfollow' : 'Follow'}
-                    </button>
-                  </div>
-                )}
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {tab === 'requests' ? (
+                    <>
+                      <button className="btn btn-primary btn-sm" onClick={() => manageRequest(u.id, 'accept')} disabled={pendingUserId === u.id}>Accept</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => manageRequest(u.id, 'decline')} disabled={pendingUserId === u.id}>Decline</button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="btn btn-ghost btn-sm" onClick={() => handleMessage(u.id)} title="Send message">💬</button>
+                      {isVerified && (
+                        <button className={`btn ${isFollowing ? 'btn-ghost' : 'btn-primary'}`} onClick={() => toggleFollow(u.id, relationshipStatus)} disabled={pendingUserId === u.id}>
+                          {relationshipStatus === 'pending' ? 'Pending — cancel' : isFollowing ? 'Unfollow' : 'Follow'}
+                        </button>
+                      )}
+                      {!isVerified && relationshipStatus !== 'none' && (
+                        <button className="btn btn-ghost" onClick={() => toggleFollow(u.id, relationshipStatus)} disabled={pendingUserId === u.id}>
+                          {relationshipStatus === 'pending' ? 'Cancel request' : 'Unfollow'}
+                        </button>
+                      )}
+                      {tab === 'followers' && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => removeFollower(u.id)} disabled={pendingUserId === u.id}>Remove follower</button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             );
           })}

@@ -40,9 +40,9 @@ export function hasMuted(viewerId: number, targetUserId: number): boolean {
   `).get(viewerId, targetUserId);
 }
 
-function isFollowing(viewerId: number, targetUserId: number): boolean {
+export function isAcceptedFollower(viewerId: number, targetUserId: number): boolean {
   return !!getDb().prepare(
-    'SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?',
+    "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ? AND status = 'accepted'",
   ).get(viewerId, targetUserId);
 }
 
@@ -65,7 +65,7 @@ export function getUserVisibility(
   if (viewer?.id === target.id || isAdmin(viewer)) return 'full';
   if (target.profile_visibility !== 'private') return 'full';
   if (!viewer?.id) return 'hidden';
-  return isFollowing(viewer.id, target.id) ? 'full' : 'limited';
+  return isAcceptedFollower(viewer.id, target.id) ? 'full' : 'limited';
 }
 
 export function canViewUserIdentity(
@@ -145,6 +145,7 @@ export function userVisibilitySql(
       OR EXISTS (
         SELECT 1 FROM follows visibility_follow
         WHERE visibility_follow.follower_id = ? AND visibility_follow.following_id = ${u}.id
+          AND visibility_follow.status = 'accepted'
       )
     )`);
     params.push(viewer.id, viewer.id);
@@ -250,8 +251,8 @@ export function canUserMessageRecipient(senderId: number, recipientId: number): 
   if (policy === 'everyone') return true;
 
   const isMutualFollow = (a: number, b: number) =>
-    !!db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?').get(a, b) &&
-    !!db.prepare('SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?').get(b, a);
+    !!db.prepare("SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ? AND status = 'accepted'").get(a, b) &&
+    !!db.prepare("SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ? AND status = 'accepted'").get(b, a);
 
   const isFriend = isMutualFollow(senderId, recipientId);
   if (policy === 'friends') return isFriend;
@@ -261,9 +262,10 @@ export function canUserMessageRecipient(senderId: number, recipientId: number): 
   return !!db.prepare(`
     SELECT 1 FROM follows f1
     WHERE f1.follower_id = ?
-      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = f1.following_id AND following_id = ?)
-      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = f1.following_id AND following_id = ?)
-      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = ? AND following_id = f1.following_id)
+      AND f1.status = 'accepted'
+      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = f1.following_id AND following_id = ? AND status = 'accepted')
+      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = f1.following_id AND following_id = ? AND status = 'accepted')
+      AND EXISTS (SELECT 1 FROM follows WHERE follower_id = ? AND following_id = f1.following_id AND status = 'accepted')
     LIMIT 1
   `).get(senderId, senderId, recipientId, recipientId);
 }

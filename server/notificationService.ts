@@ -135,7 +135,10 @@ function activeActionExists(row: NotificationRow): boolean {
   const db = getDb();
   switch (row.type) {
     case 'follow':
-      return !!db.prepare(`SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?`)
+      return !!db.prepare(`
+        SELECT 1 FROM follows
+        WHERE follower_id = ? AND following_id = ? AND status = 'accepted'
+      `)
         .get(row.actor_id, row.user_id);
     case 'like':
       return row.post_id !== null && row.source_user_id === row.user_id &&

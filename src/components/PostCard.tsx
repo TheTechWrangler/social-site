@@ -38,6 +38,7 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   const mutationGate = useRef(new RouteRequestGate());
 
   const isVerified = currentUser?.is_verified ?? currentUser?.isVerified;
+  const isPrivateProfile = (currentUser?.profile_visibility || currentUser?.profileVisibility) === 'private';
   const reactions = post.reactions || {};
   const totalReactions = Object.values(reactions).reduce((a: number, b: any) => a + (b || 0), 0);
 
@@ -260,6 +261,13 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
         </Link>
         <span className="post-time">{time}</span>
       </div>
+      {post.isGroupPost && (
+        <div className="muted" style={{ fontSize: '0.82rem', marginBottom: 8 }}>
+          Posted in {post.group
+            ? <Link to={`/groups/${post.group.id}`}>{post.group.name}</Link>
+            : 'a group'}
+        </div>
+      )}
 
       {post.repostOf && post.repostedPost ? (
         <PostCard post={post.repostedPost} currentUser={currentUser} onMutation={onMutation} />
@@ -319,6 +327,11 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
             </div>
           ))}
           <form className="comment-form" onSubmit={addComment}>
+            {isPrivateProfile && (
+              <span className="muted" style={{ fontSize: '0.78rem' }}>
+                Your comment is visible to anyone who can view this thread, even if they cannot view your private profile.
+              </span>
+            )}
             <input className="input" placeholder="Write a comment..." value={commentText} onChange={e => setCommentText(e.target.value)} />
             <button className="btn btn-sm" disabled={!commentText.trim() || commentSubmitting}>{commentSubmitting ? 'Posting...' : 'Reply'}</button>
           </form>

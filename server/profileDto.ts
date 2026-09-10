@@ -25,9 +25,11 @@ export function getCanonicalProfile(
   if (visibility === 'hidden') return null;
 
   const isOwner = viewer?.id === row.id;
-  const isFollowing = isOwner ? false : viewer ? !!db.prepare(
-    'SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?',
-  ).get(viewer.id, row.id) : false;
+  const relationship = !isOwner && viewer ? db.prepare(
+    'SELECT status FROM follows WHERE follower_id = ? AND following_id = ?',
+  ).get(viewer.id, row.id) as { status: 'pending' | 'accepted' } | undefined : undefined;
+  const followStatus = relationship?.status ?? 'none';
+  const isFollowing = followStatus === 'accepted';
   const isPrivate = row.profile_visibility === 'private';
 
   if (visibility === 'limited') {
@@ -39,6 +41,7 @@ export function getCanonicalProfile(
         avatarUrl: row.avatar_url,
         isPrivate: true,
         isFollowing,
+        ...(followStatus === 'pending' ? { followStatus } : {}),
         limited: true,
       },
       message: 'This profile is private.',
@@ -49,12 +52,12 @@ export function getCanonicalProfile(
   const followers = db.prepare(`
     SELECT COUNT(*) AS count FROM follows f
     JOIN users u ON u.id = f.follower_id
-    WHERE f.following_id = ? AND ${connectionVisibility.sql}
+    WHERE f.following_id = ? AND f.status = 'accepted' AND ${connectionVisibility.sql}
   `).get(row.id, ...connectionVisibility.params) as { count: number };
   const following = db.prepare(`
     SELECT COUNT(*) AS count FROM follows f
     JOIN users u ON u.id = f.following_id
-    WHERE f.follower_id = ? AND ${connectionVisibility.sql}
+    WHERE f.follower_id = ? AND f.status = 'accepted' AND ${connectionVisibility.sql}
   `).get(row.id, ...connectionVisibility.params) as { count: number };
   const postCount = db.prepare(`
     SELECT COUNT(*) AS count FROM posts

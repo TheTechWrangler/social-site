@@ -9,18 +9,18 @@ import {
 } from '../visibility.js';
 import { enrichPost } from './posts.js';
 import { getCanonicalProfile } from '../profileDto.js';
-import { removeNotificationsBetweenUsers } from '../notificationService.js';
+import { createFollowNotification, removeNotificationsBetweenUsers } from '../notificationService.js';
 
 const router = Router();
 
 function connectionUserRows(viewer: Viewer, mode: 'following' | 'followers' | 'friends') {
   const userId = viewer.id;
   const relationWhere = mode === 'following'
-    ? 'f.follower_id = ? AND u.id = f.following_id'
+    ? "f.follower_id = ? AND f.status = 'accepted' AND u.id = f.following_id"
     : mode === 'followers'
-      ? 'f.following_id = ? AND u.id = f.follower_id'
-      : `f.follower_id = ? AND u.id = f.following_id
-        AND EXISTS (SELECT 1 FROM follows mf WHERE mf.follower_id = u.id AND mf.following_id = ?)`;
+      ? "f.following_id = ? AND f.status = 'accepted' AND u.id = f.follower_id"
+      : `f.follower_id = ? AND f.status = 'accepted' AND u.id = f.following_id
+        AND EXISTS (SELECT 1 FROM follows mf WHERE mf.follower_id = u.id AND mf.following_id = ? AND mf.status = 'accepted')`;
   const relationParams = mode === 'friends' ? [userId, userId] : [userId];
   const identity = userVisibilitySql(viewer, 'u', 'identity');
   const fullProfile = userVisibilitySql(viewer, 'u', 'profile');
@@ -34,8 +34,8 @@ function connectionUserRows(viewer: Viewer, mode: 'following' | 'followers' | 'f
       CASE WHEN (${fullProfile.sql}) THEN 1 ELSE 0 END as can_view_full,
       u.is_verified,
       u.profile_visibility,
-      EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = ? AND cf.following_id = u.id) as is_following,
-      EXISTS (SELECT 1 FROM follows cm WHERE cm.follower_id = u.id AND cm.following_id = ?) as follows_me
+      EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = ? AND cf.following_id = u.id AND cf.status = 'accepted') as is_following,
+      EXISTS (SELECT 1 FROM follows cm WHERE cm.follower_id = u.id AND cm.following_id = ? AND cm.status = 'accepted') as follows_me
     FROM follows f
     JOIN users u ON (${relationWhere})
     WHERE ${identity.sql}
@@ -225,7 +225,20 @@ router.put('/profile', requireAuth, (req: AuthRequest, res) => {
   fields.push("updated_at = datetime('now')");
   vals.push(req.user!.id);
   const saveProfile = getDb().transaction(() => {
+    const previous = getDb().prepare('SELECT profile_visibility FROM users WHERE id = ?')
+      .get(req.user!.id) as { profile_visibility: 'public' | 'private' };
     getDb().prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+    if (previous.profile_visibility === 'private' && vis === 'public') {
+      const pending = getDb().prepare(`
+        SELECT follower_id FROM follows WHERE following_id = ? AND status = 'pending'
+      `).all(req.user!.id) as Array<{ follower_id: number }>;
+      getDb().prepare(`
+        UPDATE follows SET status = 'accepted' WHERE following_id = ? AND status = 'pending'
+      `).run(req.user!.id);
+      for (const relationship of pending) {
+        createFollowNotification(req.user!.id, relationship.follower_id);
+      }
+    }
     if (avatar_url === '') {
       // Deleting managed avatar references invokes the lifecycle trigger. Do
       // not touch legacy rows: their ownership cannot be inferred from URL use.
@@ -256,9 +269,9 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       u.profile_visibility,
       CASE WHEN (${fullProfile.sql}) THEN u.bio ELSE '' END AS bio,
       CASE WHEN (${fullProfile.sql}) THEN 1 ELSE 0 END AS can_view_full,
-      EXISTS (
-        SELECT 1 FROM follows sf WHERE sf.follower_id = ? AND sf.following_id = u.id
-      ) AS is_following
+      COALESCE((
+        SELECT sf.status FROM follows sf WHERE sf.follower_id = ? AND sf.following_id = u.id
+      ), 'none') AS follow_status
     FROM users u
     WHERE (u.username LIKE ? OR u.display_name LIKE ?)
       AND ${identity.sql}
@@ -281,13 +294,15 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       is_verified: row.is_verified,
       profile_visibility: row.profile_visibility,
       bio: row.bio,
-      isFollowing: !!row.is_following,
+      isFollowing: row.follow_status === 'accepted',
+      ...(row.follow_status === 'pending' ? { followStatus: 'pending' } : {}),
     } : {
       id: row.id,
       username: row.username,
       display_name: row.display_name,
       avatar_url: row.avatar_url,
-      isFollowing: !!row.is_following,
+      isFollowing: row.follow_status === 'accepted',
+      ...(row.follow_status === 'pending' ? { followStatus: 'pending' } : {}),
       isPrivate: true,
       limited: true,
     }),
