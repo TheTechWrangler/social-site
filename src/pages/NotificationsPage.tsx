@@ -1,37 +1,24 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../api/client';
-
-interface Notif {
-  id: number;
-  type: string;
-  read: number;
-  post_id: number | null;
-  post_parent_id: number | null;
-  group_id: number | null;
-  actor_username: string;
-  actor_name: string;
-  post_snippet: string | null;
-  created_at: string;
-}
+import { api, type NotificationDto } from '../api/client';
 
 interface Props {
   onMarkAllRead: () => void;
   onMarkOneRead: () => void;
 }
 
-function notifLabel(n: Notif): string {
+function notifLabel(n: NotificationDto): string {
   switch (n.type) {
     case 'follow':      return `@${n.actor_username} followed you`;
     case 'like':        return `@${n.actor_username} reacted to your post`;
-    case 'comment':     return `@${n.actor_username} commented on your post`;
+    case 'comment':     return `@${n.actor_username} ${n.comment_kind === 'reply' ? 'replied to your comment' : 'commented on your post'}`;
     case 'repost':      return `@${n.actor_username} reposted your post`;
     case 'group_invite':return `@${n.actor_username} invited you to a group`;
     default:            return `@${n.actor_username} — ${n.type}`;
   }
 }
 
-function notifDest(n: Notif): string {
+function notifDest(n: NotificationDto): string {
   switch (n.type) {
     case 'follow':
       return `/profile/${n.actor_username}`;
@@ -39,12 +26,7 @@ function notifDest(n: Notif): string {
     case 'repost':
       return n.post_id ? `/posts/${n.post_id}` : `/profile/${n.actor_username}`;
     case 'comment':
-      // post_id is the comment row; post_parent_id is the post being commented on
-      return n.post_parent_id
-        ? `/posts/${n.post_parent_id}`
-        : n.post_id
-          ? `/posts/${n.post_id}`
-          : `/profile/${n.actor_username}`;
+      return n.post_id ? `/posts/${n.post_id}` : `/profile/${n.actor_username}`;
     case 'group_invite':
       return n.group_id ? `/groups/${n.group_id}` : '/';
     default:
@@ -53,7 +35,7 @@ function notifDest(n: Notif): string {
 }
 
 export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Props) {
-  const [notifs, setNotifs] = useState<Notif[]>([]);
+  const [notifs, setNotifs] = useState<NotificationDto[]>([]);
   const [marking, setMarking] = useState(false);
   const [markError, setMarkError] = useState('');
 
@@ -77,11 +59,11 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
     }
   }
 
-  function handleNotifClick(n: Notif) {
+  function handleNotifClick(n: NotificationDto) {
     if (!n.read) {
-      void api.markNotificationRead(n.id).then(() => {
+      void api.markNotificationRead(n.id).then(result => {
         setNotifs(prev => prev.map(x => x.id === n.id ? { ...x, read: 1 } : x));
-        onMarkOneRead();
+        if (result.changed) onMarkOneRead();
       }).catch((e: any) => {
         setMarkError(e.message || 'Could not mark notification as read.');
       });

@@ -21,7 +21,8 @@
     "smoke:live": "bash scripts/smoke-test.sh",
     "test:security": "tsx --test --test-concurrency=1 tests/security/*.test.ts",
     "test:batch08": "tsx --test --test-concurrency=1 tests/batch08/*.test.ts",
-    "test:batch09": "tsx --test --test-concurrency=1 tests/batch09/*.test.ts"
+    "test:batch09": "tsx --test --test-concurrency=1 tests/batch09/*.test.ts",
+    "test:batch10": "tsx --test --test-concurrency=1 tests/batch10/*.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

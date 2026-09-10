@@ -3,6 +3,7 @@ import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { canInteractWithPost, canViewPost, userVisibilitySql, type Viewer } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
+import { createReactionNotification, removeReactionNotification } from '../notificationService.js';
 
 const router = Router();
 
@@ -25,31 +26,19 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 
   const userId = req.user!.id;
   const db = getDb();
-  const existingReaction = db.prepare('SELECT reaction_type FROM likes WHERE user_id = ? AND post_id = ?')
-    .get(userId, postId) as { reaction_type: string } | undefined;
-  const reactionChanged = existingReaction?.reaction_type !== reactionType;
-
-  if (reactionChanged) {
-    // Remove any existing reaction from this user on this post
-    db.prepare('DELETE FROM likes WHERE user_id = ? AND post_id = ?').run(userId, postId);
-
-    // Insert new reaction
-    db.prepare('INSERT INTO likes (user_id, post_id, reaction_type) VALUES (?, ?, ?)').run(userId, postId, reactionType);
-
-    if (post.user_id !== userId) {
-      db.prepare(`
-        INSERT INTO notifications (user_id, actor_id, type, post_id)
-        SELECT ?, ?, 'like', ?
-        WHERE NOT EXISTS (
-          SELECT 1 FROM notifications
-          WHERE user_id = ? AND actor_id = ? AND type = 'like' AND post_id = ?
-            AND created_at > datetime('now', '-24 hours')
-        )
-      `).run(post.user_id, userId, postId, post.user_id, userId, postId);
+  const setReaction = db.transaction(() => {
+    const existingReaction = db.prepare('SELECT reaction_type FROM likes WHERE user_id = ? AND post_id = ?')
+      .get(userId, postId) as { reaction_type: string } | undefined;
+    const reactionChanged = existingReaction?.reaction_type !== reactionType;
+    if (reactionChanged) {
+      db.prepare('DELETE FROM likes WHERE user_id = ? AND post_id = ?').run(userId, postId);
+      db.prepare('INSERT INTO likes (user_id, post_id, reaction_type) VALUES (?, ?, ?)').run(userId, postId, reactionType);
     }
-
-    logUsage({ eventType: 'like_created', userId: req.user!.id, featureArea: 'feed' });
-  }
+    createReactionNotification(post.user_id, userId, postId);
+    return reactionChanged;
+  });
+  const reactionChanged = setReaction();
+  if (reactionChanged) logUsage({ eventType: 'like_created', userId: req.user!.id, featureArea: 'feed' });
 
   // Return grouped counts
   const counts = getReactionCounts(postId, req.user);
@@ -60,7 +49,11 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 router.delete('/:postId', requireAuth, (req: AuthRequest, res) => {
   const postId = Number(req.params.postId);
   if (!canViewPost(req.user as any, postId)) { res.status(404).json({ error: 'Post not found.' }); return; }
-  getDb().prepare('DELETE FROM likes WHERE user_id = ? AND post_id = ?').run(req.user!.id, postId);
+  const removeReaction = getDb().transaction(() => {
+    getDb().prepare('DELETE FROM likes WHERE user_id = ? AND post_id = ?').run(req.user!.id, postId);
+    removeReactionNotification(req.user!.id, postId);
+  });
+  removeReaction();
   const counts = getReactionCounts(postId, req.user);
   res.json({ ok: true, counts, userReaction: null });
 });

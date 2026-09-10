@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { createHash } from 'node:crypto';
+import { removeRepostNotification } from '../notificationService.js';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { canViewGroup, canViewPost, userVisibilitySql, type Viewer } from '../visibility.js';
@@ -196,11 +197,16 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
 // DELETE /api/posts/:id
 router.delete('/:id', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const post = getDb().prepare(`
-    SELECT id FROM posts
+    SELECT id, user_id, repost_of FROM posts
     WHERE id = ? AND (user_id = ? OR ? = 'admin')
   `).get(req.params.id, req.user!.id, req.user!.role) as any;
   if (!post) { res.status(404).json({ error: 'Not found.' }); return; }
-  getDb().prepare('DELETE FROM posts WHERE id = ?').run(req.params.id);
+  const deletePost = getDb().transaction(() => {
+    if (post.repost_of !== null) removeRepostNotification(post.user_id, post.repost_of);
+    const result = getDb().prepare('DELETE FROM posts WHERE id = ?').run(post.id);
+    if (result.changes !== 1) throw new Error('Post deletion did not complete.');
+  });
+  deletePost();
   res.json({ ok: true });
 });
 

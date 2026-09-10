@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { canViewUserIdentity } from '../visibility.js';
+import { createFollowNotification, removeFollowNotification } from '../notificationService.js';
 
 const router = Router();
 
@@ -19,22 +20,14 @@ router.post('/:userId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 
   try {
     const db = getDb();
-    const followResult = db.prepare('INSERT OR IGNORE INTO follows (follower_id, following_id) VALUES (?, ?)')
-      .run(req.user!.id, targetId);
-
-    if (followResult.changes > 0) {
-      db.prepare(`
-        INSERT INTO notifications (user_id, actor_id, type)
-        SELECT ?, ?, 'follow'
-        WHERE NOT EXISTS (
-          SELECT 1 FROM notifications
-          WHERE user_id = ? AND actor_id = ? AND type = 'follow'
-            AND created_at > datetime('now', '-24 hours')
-        )
-      `).run(targetId, req.user!.id, targetId, req.user!.id);
-    }
-
-    res.json({ ok: true, following: true });
+    const follow = db.transaction(() => {
+      const followResult = db.prepare('INSERT OR IGNORE INTO follows (follower_id, following_id) VALUES (?, ?)')
+        .run(req.user!.id, targetId);
+      createFollowNotification(targetId, req.user!.id);
+      return followResult.changes === 0;
+    });
+    const replayed = follow();
+    res.json({ ok: true, following: true, replayed });
   } catch (err: any) {
     console.error('[follows] Failed to follow user:', err.message);
     res.status(500).json({ error: 'Could not follow user.' });
@@ -43,8 +36,13 @@ router.post('/:userId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 
 // DELETE /api/follows/:userId
 router.delete('/:userId', requireAuth, requireVerified, (req: AuthRequest, res) => {
-  getDb().prepare('DELETE FROM follows WHERE follower_id = ? AND following_id = ?')
-    .run(req.user!.id, Number(req.params.userId));
+  const targetId = Number(req.params.userId);
+  const unfollow = getDb().transaction(() => {
+    getDb().prepare('DELETE FROM follows WHERE follower_id = ? AND following_id = ?')
+      .run(req.user!.id, targetId);
+    removeFollowNotification(targetId, req.user!.id);
+  });
+  unfollow();
   res.json({ ok: true, following: false });
 });
 

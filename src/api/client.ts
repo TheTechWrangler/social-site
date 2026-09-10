@@ -4,6 +4,18 @@ const BASE = '/api';
 
 export type ApiErrorKind = 'http' | 'network' | 'invalid-response';
 
+export interface NotificationDto {
+  id: number;
+  type: 'follow' | 'like' | 'comment' | 'repost' | 'group_invite';
+  read: 0 | 1;
+  actor_username: string;
+  post_id: number | null;
+  group_id: number | null;
+  post_snippet: string | null;
+  comment_kind: 'comment' | 'reply' | null;
+  created_at: string;
+}
+
 export class ApiError extends Error {
   readonly kind: ApiErrorKind;
   readonly status?: number;
@@ -174,10 +186,10 @@ export const api = {
     request<{ ok: boolean }>(`/groups/${groupId}/members/${userId}`, { method: 'DELETE' }),
 
   // Notifications
-  getNotifications: () => request<{ notifications: any[] }>('/notifications'),
+  getNotifications: () => request<{ notifications: NotificationDto[] }>('/notifications'),
   unreadCount: () => request<{ count: number }>('/notifications/unread-count'),
-  readAll: () => request<{ ok: boolean }>('/notifications/read-all', { method: 'POST' }),
-  markNotificationRead: (id: number) => request<{ ok: boolean }>(`/notifications/${id}/read`, { method: 'PATCH' }),
+  readAll: () => request<{ ok: boolean; changed: number }>('/notifications/read-all', { method: 'POST' }),
+  markNotificationRead: (id: number) => request<{ ok: boolean; changed: boolean }>(`/notifications/${id}/read`, { method: 'PATCH' }),
 
   // Direct Messages
   getConversations: () => request<{ conversations: any[] }>('/messages'),

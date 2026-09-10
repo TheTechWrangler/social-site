@@ -360,6 +360,71 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_dm_messages_convo ON dm_messages(conversation_id, id);
   `);
 
+  // Batch 10: normalize legacy active-action duplicates before installing the
+  // durable uniqueness invariants used by notification-producing mutations.
+  // Source-linked notification rows intentionally represent active actions;
+  // stale reversals and malformed/self rows are removed once during migration.
+  const enforceNotificationInvariants = db.transaction(() => {
+    db.exec(`
+      DELETE FROM posts
+      WHERE repost_of IS NOT NULL
+        AND id NOT IN (
+          SELECT MIN(id) FROM posts WHERE repost_of IS NOT NULL GROUP BY user_id, repost_of
+        );
+
+      DELETE FROM likes
+      WHERE rowid NOT IN (
+        SELECT MAX(rowid) FROM likes GROUP BY user_id, post_id
+      );
+
+      DELETE FROM notifications
+      WHERE user_id = actor_id
+        OR (type = 'follow' AND NOT EXISTS (
+          SELECT 1 FROM follows f
+          WHERE f.follower_id = notifications.actor_id
+            AND f.following_id = notifications.user_id
+        ))
+        OR (type = 'like' AND NOT EXISTS (
+          SELECT 1 FROM likes l JOIN posts p ON p.id = l.post_id
+          WHERE l.user_id = notifications.actor_id
+            AND l.post_id = notifications.post_id
+            AND p.user_id = notifications.user_id
+        ))
+        OR (type = 'comment' AND post_id IS NULL)
+        OR (type = 'repost' AND NOT EXISTS (
+          SELECT 1 FROM posts rp JOIN posts original ON original.id = rp.repost_of
+          WHERE rp.user_id = notifications.actor_id
+            AND rp.repost_of = notifications.post_id
+            AND original.user_id = notifications.user_id
+        ))
+        OR (type = 'group_invite' AND group_id IS NULL);
+
+      DELETE FROM notifications
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM notifications
+        GROUP BY type, user_id, actor_id,
+          CASE WHEN type IN ('like', 'comment', 'repost') THEN post_id END,
+          CASE WHEN type = 'group_invite' THEN group_id END
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_likes_user_post_unique
+        ON likes(user_id, post_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_user_repost_unique
+        ON posts(user_id, repost_of) WHERE repost_of IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_follow_unique
+        ON notifications(user_id, actor_id) WHERE type = 'follow';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_like_unique
+        ON notifications(user_id, actor_id, post_id) WHERE type = 'like';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_comment_unique
+        ON notifications(user_id, actor_id, post_id) WHERE type = 'comment';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_repost_unique
+        ON notifications(user_id, actor_id, post_id) WHERE type = 'repost';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_group_invite_unique
+        ON notifications(user_id, actor_id, group_id) WHERE type = 'group_invite';
+    `);
+  });
+  enforceNotificationInvariants();
+
   const postMediaColumns = db.prepare('PRAGMA table_info(post_media)').all() as Array<{ name: string }>;
   if (!postMediaColumns.some(c => c.name === 'asset_id')) {
     db.exec('ALTER TABLE post_media ADD COLUMN asset_id TEXT REFERENCES managed_assets(id) ON DELETE RESTRICT');

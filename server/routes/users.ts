@@ -9,6 +9,7 @@ import {
 } from '../visibility.js';
 import { enrichPost } from './posts.js';
 import { getCanonicalProfile } from '../profileDto.js';
+import { removeNotificationsBetweenUsers } from '../notificationService.js';
 
 const router = Router();
 
@@ -298,10 +299,14 @@ router.post('/:userId/block', requireAuth, (req, res) => {
   const blockedId = Number(req.params.userId);
   if (blockerId === blockedId) { res.status(400).json({ error: 'Cannot block yourself.' }); return; }
   const db = getDb();
-  db.prepare("DELETE FROM user_relationship_blocks WHERE blocker_user_id = ? AND blocked_user_id = ? AND relationship_type = 'mute'").run(blockerId, blockedId);
-  db.prepare('DELETE FROM follows WHERE (follower_id = ? AND following_id = ?) OR (follower_id = ? AND following_id = ?)').run(blockerId, blockedId, blockedId, blockerId);
-  db.prepare(`INSERT OR IGNORE INTO user_relationship_blocks (blocker_user_id, blocked_user_id, relationship_type)
-    SELECT ?, id, 'block' FROM users WHERE id = ?`).run(blockerId, blockedId);
+  const blockUser = db.transaction(() => {
+    db.prepare("DELETE FROM user_relationship_blocks WHERE blocker_user_id = ? AND blocked_user_id = ? AND relationship_type = 'mute'").run(blockerId, blockedId);
+    db.prepare('DELETE FROM follows WHERE (follower_id = ? AND following_id = ?) OR (follower_id = ? AND following_id = ?)').run(blockerId, blockedId, blockedId, blockerId);
+    removeNotificationsBetweenUsers(blockerId, blockedId);
+    db.prepare(`INSERT OR IGNORE INTO user_relationship_blocks (blocker_user_id, blocked_user_id, relationship_type)
+      SELECT ?, id, 'block' FROM users WHERE id = ?`).run(blockerId, blockedId);
+  });
+  blockUser();
   res.json({ ok: true, blocked: true });
 });
 
