@@ -80,6 +80,7 @@ Development commands force `NODE_ENV=development`; they do not inherit a product
 ### Posts
 - `POST /api/posts` — Create post
 - `GET /api/posts/:id` — Get post
+- `PATCH /api/posts/:id` — Edit authored post text using an expected edit version
 - `DELETE /api/posts/:id` — Delete post
 
 ### Users

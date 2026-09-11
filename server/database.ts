@@ -43,6 +43,8 @@ export function initializeDatabase(): void {
       repost_of INTEGER REFERENCES posts(id) ON DELETE CASCADE,
       group_id INTEGER REFERENCES groups_table(id) ON DELETE CASCADE,
       hidden INTEGER DEFAULT 0,
+      edited_at TEXT,
+      edit_version INTEGER NOT NULL DEFAULT 0 CHECK(edit_version >= 0),
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -360,6 +362,20 @@ export function initializeDatabase(): void {
     );
     CREATE INDEX IF NOT EXISTS idx_dm_messages_convo ON dm_messages(conversation_id, id);
   `);
+
+  // Batch 12: a compact optimistic-concurrency token and nullable edit marker.
+  // Existing posts are deterministically version zero and remain unedited.
+  const postColumns = db.prepare('PRAGMA table_info(posts)').all() as Array<{ name: string }>;
+  if (!postColumns.some(column => column.name === 'edited_at')) {
+    db.exec('ALTER TABLE posts ADD COLUMN edited_at TEXT');
+  }
+  if (!postColumns.some(column => column.name === 'edit_version')) {
+    db.exec('ALTER TABLE posts ADD COLUMN edit_version INTEGER NOT NULL DEFAULT 0 CHECK(edit_version >= 0)');
+  }
+  const invalidPostVersion = db.prepare(`
+    SELECT 1 FROM posts WHERE edit_version IS NULL OR edit_version < 0 LIMIT 1
+  `).get();
+  if (invalidPostVersion) throw new Error('Post edit migration refused an invalid edit version.');
 
   // Batch 11: legacy follow edges represent relationships that were already
   // granted, so grandfather them as accepted. Refuse to migrate ambiguous or

@@ -148,6 +148,11 @@ export const api = {
   createPost: (content: string, groupId?: number, clientSubmissionKey?: string) =>
     request<{ post: any; replayed?: boolean }>('/posts', { method: 'POST', body: JSON.stringify({ content, groupId, clientSubmissionKey }) }),
   getPost: (id: number) => request<{ post: any }>(`/posts/${id}`),
+  editPost: (id: number, content: string, expectedEditVersion: number) =>
+    request<{ post: any; changed: boolean }>(`/posts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content, expectedEditVersion }),
+    }),
   deletePost: (id: number) => request<{ ok: boolean }>(`/posts/${id}`, { method: 'DELETE' }),
 
   // Users

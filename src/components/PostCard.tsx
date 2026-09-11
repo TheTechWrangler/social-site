@@ -2,7 +2,14 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { RouteRequestGate } from '../routeLoadState';
-import type { PostEntityMutation } from '../postEntityState';
+import { applyPostEntityMutation, type PostEntityMutation } from '../postEntityState';
+import {
+  EMPTY_POST_EDIT,
+  beginPostEdit,
+  failPostEditSave,
+  startPostEditSave,
+  updatePostEditDraft,
+} from '../postEditState';
 
 const REACTIONS = ['like', 'love', 'laugh', 'wow', 'support', 'thoughtful'];
 const EMOJI: Record<string, string> = { like: '👍', love: '❤️', laugh: '😂', wow: '😮', support: '🙌', thoughtful: '🤔' };
@@ -28,6 +35,8 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [editState, setEditState] = useState(EMPTY_POST_EDIT);
+  const editSubmission = useRef(false);
   const entityId = useRef(post.id);
   entityId.current = post.id;
   const scopeKey = (currentUser?.id ?? 'anonymous') + ':' + post.id;
@@ -52,6 +61,8 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
     setCommentSubmitting(false);
     setReportSubmitting(false);
     setReposting(false);
+    setEditState(EMPTY_POST_EDIT);
+    editSubmission.current = false;
     mediaGate.current.invalidate();
     commentGate.current.invalidate();
     mutationGate.current.invalidate();
@@ -182,6 +193,51 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
     }
   }
 
+  function canEdit(target: any) {
+    return !!isVerified && currentUser?.id === target.userId && !target.hidden && !target.isRepost && !target.repostOf;
+  }
+
+  function cancelEdit() {
+    if (editState.saving) return;
+    setEditState(EMPTY_POST_EDIT);
+  }
+
+  async function saveEdit(target: any) {
+    if (editSubmission.current || editState.postId !== target.id) return;
+    const normalized = editState.draft.trim();
+    if (!normalized) {
+      setEditState(previous => failPostEditSave(previous, 'Post content cannot be empty.'));
+      return;
+    }
+    if (normalized.length > 5000) {
+      setEditState(previous => failPostEditSave(previous, 'Post content must be 5000 characters or fewer.'));
+      return;
+    }
+
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
+    editSubmission.current = true;
+    setEditState(previous => startPostEditSave(previous));
+    try {
+      const result = await api.editPost(target.id, normalized, editState.expectedEditVersion);
+      if (!isCurrent() || currentScopeKey.current !== requestScope) return;
+      const mutation: PostEntityMutation = { type: 'update', post: result.post };
+      setComments(previous => applyPostEntityMutation(previous, mutation));
+      onMutation(mutation);
+      setEditState(EMPTY_POST_EDIT);
+    } catch (error: any) {
+      if (isCurrent() && currentScopeKey.current === requestScope) {
+        const code = error?.data?.code;
+        const message = code === 'STALE_POST_EDIT'
+          ? 'This post changed in another window. Your draft is preserved; reload the post before saving again.'
+          : (error.message || 'Could not edit post.');
+        setEditState(previous => failPostEditSave(previous, message));
+      }
+    } finally {
+      if (isCurrent() && currentScopeKey.current === requestScope) editSubmission.current = false;
+    }
+  }
+
   function openReportModal(target: any, type: 'post' | 'comment') {
     setReportTarget(target);
     setReportTargetType(type);
@@ -259,7 +315,7 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
           {avatarUrl ? <img src={avatarUrl} alt="" className="avatar-img" /> : <span className="avatar-placeholder">{avatarInitial}</span>}
           <div><strong>{post.displayName}</strong><span className="muted">@{post.username}</span></div>
         </Link>
-        <span className="post-time">{time}</span>
+        <span className="post-time">{time}{post.editedAt ? ' · Edited' : ''}</span>
       </div>
       {post.isGroupPost && (
         <div className="muted" style={{ fontSize: '0.82rem', marginBottom: 8 }}>
@@ -273,7 +329,20 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
         <PostCard post={post.repostedPost} currentUser={currentUser} onMutation={onMutation} />
       ) : (
         <>
-          <div className="post-content">{post.content}</div>
+          {editState.postId === post.id ? (
+            <div className="post-edit-form">
+              <textarea className="input" value={editState.draft}
+                onChange={event => setEditState(previous => updatePostEditDraft(previous, event.target.value))}
+                rows={4} maxLength={5001} disabled={editState.saving} />
+              {editState.error && <p className="error-msg" role="alert">{editState.error}</p>}
+              <div className="post-edit-actions">
+                <button className="btn btn-ghost btn-sm" onClick={cancelEdit} disabled={editState.saving}>Cancel</button>
+                <button className="btn btn-primary btn-sm" onClick={() => saveEdit(post)} disabled={editState.saving || !editState.draft.trim()}>
+                  {editState.saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          ) : <div className="post-content">{post.content}</div>}
           {images.map((img: any) => (
             <div key={img.id} className="post-media-wrap"><img src={img.url} alt={img.alt_text || ''} className="post-media-img" loading="lazy" /></div>
           ))}
@@ -304,6 +373,9 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
         </div>
         <button className="action-btn" onClick={loadComments}>💬 {post.commentCount || 0}</button>
         <button className="action-btn" onClick={handleRepost}>🔄 {post.repostCount || 0}</button>
+        {canEdit(post) && editState.postId !== post.id && (
+          <button className="action-btn" onClick={() => setEditState(beginPostEdit(post))} disabled={editState.saving}>Edit</button>
+        )}
         {(currentUser?.id === post.userId || currentUser?.role === 'admin') && <button className="action-btn danger" onClick={handleDelete} disabled={pendingAction === 'delete'}>🗑</button>}
         {currentUser && currentUser.id !== post.userId && <button className="action-btn" onClick={() => openReportModal(post, 'post')} title="Report">🚩</button>}
         {currentUser?.id !== post.userId && currentUser && (
@@ -320,7 +392,23 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
           {comments.map(c => (
             <div key={c.id} className="comment">
               <Link to={`/profile/${c.username}`}><strong>{c.displayName}</strong></Link> <span className="muted">@{c.username}</span>
-              <p>{c.content}</p>
+              {editState.postId === c.id ? (
+                <div className="post-edit-form">
+                  <textarea className="input" value={editState.draft}
+                    onChange={event => setEditState(previous => updatePostEditDraft(previous, event.target.value))}
+                    rows={3} maxLength={5001} disabled={editState.saving} />
+                  {editState.error && <p className="error-msg" role="alert">{editState.error}</p>}
+                  <div className="post-edit-actions">
+                    <button className="btn btn-ghost btn-sm" onClick={cancelEdit} disabled={editState.saving}>Cancel</button>
+                    <button className="btn btn-primary btn-sm" onClick={() => saveEdit(c)} disabled={editState.saving || !editState.draft.trim()}>
+                      {editState.saving ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              ) : <p>{c.content}{c.editedAt ? <span className="muted"> · Edited</span> : null}</p>}
+              {canEdit(c) && editState.postId !== c.id && (
+                <button className="btn btn-sm btn-ghost" onClick={() => setEditState(beginPostEdit(c))}>Edit</button>
+              )}
               {currentUser && currentUser.id !== c.userId && (
                 <button className="btn btn-sm btn-ghost" onClick={() => openReportModal(c, 'comment')}>Report</button>
               )}

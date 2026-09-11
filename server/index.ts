@@ -402,7 +402,11 @@ if (IS_PROD) {
 // thrown in async middleware that have not been caught by individual route try/catch blocks.
 // Never leaks secrets, tokens, stack traces, or request bodies to clients.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+app.use((err: Error & { status?: number; type?: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err.status === 400 && err.type === 'entity.parse.failed') {
+    res.status(400).json({ error: 'Request body must contain valid JSON.' });
+    return;
+  }
   console.error('[server] Unhandled error:', err.message);
   res.status(500).json({ error: 'Internal server error.' });
 });

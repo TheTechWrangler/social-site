@@ -23,7 +23,8 @@
     "test:batch08": "tsx --test --test-concurrency=1 tests/batch08/*.test.ts",
     "test:batch09": "tsx --test --test-concurrency=1 tests/batch09/*.test.ts",
     "test:batch10": "tsx --test --test-concurrency=1 tests/batch10/*.test.ts",
-    "test:batch11": "tsx --test --test-concurrency=1 tests/batch11/*.test.ts"
+    "test:batch11": "tsx --test --test-concurrency=1 tests/batch11/*.test.ts",
+    "test:batch12": "tsx --test --test-concurrency=1 tests/batch12/*.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

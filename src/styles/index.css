@@ -406,6 +406,9 @@ p { margin: 0 0 8px; }
 .avatar-placeholder.large { width: 72px; height: 72px; font-size: 2rem; }
 .post-time { font-size: 0.8rem; color: var(--text-dim); }
 .post-content { margin-bottom: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: var(--text-soft); }
+.post-edit-form { margin-bottom: 12px; }
+.post-edit-form textarea { resize: vertical; width: 100%; }
+.post-edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .post-actions { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .action-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 0.9rem; padding: 4px 8px; border-radius: var(--radius-sm); display: flex; align-items: center; gap: 4px; font-family: inherit; transition: color 0.2s; }
 .action-btn:hover { color: var(--text-soft); }

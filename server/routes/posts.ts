@@ -5,6 +5,8 @@ import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { canViewGroup, canViewPost, userVisibilitySql, type Viewer } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
+import { validatePostContent, validatePostEdit, type PostEditInput } from '../postValidation.js';
+import { positiveIntegerParam, validationErrorMessage } from '../requestValidation.js';
 
 const router = Router();
 
@@ -70,6 +72,7 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
     displayName: row.display_name,
     avatarUrl: row.avatar_url,
     parentId: row.parent_id ?? null,
+    isRepost: row.repost_of !== null && row.repost_of !== undefined,
     repostOf: repostedPost ? row.repost_of : null,
     repostedPost,
     isGroupPost: row.group_id !== null && row.group_id !== undefined,
@@ -83,10 +86,11 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
     userReaction,
     liked: liked,
     createdAt: row.created_at,
+    editedAt: row.edited_at ?? null,
+    editVersion: Number(row.edit_version ?? 0),
   };
 }
 
-const POST_MAX_LENGTH = 5000;
 const POST_SUBMISSION_KEY = /^[A-Za-z0-9_-]{16,100}$/;
 const POST_SUBMISSION_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -94,10 +98,7 @@ const POST_SUBMISSION_TTL_MS = 24 * 60 * 60 * 1000;
 router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   try {
     const { content, groupId, clientSubmissionKey } = req.body;
-    if (!content?.trim()) { res.status(400).json({ error: 'Content required.' }); return; }
-    if (content.trim().length > POST_MAX_LENGTH) {
-      res.status(400).json({ error: `Post content must be ${POST_MAX_LENGTH} characters or fewer.` }); return;
-    }
+    const normalizedContent = validatePostContent(content);
     if (clientSubmissionKey !== undefined && !POST_SUBMISSION_KEY.test(String(clientSubmissionKey))) {
       res.status(400).json({ error: 'Invalid post submission key.' }); return;
     }
@@ -115,7 +116,6 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
       }
     }
 
-    const normalizedContent = content.trim();
     const normalizedGroupId = groupId ? Number(groupId) : null;
     const requestHash = createHash('sha256')
       .update(JSON.stringify({ content: normalizedContent, groupId: normalizedGroupId }))
@@ -187,9 +187,69 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
       replayed: result.replayed,
     });
   } catch (err: any) {
+    const validationError = validationErrorMessage(err);
+    if (validationError) { res.status(400).json({ error: validationError }); return; }
     console.error('[posts] Create post error:', err.message);
     res.status(500).json({ error: 'Could not create post.' });
   }
+});
+
+// PATCH /api/posts/:id — author-only text edit with optimistic concurrency.
+router.patch('/:id', requireAuth, requireVerified, (req: AuthRequest, res) => {
+  let postId: number;
+  let input: PostEditInput;
+  try {
+    postId = positiveIntegerParam(req.params.id, 'post id');
+    input = validatePostEdit(req.body);
+  } catch (error) {
+    const message = validationErrorMessage(error);
+    res.status(message?.startsWith('post id') ? 404 : 400).json({ error: message || 'Invalid request.' });
+    return;
+  }
+
+  const db = getDb();
+  const editPost = db.transaction(() => {
+    const post = db.prepare(`
+      SELECT id, user_id, content, parent_id, repost_of, group_id, hidden,
+        edited_at, edit_version
+      FROM posts WHERE id = ?
+    `).get(postId) as any;
+    if (!post || post.user_id !== req.user!.id || post.hidden) return { kind: 'not-found' as const };
+    if (post.repost_of !== null) return { kind: 'ineligible' as const };
+    if (post.edit_version !== input.expectedEditVersion) return { kind: 'stale' as const };
+    if (post.content === input.content) return { kind: 'unchanged' as const };
+    const openReport = db.prepare(
+      "SELECT 1 FROM reports WHERE post_id = ? AND status = 'open' LIMIT 1",
+    ).get(postId);
+    if (openReport) return { kind: 'under-review' as const };
+
+    const updated = db.prepare(`
+      UPDATE posts
+      SET content = ?, edited_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), edit_version = edit_version + 1
+      WHERE id = ? AND user_id = ? AND hidden = 0 AND repost_of IS NULL AND edit_version = ?
+    `).run(input.content, postId, req.user!.id, input.expectedEditVersion);
+    if (updated.changes !== 1) return { kind: 'stale' as const };
+    return { kind: 'updated' as const };
+  });
+
+  const result = editPost();
+  if (result.kind === 'not-found') { res.status(404).json({ error: 'Post not found.' }); return; }
+  if (result.kind === 'ineligible') { res.status(409).json({ error: 'Repost wrappers cannot be edited.' }); return; }
+  if (result.kind === 'stale') {
+    res.status(409).json({ error: 'This post changed elsewhere. Reload it before saving again.', code: 'STALE_POST_EDIT' });
+    return;
+  }
+  if (result.kind === 'under-review') {
+    res.status(409).json({ error: 'This post cannot be edited while it is under moderation review.', code: 'POST_UNDER_REVIEW' });
+    return;
+  }
+
+  const row = db.prepare(`
+    SELECT p.*, u.username, u.display_name, u.avatar_url
+    FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
+  `).get(postId);
+  if (!row) { res.status(404).json({ error: 'Post not found.' }); return; }
+  res.json({ post: enrichPost(row, req.user as any), changed: result.kind === 'updated' });
 });
 
 // GET /api/posts/:id
