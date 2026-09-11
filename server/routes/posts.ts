@@ -12,6 +12,16 @@ const router = Router();
 
 const MAX_REPOST_DEPTH = 3;
 
+// Ordinary editing never inherits a moderation role's permission to delete.
+function postEditRestriction(viewer: Viewer | null | undefined, post: any) {
+  if (!post || viewer?.id !== post.user_id || !canViewPost(viewer, post.id)) return 'not-found' as const;
+  if (post.repost_of !== null) return 'ineligible' as const;
+  if (getDb().prepare("SELECT 1 FROM reports WHERE post_id = ? AND status = 'open' LIMIT 1").get(post.id)) {
+    return 'under-review' as const;
+  }
+  return null;
+}
+
 function visibleGroupOrigin(viewer: Viewer | null | undefined, groupId: number | null) {
   if (!groupId || !canViewGroup(viewer, groupId)) return null;
   const group = getDb().prepare('SELECT id, name FROM groups_table WHERE id = ?')
@@ -88,6 +98,9 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
     createdAt: row.created_at,
     editedAt: row.edited_at ?? null,
     editVersion: Number(row.edit_version ?? 0),
+    canEdit: !!viewer &&
+      (viewer.role === 'admin' || !!(viewer as Viewer & { is_verified?: number }).is_verified) &&
+      postEditRestriction(viewer, row) === null,
   };
 }
 
@@ -97,7 +110,7 @@ const POST_SUBMISSION_TTL_MS = 24 * 60 * 60 * 1000;
 // POST /api/posts — create a post
 router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   try {
-    const { content, groupId, clientSubmissionKey } = req.body;
+    const { content, groupId, clientSubmissionKey } = req.body ?? {};
     const normalizedContent = validatePostContent(content);
     if (clientSubmissionKey !== undefined && !POST_SUBMISSION_KEY.test(String(clientSubmissionKey))) {
       res.status(400).json({ error: 'Invalid post submission key.' }); return;
@@ -214,14 +227,10 @@ router.patch('/:id', requireAuth, requireVerified, (req: AuthRequest, res) => {
         edited_at, edit_version
       FROM posts WHERE id = ?
     `).get(postId) as any;
-    if (!post || post.user_id !== req.user!.id || post.hidden) return { kind: 'not-found' as const };
-    if (post.repost_of !== null) return { kind: 'ineligible' as const };
+    const restriction = postEditRestriction(req.user, post);
+    if (restriction) return { kind: restriction };
     if (post.edit_version !== input.expectedEditVersion) return { kind: 'stale' as const };
     if (post.content === input.content) return { kind: 'unchanged' as const };
-    const openReport = db.prepare(
-      "SELECT 1 FROM reports WHERE post_id = ? AND status = 'open' LIMIT 1",
-    ).get(postId);
-    if (openReport) return { kind: 'under-review' as const };
 
     const updated = db.prepare(`
       UPDATE posts
@@ -232,7 +241,7 @@ router.patch('/:id', requireAuth, requireVerified, (req: AuthRequest, res) => {
     return { kind: 'updated' as const };
   });
 
-  const result = editPost();
+  const result = editPost.immediate();
   if (result.kind === 'not-found') { res.status(404).json({ error: 'Post not found.' }); return; }
   if (result.kind === 'ineligible') { res.status(409).json({ error: 'Repost wrappers cannot be edited.' }); return; }
   if (result.kind === 'stale') {

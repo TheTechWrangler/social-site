@@ -23,15 +23,11 @@ export function validatePostContent(value: unknown): string {
 export function validatePostEdit(value: unknown): PostEditInput {
   const body = validatedObjectBody(value, ['content', 'expectedEditVersion']);
   return {
-    content: stringField(body, 'content', {
-      required: true,
-      maxLength: POST_MAX_LENGTH,
-      allowEmpty: false,
-    })!,
+    content: validatePostContent(body.content),
     expectedEditVersion: integerField(body, 'expectedEditVersion', {
       required: true,
       min: 0,
-      max: Number.MAX_SAFE_INTEGER,
+      max: Number.MAX_SAFE_INTEGER - 1,
     })!,
   };
 }

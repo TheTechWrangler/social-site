@@ -5,18 +5,21 @@ import { enrichPost } from './posts.js';
 import { canInteractWithPost, canViewPost, userVisibilitySql } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
 import { createCommentNotification } from '../notificationService.js';
+import { validatePostContent } from '../postValidation.js';
+import { validationErrorMessage } from '../requestValidation.js';
 
 const router = Router();
-
-const COMMENT_MAX_LENGTH = 5000;
 
 // POST /api/comments/:postId
 router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const parentId = Number(req.params.postId);
-  const { content } = req.body;
-  if (!content?.trim()) { res.status(400).json({ error: 'Content required.' }); return; }
-  if (content.trim().length > COMMENT_MAX_LENGTH) {
-    res.status(400).json({ error: `Comment must be ${COMMENT_MAX_LENGTH} characters or fewer.` }); return;
+  let content: string;
+  try {
+    content = validatePostContent(req.body?.content);
+  } catch (error) {
+    const message = validationErrorMessage(error);
+    if (!message) throw error;
+    res.status(400).json({ error: message }); return;
   }
 
   const parent = getDb().prepare('SELECT * FROM posts WHERE id = ?').get(parentId) as any;
@@ -26,7 +29,7 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 
   const createComment = getDb().transaction(() => {
     const result = getDb().prepare('INSERT INTO posts (user_id, content, parent_id) VALUES (?, ?, ?)')
-      .run(req.user!.id, content.trim(), parentId);
+      .run(req.user!.id, content, parentId);
     const commentId = Number(result.lastInsertRowid);
     createCommentNotification(parent.user_id, req.user!.id, commentId);
     return commentId;

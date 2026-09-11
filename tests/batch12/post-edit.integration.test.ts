@@ -130,6 +130,7 @@ before(async () => {
   for (const [username, role] of [
     ['author', 'user'], ['outsider', 'user'], ['follower', 'user'],
     ['groupOwner', 'user'], ['groupAdmin', 'user'], ['siteAdmin', 'admin'],
+    ['moderator', 'mod'],
   ] as const) {
     ids[username] = Number(insertUser.run(username, username, `${username}@test.invalid`, role).lastInsertRowid);
   }
@@ -157,8 +158,30 @@ beforeEach(() => {
     DELETE FROM follows;
     DELETE FROM group_members;
     DELETE FROM groups_table;
-    UPDATE users SET profile_visibility = 'public';
+    DELETE FROM user_relationship_blocks;
+    UPDATE users SET profile_visibility = 'public', is_verified = 1, banned = 0;
   `);
+});
+
+test('legacy post migration preserves identity/content and is repeat-safe after edits', async () => {
+  await stopServer();
+  const legacyId = addPost('author', 'Legacy post');
+  const legacy = storedPost(legacyId);
+  db.exec('ALTER TABLE posts DROP COLUMN edited_at; ALTER TABLE posts DROP COLUMN edit_version;');
+  db.close();
+  await startServer();
+  db = new Database(databasePath);
+  db.pragma('foreign_keys = ON');
+  assert.deepEqual(storedPost(legacyId), legacy);
+  const edit = await request(`/api/posts/${legacyId}`, 'author', patch({ content: 'Edited legacy', expectedEditVersion: 0 }));
+  assert.equal(edit.response.status, 200);
+  const edited = storedPost(legacyId);
+  await stopServer();
+  db.close();
+  await startServer();
+  db = new Database(databasePath);
+  db.pragma('foreign_keys = ON');
+  assert.deepEqual(storedPost(legacyId), edited);
 });
 
 test('post edit schema starts posts unedited and owner-only authorization is privacy preserving', async () => {
@@ -170,7 +193,7 @@ test('post edit schema starts posts unedited and owner-only authorization is pri
   assert.equal(storedPost(postId).edit_version, 0);
 
   db.prepare("INSERT INTO follows (follower_id, following_id, status) VALUES (?, ?, 'accepted')").run(ids.follower, ids.author);
-  for (const actor of [undefined, 'outsider', 'follower', 'groupOwner', 'groupAdmin', 'siteAdmin']) {
+  for (const actor of [undefined, 'outsider', 'follower', 'groupOwner', 'groupAdmin', 'siteAdmin', 'moderator']) {
     const result = await request(`/api/posts/${postId}`, actor, patch({ content: 'unauthorized', expectedEditVersion: 0 }));
     assert.equal(result.response.status, actor ? 404 : 401, String(actor));
   }
@@ -181,21 +204,31 @@ test('post edit schema starts posts unedited and owner-only authorization is pri
   assert.equal(owner.body.post.content, 'owner edit');
   assert.equal(owner.body.post.editVersion, 1);
   assert.ok(owner.body.post.editedAt);
+  assert.equal(owner.body.post.canEdit, true);
+  assert.equal((await request(`/api/posts/${postId}`, 'siteAdmin')).body.post.canEdit, false);
+  db.prepare('UPDATE users SET is_verified = 0 WHERE id = ?').run(ids.author);
+  assert.equal((await request(`/api/posts/${postId}`, 'author')).body.post.canEdit, false);
+  assert.equal((await request(`/api/posts/${postId}`, 'author', patch({ content: 'denied', expectedEditVersion: 1 }))).response.status, 403);
+  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(ids.author);
+  assert.equal((await request(`/api/posts/${postId}`, 'author', patch({ content: 'denied', expectedEditVersion: 1 }))).response.status, 403);
 });
 
 test('PATCH validates exact shape, content bounds, immutable fields, and expected version', async () => {
   const postId = addPost('author', 'unchanged');
   const invalidBodies: unknown[] = [
-    null, [], {}, { content: '   ', expectedEditVersion: 0 },
+    null, [], {}, { content: '', expectedEditVersion: 0 }, { content: '   ', expectedEditVersion: 0 },
+    { content: null, expectedEditVersion: 0 }, { content: {}, expectedEditVersion: 0 },
+    { content: [], expectedEditVersion: 0 },
     { content: 'x'.repeat(5001), expectedEditVersion: 0 },
     { content: 123, expectedEditVersion: 0 }, { content: 'valid' },
     { content: 'valid', expectedEditVersion: false },
+    ...[null, '0', -1, 0.5, Number.MAX_SAFE_INTEGER].map(version => ({ content: 'valid', expectedEditVersion: version })),
   ];
   for (const body of invalidBodies) {
     const result = await request(`/api/posts/${postId}`, 'author', patch(body));
     assert.equal(result.response.status, 400, JSON.stringify(body)?.slice(0, 80));
   }
-  for (const key of ['userId', 'groupId', 'parentId', 'repostId', 'repostOf', 'media', 'hidden', 'createdAt']) {
+  for (const key of ['userId', 'groupId', 'parentId', 'repostId', 'repostOf', 'media', 'assetId', 'hidden', 'createdAt', 'editVersion', 'editedAt', 'user_id', 'group_id', 'parent_id', 'repost_of', 'moderation', 'visibility']) {
     const result = await request(`/api/posts/${postId}`, 'author', patch({ content: 'valid', expectedEditVersion: 0, [key]: 1 }));
     assert.equal(result.response.status, 400, key);
     assert.match(result.body.error, /Unknown field/);
@@ -206,10 +239,31 @@ test('PATCH validates exact shape, content bounds, immutable fields, and expecte
     method: 'PATCH', body: '{', headers: { 'content-type': 'application/json' },
   });
   assert.equal(malformed.response.status, 400);
+  const tooLarge = await request(`/api/posts/${postId}`, 'author', patch({ content: 'x'.repeat(70000), expectedEditVersion: 0 }));
+  assert.equal(tooLarge.response.status, 413);
   const maxPost = addPost('author', 'short');
   const maximum = await request(`/api/posts/${maxPost}`, 'author', patch({ content: 'x'.repeat(5000), expectedEditVersion: 0 }));
   assert.equal(maximum.response.status, 200);
   assert.equal(storedPost(maxPost).content.length, 5000);
+});
+
+test('create, comment and edit text share runtime types, trimming and length limits', async () => {
+  const parent = addPost('author', 'Parent');
+  for (const content of ['', '  ', null, 42, {}, [], 'x'.repeat(5001)]) {
+    for (const route of ['/api/posts', `/api/comments/${parent}`]) {
+      const result = await request(route, 'author', { method: 'POST', body: JSON.stringify({ content }) });
+      assert.equal(result.response.status, 400, `${route}: ${JSON.stringify(content).slice(0, 25)}`);
+    }
+  }
+  const created = await request('/api/posts', 'author', { method: 'POST', body: JSON.stringify({ content: '  new text  ' }) });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.body.post.content, 'new text');
+  assert.equal(created.body.post.editVersion, 0);
+  assert.equal(created.body.post.editedAt, null);
+  const noop = await request(`/api/posts/${created.body.post.id}`, 'author', patch({ content: ' new text ', expectedEditVersion: 0 }));
+  assert.equal(noop.body.changed, false);
+  assert.equal(noop.body.post.editedAt, null);
+  assert.equal(noop.body.post.editVersion, 0);
 });
 
 test('profile, group, and reply text are editable while context and repost/hidden/deleted states are protected', async () => {
@@ -263,6 +317,7 @@ test('no-op is stable and stale concurrent edits never overwrite the winner', as
   const loadedB = (await request(`/api/posts/${postId}`, 'author')).body.post;
   assert.equal(loadedA.editVersion, 0);
   assert.equal(loadedB.editVersion, 0);
+  assert.equal(loadedA.editedAt, null);
 
   const first = await request(`/api/posts/${postId}`, 'author', patch({ content: 'client A', expectedEditVersion: loadedA.editVersion }));
   assert.equal(first.response.status, 200);
@@ -274,8 +329,10 @@ test('no-op is stable and stale concurrent edits never overwrite the winner', as
   assert.equal(stale.body.code, 'STALE_POST_EDIT');
   assert.equal(storedPost(postId).content, 'client A');
 
+  await new Promise(resolve => setTimeout(resolve, 5));
   const second = await request(`/api/posts/${postId}`, 'author', patch({ content: 'version two', expectedEditVersion: 1 }));
   assert.equal(second.body.post.editVersion, 2);
+  assert.ok(second.body.post.editedAt > first.body.post.editedAt);
   const beforeNoop = storedPost(postId);
   const noop = await request(`/api/posts/${postId}`, 'author', patch({ content: '  version two  ', expectedEditVersion: 2 }));
   assert.equal(noop.response.status, 200);
@@ -310,22 +367,88 @@ test('editing image-post text preserves media identity, asset lifecycle, and phy
   assert.deepEqual(db.prepare('SELECT * FROM post_media WHERE id = ?').get(mediaId), mediaBefore);
   assert.deepEqual(db.prepare('SELECT * FROM managed_assets WHERE id = ?').get(assetId), assetBefore);
   assert.deepEqual(fs.readFileSync(filePath), bytesBefore);
+  const empty = await request(`/api/posts/${postId}`, 'author', patch({ content: '', expectedEditVersion: 1 }));
+  assert.equal(empty.response.status, 400);
+  assert.equal(storedPost(postId).content, 'image caption');
+  assert.deepEqual(db.prepare('SELECT * FROM post_media WHERE id = ?').get(mediaId), mediaBefore);
+  assert.deepEqual(db.prepare('SELECT * FROM managed_assets WHERE id = ?').get(assetId), assetBefore);
 });
 
 test('open reports freeze text evidence; dismissed reports permit a later edit', async () => {
   const postId = addPost('author', 'reported evidence');
-  const reportId = Number(db.prepare(`
-    INSERT INTO reports (reporter_id, post_id, reason, report_details)
-    VALUES (?, ?, 'Spam', 'test report evidence')
-  `).run(ids.outsider, postId).lastInsertRowid);
+  const reported = await request('/api/reports', 'outsider', { method: 'POST', body: JSON.stringify({ targetType: 'post', targetId: postId, reason: 'Spam', details: 'test report evidence' }) });
+  assert.equal(reported.response.status, 201);
+  const reportId = (db.prepare('SELECT id FROM reports WHERE post_id = ?').get(postId) as any).id;
+  assert.equal((await request(`/api/posts/${postId}`, 'author')).body.post.canEdit, false);
   const blocked = await request(`/api/posts/${postId}`, 'author', patch({ content: 'erase evidence', expectedEditVersion: 0 }));
   assert.equal(blocked.response.status, 409);
   assert.equal(blocked.body.code, 'POST_UNDER_REVIEW');
   assert.equal(storedPost(postId).content, 'reported evidence');
   assert.equal(storedPost(postId).edit_version, 0);
+  const moderation = await request('/api/admin/reports', 'siteAdmin');
+  assert.equal(moderation.body.reports.find((r: any) => r.id === reportId).post_content, 'reported evidence');
+  assert.equal((await request(`/api/posts/${postId}`, 'author', patch({ content: 'reported evidence', expectedEditVersion: 0 }))).response.status, 409);
 
-  db.prepare("UPDATE reports SET status = 'dismissed' WHERE id = ?").run(reportId);
+  await request(`/api/admin/reports/${reportId}`, 'siteAdmin', patch({ status: 'dismissed' }));
   const afterReview = await request(`/api/posts/${postId}`, 'author', patch({ content: 'after review', expectedEditVersion: 0 }));
   assert.equal(afterReview.response.status, 200);
   assert.equal(storedPost(postId).content, 'after review');
+  await request(`/api/admin/reports/${reportId}`, 'siteAdmin', patch({ status: 'resolved' }));
+  assert.equal((await request(`/api/posts/${postId}`, 'author', patch({ content: 'hidden edit', expectedEditVersion: 1 }))).response.status, 404);
+});
+
+test('reply edits fail closed for hidden, private, blocked or banned parent contexts', async () => {
+  const parent = addPost('outsider', 'Parent');
+  const reply = addPost('author', 'My reply', { parentId: parent });
+  const edit = () => request(`/api/posts/${reply}`, 'author', patch({ content: 'inaccessible edit', expectedEditVersion: 0 }));
+  db.prepare('UPDATE posts SET hidden = 1 WHERE id = ?').run(parent);
+  assert.equal((await edit()).response.status, 404);
+  db.prepare('UPDATE posts SET hidden = 0 WHERE id = ?').run(parent);
+  db.prepare("UPDATE users SET profile_visibility = 'private' WHERE id = ?").run(ids.outsider);
+  assert.equal((await edit()).response.status, 404);
+  db.prepare("UPDATE users SET profile_visibility = 'public', banned = 1 WHERE id = ?").run(ids.outsider);
+  assert.equal((await edit()).response.status, 404);
+  db.prepare('UPDATE users SET banned = 0 WHERE id = ?').run(ids.outsider);
+  await request(`/api/users/${ids.outsider}/block`, 'author', { method: 'POST' });
+  assert.equal((await edit()).response.status, 404);
+  assert.equal(storedPost(reply).content, 'My reply');
+  assert.equal(storedPost(reply).edit_version, 0);
+});
+
+test('private profile and public group context are preserved during edits and nested serialization', async () => {
+  db.prepare("UPDATE users SET profile_visibility = 'private' WHERE id = ?").run(ids.author);
+  const groupId = Number(db.prepare('INSERT INTO groups_table (name, owner_id) VALUES (?, ?)').run('Origin', ids.groupOwner).lastInsertRowid);
+  const profileId = addPost('author', 'Private');
+  const groupPostId = addPost('author', 'Public', { groupId });
+  db.prepare("INSERT INTO follows (follower_id, following_id, status) VALUES (?, ?, 'accepted')").run(ids.follower, ids.author);
+  for (const id of [profileId, groupPostId]) {
+    const updated = await request(`/api/posts/${id}`, 'author', patch({ content: 'New text', expectedEditVersion: 0 }));
+    assert.equal(updated.response.status, 200);
+  }
+  assert.equal((await request(`/api/posts/${profileId}`)).response.status, 404);
+  assert.equal((await request(`/api/posts/${profileId}`, 'follower')).body.post.content, 'New text');
+  assert.equal((await request(`/api/posts/${groupPostId}`)).body.post.content, 'New text');
+  await request(`/api/users/${ids.groupOwner}/block`, 'author', { method: 'POST' });
+  const edited = await request(`/api/posts/${groupPostId}`, 'author', patch({ content: 'Neutral origin', expectedEditVersion: 1 }));
+  assert.equal(edited.response.status, 200);
+  assert.equal(edited.body.post.group, null);
+  assert.equal(edited.body.post.groupId, null);
+  const wrapper = addPost('author', '', { repostOf: groupPostId });
+  const nested = (await request(`/api/posts/${wrapper}`, 'author')).body.post.repostedPost;
+  assert.equal(nested.content, 'Neutral origin');
+  assert.equal(nested.group, null);
+  assert.equal(nested.groupId, null);
+});
+
+test('a controlled database failure leaves text and edit metadata unchanged', async () => {
+  const postId = addPost('author', 'Before failure');
+  const before = storedPost(postId);
+  db.exec(`CREATE TRIGGER batch12_fail AFTER UPDATE OF content ON posts BEGIN SELECT RAISE(ABORT, 'controlled edit failure'); END;`);
+  try {
+    const failed = await request(`/api/posts/${postId}`, 'author', patch({ content: 'must roll back', expectedEditVersion: 0 }));
+    assert.equal(failed.response.status, 500);
+    assert.deepEqual(storedPost(postId), before);
+  } finally {
+    db.exec('DROP TRIGGER batch12_fail');
+  }
 });

@@ -15,7 +15,7 @@ export default function PostDetailPage({ user }: Props) {
   const currentRouteKey = useRef(routeKey);
   currentRouteKey.current = routeKey;
   const [post, setPost] = useState<any>(null);
-  const [comments, setComments] = useState<any[]>([]);
+  const comments: any[] = post?.comments || [];
   const [loadState, setLoadState] = useState<RouteLoadState>('loading');
   const [stateRouteKey, setStateRouteKey] = useState(routeKey);
   const [commentsLoadState, setCommentsLoadState] = useState<RouteLoadState | 'idle'>('idle');
@@ -34,7 +34,6 @@ export default function PostDetailPage({ user }: Props) {
     setLoadState('loading');
     setCommentsLoadState('idle');
     setPost(null);
-    setComments([]);
 
     const postId = Number(id);
     if (!Number.isSafeInteger(postId) || postId <= 0) {
@@ -56,11 +55,12 @@ export default function PostDetailPage({ user }: Props) {
     try {
       const response = await api.getComments(postId);
       if (!isCurrent()) return;
-      setComments(response.comments || []);
+      setPost((previous: any) => previous ? applyPostEntityMutation([previous], {
+        type: 'comments-loaded', postId, comments: response.comments || [],
+      })[0] : previous);
       setCommentsLoadState('loaded');
     } catch (error) {
       if (!isCurrent()) return;
-      setComments([]);
       setCommentsLoadState(routeFailureState(error));
     }
   }
@@ -72,12 +72,10 @@ export default function PostDetailPage({ user }: Props) {
     );
     if (removesPrimary) {
       setPost(null);
-      setComments([]);
       setLoadState('unavailable');
       return;
     }
     setPost((previous: any) => previous ? (applyPostEntityMutation([previous], mutation)[0] || null) : previous);
-    setComments(previous => applyPostEntityMutation(previous, mutation));
   }
 
   const visibleLoadState = routeStateForKey(routeKey, stateRouteKey, loadState);

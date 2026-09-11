@@ -407,6 +407,10 @@ app.use((err: Error & { status?: number; type?: string }, _req: express.Request,
     res.status(400).json({ error: 'Request body must contain valid JSON.' });
     return;
   }
+  if (err.status === 413 && err.type === 'entity.too.large') {
+    res.status(413).json({ error: 'Request body is too large.' });
+    return;
+  }
   console.error('[server] Unhandled error:', err.message);
   res.status(500).json({ error: 'Internal server error.' });
 });

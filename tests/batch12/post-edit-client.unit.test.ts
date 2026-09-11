@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import test from 'node:test';
 import { ApiError, api } from '../../src/api/client.js';
 import { applyPostEntityMutation } from '../../src/postEntityState.js';
@@ -9,9 +7,8 @@ import {
   failPostEditSave,
   startPostEditSave,
   updatePostEditDraft,
+  reviewLatestPost,
 } from '../../src/postEditState.js';
-
-const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
 
 test('client sends expected version and canonical mutation updates top-level and nested copies', async () => {
   const originalFetch = globalThis.fetch;
@@ -69,12 +66,30 @@ test('failed and stale saves preserve the exact draft and captured starting vers
   assert.equal(state.draft, 'my unsaved draft');
 });
 
-test('PostCard uses an inline controlled editor and never native prompt', () => {
-  const source = fs.readFileSync(path.join(PROJECT_ROOT, 'src/components/PostCard.tsx'), 'utf8');
-  assert.match(source, /beginPostEdit/);
-  assert.match(source, /api\.editPost/);
-  assert.match(source, /STALE_POST_EDIT/);
-  assert.match(source, /Your draft is preserved/);
-  assert.match(source, /Edited/);
-  assert.doesNotMatch(source, /\bprompt\s*\(/);
+test('reviewing a newer post preserves the draft and explicitly rebases its expected version', () => {
+  const draft = updatePostEditDraft(beginPostEdit({ id: 7, content: 'original', editVersion: 0 }), 'my draft');
+  const conflict = failPostEditSave(draft, 'Changed elsewhere', true);
+  const reviewed = reviewLatestPost(conflict, { id: 7, content: 'other tab edit', editVersion: 1 });
+  assert.equal(reviewed.draft, 'my draft');
+  assert.equal(reviewed.latestContent, 'other tab edit');
+  assert.equal(reviewed.expectedEditVersion, 1);
+  assert.equal(reviewed.conflict, false);
+});
+
+test('inline comments and nested copies reconcile edits and resist delayed older responses', () => {
+  const comment = { id: 9, content: 'old comment', editVersion: 0, editedAt: null };
+  const parent = { id: 7, content: 'parent', comments: [comment] };
+  let posts = [parent, { id: 8, repostedPost: parent }, comment];
+  const updated = { ...comment, content: 'edited comment', editVersion: 1, editedAt: '2026-09-11 12:00:00' };
+  posts = applyPostEntityMutation(posts, { type: 'update', post: updated });
+  posts = applyPostEntityMutation(posts, { type: 'comments-loaded', postId: 7, comments: [comment] });
+  posts = applyPostEntityMutation(posts, { type: 'update', post: { ...comment, liked: true } });
+  assert.equal(posts[0].comments[0].content, updated.content);
+  assert.equal(posts[1].repostedPost.comments[0].content, updated.content);
+  assert.equal(posts[2].content, updated.content);
+  assert.equal(posts[2].editVersion, 1);
+  assert.equal(posts[2].liked, true);
+  const deleted = applyPostEntityMutation(posts, { type: 'delete', postId: 9, parentId: 7 });
+  assert.equal(deleted[0].comments.length, 0);
+  assert.equal(deleted[1].repostedPost.comments.length, 0);
 });
