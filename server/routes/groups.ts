@@ -1,7 +1,8 @@
+import { pageInteger } from '../pagination.js';
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
-import { enrichPost } from './posts.js';
+import { enrichPosts } from './posts.js';
 import { logUsage } from '../usageEvents.js';
 import {
   notMutedByViewerSql,
@@ -78,6 +79,8 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
   `).get(req.params.id, ...ownerVisibility.params) as any;
   if (!group) { res.status(404).json({ error: 'Not found.' }); return; }
 
+  const limit = pageInteger(req.query.limit, 50, 1, 100, 'limit');
+  const after = pageInteger(req.query.memberAfter, 0, 1, Number.MAX_SAFE_INTEGER, 'memberAfter');
   const memberIdentity = userVisibilitySql(req.user as any, 'u', 'identity');
   const memberFull = userVisibilitySql(req.user as any, 'u', 'profile');
   const members = getDb().prepare(`
@@ -85,18 +88,18 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
       (u.id = ?) as is_self,
       CASE WHEN (${memberFull.sql}) THEN 1 ELSE 0 END AS can_view_full
     FROM group_members gm JOIN users u ON gm.user_id = u.id
-    WHERE gm.group_id = ? AND ${memberIdentity.sql}
-    ORDER BY gm.role DESC, u.display_name COLLATE NOCASE
+    WHERE gm.group_id = ? AND u.id > ? AND ${memberIdentity.sql}
+    ORDER BY u.id ASC LIMIT ?
   `).all(
     req.user?.id ?? 0,
     ...memberFull.params,
     req.params.id,
-    ...memberIdentity.params,
+    after, ...memberIdentity.params, limit + 1,
   ) as any[];
 
   const postAuthor = userVisibilitySql(req.user as any, 'u', 'public-context');
   const notMuted = notMutedByViewerSql(req.user as any, 'u');
-  const posts = getDb().prepare(`
+  const posts = after ? [] : getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url
     FROM posts p JOIN users u ON p.user_id = u.id
     WHERE p.group_id = ? AND p.parent_id IS NULL AND p.hidden = 0
@@ -106,8 +109,12 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
   `).all(req.params.id, ...postAuthor.params, ...notMuted.params);
 
   res.json({
-    group: { ...group, memberCount: members.length },
-    members: members.map(member => member.can_view_full ? {
+    group: { ...group,
+      memberCount: (getDb().prepare(`SELECT COUNT(*) AS count FROM group_members gm JOIN users u ON u.id = gm.user_id WHERE gm.group_id = ? AND ${memberIdentity.sql}`).get(group.id, ...memberIdentity.params) as any).count,
+      memberRole: (getDb().prepare('SELECT role FROM group_members WHERE group_id = ? AND user_id = ?').get(group.id, req.user?.id ?? 0) as any)?.role ?? null,
+    },
+    membersPage: { hasMore: members.length > limit, nextCursor: members.length > limit ? members[limit - 1].id : null },
+    members: members.slice(0, limit).map(member => member.can_view_full ? {
       id: member.id,
       username: member.username,
       display_name: member.display_name,
@@ -121,7 +128,7 @@ router.get('/:id', optionalAuth, (req: AuthRequest, res) => {
       avatar_url: member.avatar_url,
       limited: true,
     }),
-    posts: posts.map((r: any) => enrichPost(r, req.user as any)),
+    posts: enrichPosts(posts, req.user as any),
   });
 });
 

@@ -1,3 +1,4 @@
+import { serializeMedia } from '../mediaDto.js';
 import { Router } from 'express';
 import { createHash } from 'node:crypto';
 import { removeRepostNotification } from '../notificationService.js';
@@ -29,17 +30,18 @@ function visibleGroupOrigin(viewer: Viewer | null | undefined, groupId: number |
   return group ? { id: group.id, name: group.name } : null;
 }
 
-function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new Set<number>()): any {
+function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new Set<number>(), batch?: Map<number, any>): any {
+  const cached = batch?.get(row.id);
   visited.add(row.id);
   const commentAuthor = userVisibilitySql(viewer, 'cu', 'public-context');
-  const comments = getDb().prepare(`
+  const comments = cached ? { c: cached.commentCount } : getDb().prepare(`
     SELECT COUNT(*) as c
     FROM posts cp JOIN users cu ON cp.user_id = cu.id
     WHERE cp.parent_id = ? AND cp.hidden = 0 AND ${commentAuthor.sql}
   `).get(row.id, ...commentAuthor.params) as any;
 
   const repostAuthor = userVisibilitySql(viewer, 'ru', 'profile');
-  const reposts = getDb().prepare(`
+  const reposts = cached ? { c: cached.repostCount } : getDb().prepare(`
     SELECT COUNT(*) as c
     FROM posts rp JOIN users ru ON rp.user_id = ru.id
     WHERE rp.repost_of = ? AND rp.hidden = 0 AND ${repostAuthor.sql}
@@ -47,7 +49,7 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
 
   // Get reaction counts grouped by type
   const reactionUser = userVisibilitySql(viewer, 'lu', 'identity');
-  const reactionRows = getDb().prepare(`
+  const reactionRows = cached ? cached.reactions : getDb().prepare(`
     SELECT l.reaction_type, COUNT(*) as c
     FROM likes l JOIN users lu ON l.user_id = lu.id
     WHERE l.post_id = ? AND ${reactionUser.sql}
@@ -60,22 +62,23 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
   let userReaction: string | null = null;
   let liked = false;
   if (viewer?.id) {
-    const ur = getDb().prepare('SELECT reaction_type FROM likes WHERE user_id = ? AND post_id = ?').get(viewer.id, row.id) as any;
+    const ur = cached ? cached.userReaction : getDb().prepare('SELECT reaction_type FROM likes WHERE user_id = ? AND post_id = ?').get(viewer.id, row.id) as any;
     if (ur) { userReaction = ur.reaction_type; liked = true; }
   }
 
   let repostedPost = null;
   if (row.repost_of && depth < MAX_REPOST_DEPTH && !visited.has(row.repost_of)) {
-    const rp = getDb().prepare(`
+    const rp = batch?.get(row.repost_of)?.row ?? getDb().prepare(`
       SELECT p.*, u.username, u.display_name, u.avatar_url
       FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = ?
     `).get(row.repost_of) as any;
-    if (rp && canViewPost(viewer, rp.id)) repostedPost = enrichPost(rp, viewer, depth + 1, visited);
+    if (rp && canViewPost(viewer, rp.id)) repostedPost = enrichPost(rp, viewer, depth + 1, visited, batch);
   }
   const group = visibleGroupOrigin(viewer, row.group_id ?? null);
 
   return {
     id: row.id,
+    ...(cached ? { media: cached.media } : {}),
     content: row.content,
     userId: row.user_id,
     username: row.username,
@@ -102,6 +105,44 @@ function enrichPost(row: any, viewer?: Viewer | null, depth = 0, visited = new S
       (viewer.role === 'admin' || !!(viewer as Viewer & { is_verified?: number }).is_verified) &&
       postEditRestriction(viewer, row) === null,
   };
+}
+
+/** Batches counts, reactions, viewer state and media across a bounded page and
+ * at most three nested repost levels. Authorization still uses the central policy.
+ */
+export function enrichPosts(rows: any[], viewer?: Viewer | null): any[] {
+  if (!rows.length) return [];
+  if (rows.length > 100) throw new Error('Post enrichment page exceeds 100 rows.');
+  const db = getDb();
+  const batch = new Map<number, any>();
+  const add = (row: any) => batch.set(row.id, { row, commentCount: 0, repostCount: 0, reactions: [], userReaction: null, media: [] });
+  rows.forEach(add);
+  let frontier = rows;
+  for (let depth = 0; depth < MAX_REPOST_DEPTH; depth++) {
+    const ids = [...new Set(frontier.map(row => row.repost_of).filter(id => id && !batch.has(id)))];
+    if (!ids.length) break;
+    frontier = db.prepare(`SELECT p.*, u.username, u.display_name, u.avatar_url FROM posts p
+      JOIN users u ON u.id = p.user_id WHERE p.id IN (${ids.map(() => '?').join(',')})`).all(...ids) as any[];
+    frontier.forEach(add);
+  }
+  const ids = [...batch.keys()];
+  const placeholders = ids.map(() => '?').join(',');
+  const comments = userVisibilitySql(viewer, 'u', 'public-context');
+  const reposts = userVisibilitySql(viewer, 'u', 'profile');
+  const reactions = userVisibilitySql(viewer, 'u', 'identity');
+  for (const row of db.prepare(`SELECT p.parent_id AS id, COUNT(*) AS count FROM posts p JOIN users u ON u.id = p.user_id
+    WHERE p.parent_id IN (${placeholders}) AND p.hidden = 0 AND ${comments.sql} GROUP BY p.parent_id`).all(...ids, ...comments.params) as any[]) batch.get(row.id).commentCount = row.count;
+  for (const row of db.prepare(`SELECT p.repost_of AS id, COUNT(*) AS count FROM posts p JOIN users u ON u.id = p.user_id
+    WHERE p.repost_of IN (${placeholders}) AND p.hidden = 0 AND ${reposts.sql} GROUP BY p.repost_of`).all(...ids, ...reposts.params) as any[]) batch.get(row.id).repostCount = row.count;
+  for (const row of db.prepare(`SELECT l.post_id, l.reaction_type, COUNT(*) AS c FROM likes l JOIN users u ON u.id = l.user_id
+    WHERE l.post_id IN (${placeholders}) AND ${reactions.sql} GROUP BY l.post_id, l.reaction_type`).all(...ids, ...reactions.params) as any[]) batch.get(row.post_id).reactions.push(row);
+  if (viewer?.id) for (const row of db.prepare(`SELECT post_id, reaction_type FROM likes WHERE user_id = ? AND post_id IN (${placeholders})`).all(viewer.id, ...ids) as any[]) batch.get(row.post_id).userReaction = row;
+  for (const row of db.prepare(`SELECT * FROM post_media WHERE post_id IN (${placeholders}) ORDER BY post_id, sort_order, id`).all(...ids) as any[]) {
+    const owner = batch.get(row.post_id).row.user_id;
+    batch.get(row.post_id).media.push({ ...serializeMedia(row), canEditAlt: !!viewer && viewer.id === owner &&
+      (viewer.role === 'admin' || !!(viewer as Viewer & { is_verified?: number }).is_verified) && row.media_type === 'image' });
+  }
+  return rows.map(row => enrichPost(row, viewer, 0, new Set(), batch));
 }
 
 const POST_SUBMISSION_KEY = /^[A-Za-z0-9_-]{16,100}$/;

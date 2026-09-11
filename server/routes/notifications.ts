@@ -1,7 +1,8 @@
+import { pageInteger } from '../pagination.js';
 import { Router } from 'express';
 import { requireAuth, type AuthRequest } from '../middleware.js';
 import {
-  listNotifications,
+  listNotificationPage,
   markAllNotificationsRead,
   markNotificationRead,
   unreadNotificationCount,
@@ -11,7 +12,7 @@ const router = Router();
 
 // GET /api/notifications
 router.get('/', requireAuth, (req: AuthRequest, res) => {
-  res.json({ notifications: listNotifications(req.user!) });
+  res.json(listNotificationPage(req.user!, pageInteger(req.query.limit, 50, 1, 100, 'limit'), pageInteger(req.query.before, 0, 1, Number.MAX_SAFE_INTEGER, 'before')));
 });
 
 // GET /api/notifications/unread-count

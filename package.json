@@ -25,7 +25,8 @@
     "test:batch10": "tsx --test --test-concurrency=1 tests/batch10/*.test.ts",
     "test:batch11": "tsx --test --test-concurrency=1 tests/batch11/*.test.ts",
     "test:batch12": "tsx --test --test-concurrency=1 tests/batch12/*.test.ts",
-    "test:batch13": "tsx --test --test-concurrency=1 tests/batch13/*.test.ts"
+    "test:batch13": "tsx --test --test-concurrency=1 tests/batch13/*.test.ts",
+    "test:batch14": "tsx --test --test-concurrency=1 tests/batch14/*.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -36,6 +37,7 @@
     "express-rate-limit": "^8.7.0",
     "express-session": "^1.19.0",
     "helmet": "^8.1.0",
+    "ipaddr.js": "^2.2.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "passport": "^0.7.0",

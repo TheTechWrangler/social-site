@@ -40,12 +40,28 @@ export default function GroupPage({ user }: { user: any }) {
     return () => requestGate.current.invalidate();
   }, [routeKey]);
 
+  const [memberCursor, setMemberCursor] = useState<number | null>(null);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  async function loadMoreMembers() {
+    if (!memberCursor || loadingMembers) return;
+    const isCurrent = requestGate.current.capture();
+    setLoadingMembers(true);
+    try {
+      const response = await api.getGroup(Number(id), memberCursor);
+      if (!isCurrent()) return;
+      setMembers(previous => [...previous, ...response.members.filter(m => !previous.some(known => known.id === m.id))]);
+      setMemberCursor(response.membersPage?.nextCursor ?? null);
+    } catch { if (isCurrent()) setMembershipError('Could not load members.'); }
+    finally { if (isCurrent()) setLoadingMembers(false); }
+  }
+
   async function loadGroup() {
     const requestedRouteKey = routeKey;
     if (currentRouteKey.current !== requestedRouteKey) return;
     const isCurrent = requestGate.current.begin();
     setStateRouteKey(requestedRouteKey);
     setLoadState('loading');
+    setLoadingMembers(false); setMemberCursor(null);
     setGroup(null);
     setMembers([]);
     setPosts([]);
@@ -58,6 +74,7 @@ export default function GroupPage({ user }: { user: any }) {
       const r = await api.getGroup(groupId);
       if (!isCurrent()) return;
       setGroup(r.group); setMembers(r.members); setPosts(r.posts);
+      setMemberCursor(r.membersPage?.nextCursor ?? null);
       setLoadState('loaded');
     } catch (error) {
       if (isCurrent()) setLoadState(routeFailureState(error));
@@ -87,10 +104,10 @@ export default function GroupPage({ user }: { user: any }) {
   );
   if (!group) return null;
 
-  const isMember = members.some((m: any) => m.id === user.id);
+  const isMember = group.memberRole !== undefined ? group.memberRole !== null : members.some((m: any) => m.id === user.id);
   const isOwner = group.owner_id === user.id;
   const isSiteAdmin = user.role === 'admin';
-  const canManage = isOwner || isSiteAdmin ||
+  const canManage = isOwner || isSiteAdmin || group.memberRole === 'admin' ||
     members.some((m: any) => m.id === user.id && m.role === 'admin');
   const canResolveOwnership = isOwner || isSiteAdmin;
   const eligibleTransferMembers = members.filter((member: any) => member.id !== group.owner_id);
@@ -229,10 +246,11 @@ export default function GroupPage({ user }: { user: any }) {
       {/* Members section */}
       <div className="group-members-section">
         <button className="group-members-toggle btn-ghost" onClick={() => setShowMembers(!showMembers)}>
-          {showMembers ? '▾' : '▸'} Members ({members.length})
+          {showMembers ? '▾' : '▸'} Members ({group.memberCount ?? members.length})
         </button>
         {showMembers && (
           <div className="group-members-list">
+            {memberCursor && <button className="btn btn-ghost" disabled={loadingMembers} onClick={() => void loadMoreMembers()}>Load more members</button>}
             {members.map((m: any) => (
               <div key={m.id} className="group-member-row">
                 <div className="group-member-info">

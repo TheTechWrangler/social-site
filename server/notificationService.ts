@@ -1,5 +1,6 @@
+import { notificationEligibility } from './notificationVisibility.js';
 import { getDb } from './database.js';
-import { canViewGroup, canViewPost, userVisibilitySql, type Viewer } from './visibility.js';
+import { canViewGroup, canViewPost, type Viewer } from './visibility.js';
 
 export type NotificationType = 'follow' | 'like' | 'comment' | 'repost' | 'group_invite';
 
@@ -104,16 +105,18 @@ export function removeNotificationsBetweenUsers(userA: number, userB: number): v
 
 function loadCandidateRows(
   viewer: Viewer,
-  options: { notificationId?: number; unreadOnly?: boolean } = {},
+  options: { notificationId?: number; unreadOnly?: boolean; before?: number; limit?: number } = {},
 ): NotificationRow[] {
-  const actorVisibility = userVisibilitySql(viewer, 'actor', 'identity');
-  const conditions = ['n.user_id = ?', actorVisibility.sql];
-  const values: Array<number | string> = [viewer.id, ...actorVisibility.params];
+  const eligibility = notificationEligibility(viewer);
+  const conditions = [eligibility.sql];
+  const values: Array<number | string> = [...eligibility.params];
   if (options.notificationId !== undefined) {
     conditions.push('n.id = ?');
     values.push(options.notificationId);
   }
   if (options.unreadOnly) conditions.push('n.read = 0');
+  if (options.before) { conditions.push('n.id < ?'); values.push(options.before); }
+  if (options.limit) values.push(options.limit);
 
   return getDb().prepare(`
     SELECT n.*,
@@ -127,7 +130,8 @@ function loadCandidateRows(
     LEFT JOIN posts source ON source.id = n.post_id
     LEFT JOIN posts parent ON parent.id = source.parent_id
     WHERE ${conditions.join(' AND ')}
-    ORDER BY n.created_at DESC, n.id DESC
+    ORDER BY n.id DESC
+    ${options.limit ? 'LIMIT ?' : ''}
   `).all(...values) as NotificationRow[];
 }
 
@@ -183,15 +187,22 @@ function toDto(row: NotificationRow, viewer: Viewer): NotificationDto {
   };
 }
 
+export function listNotificationPage(viewer: Viewer, limit = 50, before = 0) {
+  // Eligibility is enforced in SQL before paging; DTO hydration sees at most limit rows.
+  const candidates = loadCandidateRows(viewer, { limit: limit + 1, before });
+  const page = candidates.slice(0, limit);
+  return { notifications: page.map(row => toDto(row, viewer)),
+    hasMore: candidates.length > limit, nextCursor: candidates.length > limit ? page.at(-1)!.id : null };
+}
 export function listNotifications(viewer: Viewer, limit = 50): NotificationDto[] {
-  return loadCandidateRows(viewer)
-    .filter(row => isVisible(row, viewer))
-    .slice(0, limit)
-    .map(row => toDto(row, viewer));
+  return listNotificationPage(viewer, limit).notifications;
 }
 
 export function unreadNotificationCount(viewer: Viewer): number {
-  return loadCandidateRows(viewer, { unreadOnly: true }).filter(row => isVisible(row, viewer)).length;
+  const policy = notificationEligibility(viewer);
+  return (getDb().prepare(`SELECT COUNT(*) AS count FROM notifications n
+    JOIN users actor ON actor.id = n.actor_id LEFT JOIN posts source ON source.id = n.post_id
+    WHERE n.read = 0 AND ${policy.sql}`).get(...policy.params) as any).count;
 }
 
 export function markNotificationRead(viewer: Viewer, notificationId: number): { found: boolean; changed: boolean } {
@@ -204,16 +215,9 @@ export function markNotificationRead(viewer: Viewer, notificationId: number): { 
 }
 
 export function markAllNotificationsRead(viewer: Viewer): number {
-  const ids = loadCandidateRows(viewer, { unreadOnly: true })
-    .filter(row => isVisible(row, viewer))
-    .map(row => row.id);
-  if (ids.length === 0) return 0;
-  const db = getDb();
-  const markAll = db.transaction(() => {
-    const mark = db.prepare('UPDATE notifications SET read = 1 WHERE id = ? AND user_id = ? AND read = 0');
-    let changed = 0;
-    for (const id of ids) changed += mark.run(id, viewer.id).changes;
-    return changed;
-  });
-  return markAll();
+  const policy = notificationEligibility(viewer);
+  return getDb().prepare(`UPDATE notifications SET read = 1 WHERE id IN (
+    SELECT n.id FROM notifications n JOIN users actor ON actor.id = n.actor_id
+    LEFT JOIN posts source ON source.id = n.post_id WHERE n.read = 0 AND ${policy.sql}
+  )`).run(...policy.params).changes;
 }

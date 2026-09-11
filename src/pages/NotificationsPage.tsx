@@ -39,9 +39,24 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
   const [marking, setMarking] = useState(false);
   const [markError, setMarkError] = useState('');
 
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
   useEffect(() => {
-    api.getNotifications().then(r => setNotifs(r.notifications)).catch(() => {});
+    let current = true;
+    api.getNotifications().then(r => { if (current) { setNotifs(r.notifications); setCursor(r.nextCursor ?? null); } })
+      .catch(() => { if (current) setMarkError('Could not load notifications.'); });
+    return () => { current = false; };
   }, []);
+  async function loadMore() {
+    if (!cursor || loading || marking) return;
+    setLoading(true);
+    try {
+      const result = await api.getNotifications(cursor);
+      setNotifs(previous => [...previous, ...result.notifications.filter(n => !previous.some(known => known.id === n.id))]);
+      setCursor(result.nextCursor ?? null);
+    } catch { setMarkError('Could not load notifications.'); }
+    finally { setLoading(false); }
+  }
 
   const hasUnread = notifs.some(n => !n.read);
 
@@ -75,11 +90,12 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
       <div className="notifications-header">
         <h2>Notifications</h2>
         {hasUnread && (
-          <button className="btn btn-sm" onClick={handleMarkAllRead} disabled={marking}>
+          <button className="btn btn-sm" onClick={handleMarkAllRead} disabled={marking || loading}>
             {marking ? 'Marking…' : 'Mark all read'}
           </button>
         )}
       </div>
+      {cursor && <button className="btn btn-ghost" disabled={loading || marking} onClick={() => void loadMore()}>Load more notifications</button>}
       {markError && <p className="error-msg" role="alert">{markError}</p>}
       {notifs.length === 0 ? (
         <p className="muted">No notifications yet.</p>

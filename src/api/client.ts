@@ -139,7 +139,7 @@ export const api = {
   // Feed
   feed: (params?: { mode?: string; limit?: number; offset?: number; level?: string; exposure?: string }) => {
     const qs = new URLSearchParams(params as any).toString();
-    return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string }>(`/feed?${qs}`);
+    return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string; pagination?: { hasMore: boolean; nextOffset: number | null } }>(`/feed?${qs}`);
   },
   replenishFeed: () =>
     request<{ ok: boolean; started?: boolean; sourcesChecked: number; newItems?: number; nextAvailableAt?: string }>('/feed/replenish', { method: 'POST' }),
@@ -193,7 +193,7 @@ export const api = {
   // Comments
   addComment: (postId: number, content: string) =>
     request<{ comment: any }>(`/comments/${postId}`, { method: 'POST', body: JSON.stringify({ content }) }),
-  getComments: (postId: number) => request<{ comments: any[] }>(`/comments/${postId}`),
+  getComments: (postId: number, after?: number) => request<{ comments: any[]; hasMore?: boolean; nextCursor?: number | null }>(`/comments/${postId}${after ? '?after=' + after : ''}`),
 
   // Reposts
   repost: (postId: number) => request<{ post: any }>(`/reposts/${postId}`, { method: 'POST' }),
@@ -202,7 +202,7 @@ export const api = {
   createGroup: (name: string, description: string) =>
     request<{ group: any }>('/groups', { method: 'POST', body: JSON.stringify({ name, description }) }),
   getGroups: (q?: string) => request<{ groups: any[] }>(`/groups${q ? `?q=${encodeURIComponent(q)}` : ''}`),
-  getGroup: (id: number) => request<{ group: any; members: any[]; posts: any[] }>(`/groups/${id}`),
+  getGroup: (id: number, memberAfter?: number) => request<{ group: any; members: any[]; posts: any[]; membersPage?: { nextCursor: number | null } }>(`/groups/${id}${memberAfter ? '?memberAfter=' + memberAfter : ''}`),
   joinGroup: (id: number) => request<{ ok: boolean }>(`/groups/${id}/join`, { method: 'POST' }),
   leaveGroup: (id: number) => request<{ ok: boolean }>(`/groups/${id}/leave`, { method: 'POST' }),
   transferGroupOwnership: (groupId: number, userId: number) =>
@@ -214,13 +214,13 @@ export const api = {
     request<{ ok: boolean }>(`/groups/${groupId}/members/${userId}`, { method: 'DELETE' }),
 
   // Notifications
-  getNotifications: () => request<{ notifications: NotificationDto[] }>('/notifications'),
+  getNotifications: (before?: number) => request<{ notifications: NotificationDto[]; nextCursor?: number | null }>(`/notifications${before ? '?before=' + before : ''}`),
   unreadCount: () => request<{ count: number }>('/notifications/unread-count'),
   readAll: () => request<{ ok: boolean; changed: number }>('/notifications/read-all', { method: 'POST' }),
   markNotificationRead: (id: number) => request<{ ok: boolean; changed: boolean }>(`/notifications/${id}/read`, { method: 'PATCH' }),
 
   // Direct Messages
-  getConversations: () => request<{ conversations: any[] }>('/messages'),
+  getConversations: (offset = 0) => request<{ conversations: any[]; unreadConversationCount?: number; nextOffset?: number | null }>(`/messages?offset=${offset}`),
   startConversation: (userId: number) =>
     request<{ conversationId: number }>('/messages', { method: 'POST', body: JSON.stringify({ userId }) }),
   getMessages: (conversationId: number, before?: number) =>

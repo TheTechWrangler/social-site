@@ -1,3 +1,4 @@
+import { feedTimeSql } from '../feedTime.js';
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
@@ -8,7 +9,7 @@ import {
   userVisibilitySql,
 } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
-import { boundedInteger } from '../pagination.js';
+import { pageInteger } from '../pagination.js';
 
 const router = Router();
 const DM_MAX_LENGTH = 2000;
@@ -55,83 +56,59 @@ function findExisting1on1(userA: number, userB: number): number | null {
   return row?.conversation_id ?? null;
 }
 
-// GET /api/messages/unread-count  (must be before /:conversationId)
-router.get('/unread-count', requireAuth, (req: AuthRequest, res) => {
-  const userId = req.user!.id;
-  const visibleOther = userVisibilitySql(req.user, 'u', 'identity');
-  const rows = getDb().prepare(`
-    SELECT m.conversation_id, m.last_read_message_id,
-      (SELECT COUNT(*) FROM dm_messages
-       WHERE conversation_id = m.conversation_id
-         AND deleted_at IS NULL
-         AND sender_id != ?
-         AND (m.last_read_message_id IS NULL OR id > m.last_read_message_id)
-      ) as unread
-    FROM dm_conversation_members m
+function unreadConversationCount(viewer: NonNullable<AuthRequest['user']>): number {
+  const visible = userVisibilitySql(viewer, 'u', 'identity');
+  return (getDb().prepare(`
+    SELECT COUNT(*) AS count FROM dm_conversation_members m
     WHERE m.user_id = ? AND m.deleted_at IS NULL
-      AND EXISTS (
-        SELECT 1 FROM dm_conversation_members other_m
-        JOIN users u ON u.id = other_m.user_id
-        WHERE other_m.conversation_id = m.conversation_id
-          AND other_m.user_id != ?
-          AND other_m.deleted_at IS NULL
-          AND ${visibleOther.sql}
-      )
-  `).all(userId, userId, userId, ...visibleOther.params) as any[];
-  const total = rows.reduce((sum, r) => sum + (r.unread > 0 ? 1 : 0), 0);
-  res.json({ count: total });
+      AND EXISTS (SELECT 1 FROM dm_messages message
+        WHERE message.conversation_id = m.conversation_id AND message.deleted_at IS NULL
+          AND message.sender_id != ? AND message.id > COALESCE(m.last_read_message_id, 0))
+      AND EXISTS (SELECT 1 FROM dm_conversation_members other_m JOIN users u ON u.id = other_m.user_id
+        WHERE other_m.conversation_id = m.conversation_id AND other_m.user_id != ?
+          AND other_m.deleted_at IS NULL AND ${visible.sql})
+  `).get(viewer.id, viewer.id, viewer.id, ...visible.params) as any).count;
+}
+router.get('/unread-count', requireAuth, (req: AuthRequest, res) => {
+  res.json({ count: unreadConversationCount(req.user!) });
 });
 
-// GET /api/messages — list my conversations
+// SQL pages visible conversations before hydration; unread badge is not a page count.
 router.get('/', requireAuth, (req: AuthRequest, res) => {
-  const userId = req.user!.id;
-  const db = getDb();
-
-  const convIds = (db.prepare(
-    `SELECT conversation_id FROM dm_conversation_members
-     WHERE user_id = ? AND deleted_at IS NULL
-     ORDER BY conversation_id DESC`
-  ).all(userId) as any[]).map(r => r.conversation_id);
-
-  const conversations = convIds.map(cid => {
-    const me = db.prepare(
-      'SELECT last_read_message_id FROM dm_conversation_members WHERE conversation_id = ? AND user_id = ?'
-    ).get(cid, userId) as any;
-
-    const other = getVisibleOther(cid, req.user!);
-    if (!other) return null;
-
-    const lastMsg = getLastMessagePreview(cid);
-
-    const unread = (db.prepare(`
-      SELECT COUNT(*) as c FROM dm_messages
-      WHERE conversation_id = ? AND deleted_at IS NULL AND sender_id != ?
-        AND (? IS NULL OR id > ?)
-    `).get(cid, userId, me?.last_read_message_id ?? null, me?.last_read_message_id ?? null) as any)?.c ?? 0;
-
-    return {
-      id: cid,
-      otherUser: {
-        id: other.id,
-        username: other.username,
-        displayName: other.display_name,
-        avatarUrl: other.avatar_url,
-      },
-      lastMessage: lastMsg,
-      unreadCount: unread,
-    };
-  }).filter(Boolean);
-
-  // Sort: conversations with messages by last message desc, then by conversation id desc
-  conversations.sort((a: any, b: any) => {
-    const aTime = a.lastMessage?.createdAt ?? '';
-    const bTime = b.lastMessage?.createdAt ?? '';
-    return bTime.localeCompare(aTime)
-      || Number(b.lastMessage?.id || 0) - Number(a.lastMessage?.id || 0)
-      || b.id - a.id;
-  });
-
-  res.json({ conversations });
+  const viewer = req.user!;
+  const limit = pageInteger(req.query.limit, 50, 1, 100, 'limit');
+  const offset = pageInteger(req.query.offset, 0, 0, 100000, 'offset');
+  const visible = userVisibilitySql(viewer, 'u', 'identity');
+  const rows = getDb().prepare(`
+    SELECT m.conversation_id, u.id AS other_id, u.username, u.display_name, u.avatar_url,
+      last.id AS message_id, last.sender_id, last.body, last.created_at,
+      (SELECT COUNT(*) FROM dm_messages unread
+       WHERE unread.conversation_id = m.conversation_id AND unread.deleted_at IS NULL
+         AND unread.sender_id != ? AND unread.id > COALESCE(m.last_read_message_id, 0)) AS unread_count
+    FROM dm_conversation_members m
+    JOIN users u ON u.id = (
+      SELECT other_m.user_id FROM dm_conversation_members other_m JOIN users u ON u.id = other_m.user_id
+      WHERE other_m.conversation_id = m.conversation_id AND other_m.user_id != ?
+        AND other_m.deleted_at IS NULL AND ${visible.sql}
+      ORDER BY other_m.user_id LIMIT 1
+    )
+    LEFT JOIN dm_messages last ON last.id = (
+      SELECT id FROM dm_messages WHERE conversation_id = m.conversation_id
+        AND deleted_at IS NULL ORDER BY id DESC LIMIT 1
+    )
+    WHERE m.user_id = ? AND m.deleted_at IS NULL
+    ORDER BY ${feedTimeSql('last.created_at')} DESC, last.id DESC, m.conversation_id DESC
+    LIMIT ? OFFSET ?
+  `).all(viewer.id, viewer.id, ...visible.params, viewer.id, limit + 1, offset) as any[];
+  const conversations = rows.slice(0, limit).map(row => ({
+    id: row.conversation_id,
+    otherUser: { id: row.other_id, username: row.username, displayName: row.display_name, avatarUrl: row.avatar_url },
+    lastMessage: row.message_id ? { id: row.message_id, senderId: row.sender_id, body: row.body, createdAt: row.created_at } : null,
+    unreadCount: row.unread_count,
+  }));
+  res.json({ conversations, unreadConversationCount: unreadConversationCount(viewer),
+    hasMore: rows.length > limit && offset + limit <= 100000,
+    nextOffset: rows.length > limit && offset + limit <= 100000 ? offset + limit : null });
 });
 
 // POST /api/messages — start or find a 1:1 conversation
@@ -185,8 +162,8 @@ router.get('/:conversationId', requireAuth, (req: AuthRequest, res) => {
   const membership = getMembership(conversationId, userId);
   if (!membership) { res.status(404).json({ error: 'Conversation not found.' }); return; }
 
-  const before = boundedInteger(req.query.before, 0, 1, Number.MAX_SAFE_INTEGER) || null;
-  const limit = boundedInteger(req.query.limit, 50, 1, 50);
+  const before = pageInteger(req.query.before, 0, 1, Number.MAX_SAFE_INTEGER) || null;
+  const limit = pageInteger(req.query.limit, 50, 1, 50);
 
   const db = getDb();
   const other = getVisibleOther(conversationId, req.user!);
@@ -199,15 +176,15 @@ router.get('/:conversationId', requireAuth, (req: AuthRequest, res) => {
         SELECT id, sender_id, body, deleted_at, created_at FROM dm_messages
         WHERE conversation_id = ? AND id < ?
         ORDER BY id DESC LIMIT ?
-      `).all(conversationId, before, limit)
+      `).all(conversationId, before, limit + 1)
     : db.prepare(`
         SELECT id, sender_id, body, deleted_at, created_at FROM dm_messages
         WHERE conversation_id = ?
         ORDER BY id DESC LIMIT ?
-      `).all(conversationId, limit);
+      `).all(conversationId, limit + 1);
 
   // Return oldest-first for display; query is newest-first for cursor efficiency
-  const messages = (msgs as any[]).reverse().map(m => ({
+  const messages = (msgs as any[]).slice(0, limit).reverse().map(m => ({
     id: m.id,
     senderId: m.sender_id,
     body: m.deleted_at ? null : m.body,
@@ -217,7 +194,7 @@ router.get('/:conversationId', requireAuth, (req: AuthRequest, res) => {
 
   res.json({
     messages,
-    hasMore: msgs.length === limit,
+    hasMore: msgs.length > limit,
     otherUser: {
       id: other.id,
       username: other.username,

@@ -15,7 +15,7 @@ initializeDatabase();
 
 const sources = getSources();
 const active = sources.filter(s => s.is_active);
-console.log(`[rss:fetch] ${active.length}/${sources.length} active sources. Fetching...\n`);
+console.log(`[rss:fetch] ${active.length}/${sources.length} active sources. Refreshing up to 20 least-recently-attempted sources...\n`);
 
 (async () => {
   const results = await fetchAllSources();

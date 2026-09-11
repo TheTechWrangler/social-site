@@ -821,7 +821,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
           <div style={{ margin: '16px 0', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={fetchAll} disabled={fetchingAll}>
-              {fetchingAll ? 'Starting…' : '🔄 Repopulate World Feed'}
+              {fetchingAll ? 'Starting…' : '🔄 Refresh next 20 sources'}
             </button>
             <button className="btn" onClick={checkFetchAllStatus} disabled={checkingStatus} title="Check background fetch status">
               {checkingStatus ? 'Checking…' : '📊 Check Status'}
@@ -894,7 +894,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                 <td className="muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.url}</td>
                 <td>{s.category}</td>
                 <td>{s.is_active ? '✅' : '❌'}</td>
-                <td className="muted">{s.last_fetched_at || 'never'}</td>
+                <td className="muted">{s.last_fetched_at || 'never'}{s.last_fetch_error && <p className="error-msg">Last attempt: {s.last_fetch_error}</p>}</td>
                 <td>
                   <button className="btn btn-sm" onClick={() => fetchSource(s.id)}>Fetch</button>
                   <button className="btn btn-sm" onClick={() => toggleSource(s.id, !!s.is_active)}>{s.is_active ? 'Deactivate' : 'Activate'}</button>

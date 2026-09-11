@@ -13,6 +13,8 @@ export default function WorldPage({ user }: { user?: any }) {
   const [selectedItemType, setSelectedItemType] = useState('');
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [feedError, setFeedError] = useState('');
   const [blockedSources, setBlockedSources] = useState<any[]>([]);
   const [showBlockedPanel, setShowBlockedPanel] = useState(false);
   const [mutationError, setMutationError] = useState('');
@@ -23,7 +25,7 @@ export default function WorldPage({ user }: { user?: any }) {
   const currentAccountId = useRef(user?.id ?? null);
   currentAccountId.current = user?.id ?? null;
 
-  const [discussions, setDiscussions] = useState<Record<number, { open: boolean; comments: any[]; loading: boolean; body: string }>>({});
+  const [discussions, setDiscussions] = useState<Record<number, { open: boolean; comments: any[]; loading: boolean; body: string; nextCursor?: number | null }>>({});
 
   const { confirmAction, actionDialog } = useActionDialog(user?.id);
 
@@ -51,6 +53,7 @@ export default function WorldPage({ user }: { user?: any }) {
     const requestedAccountId = user?.id ?? null;
     const isCurrent = feedGate.current.begin();
     setLoading(true);
+    setFeedError('');
     try {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(p * PAGE_SIZE) });
       if (cat) params.set('category', cat);
@@ -58,9 +61,11 @@ export default function WorldPage({ user }: { user?: any }) {
       if (itemType) params.set('itemType', itemType);
       const response = await api.get<any>(`/world-feed?${params}`);
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
+      setPage(p);
+      setHasMore(response.pagination?.hasMore ?? response.items.length === PAGE_SIZE);
       if (p === 0) setItems(response.items);
-      else setItems(previous => [...previous, ...response.items]);
-    } catch (e) { /* keep the current feed on refresh failure */ }
+      else setItems(previous => [...previous, ...response.items.filter((item: any) => !previous.some(known => known.id === item.id))]);
+    } catch (e) { if (isCurrent()) setFeedError('Could not load World items. Please retry.'); }
     finally {
       if (isCurrent() && currentAccountId.current === requestedAccountId) setLoading(false);
     }
@@ -76,7 +81,7 @@ export default function WorldPage({ user }: { user?: any }) {
   }
 
   function handleFilter(cat: string, srcId = '', itemType = '') { setSelectedCategory(cat); setSelectedSource(srcId); setSelectedItemType(itemType); setPage(0); loadFeed(cat, srcId, 0, itemType || undefined); }
-  function loadMore() { const next = page + 1; setPage(next); loadFeed(selectedCategory, selectedSource, next, selectedItemType || undefined); }
+  function loadMore() { if (loading) return; const next = page + 1; loadFeed(selectedCategory, selectedSource, next, selectedItemType || undefined); }
 
   async function handleBlock(sourceId: number, sourceName: string) {
     return confirmAction({ title: "Block source", description: `Block "${sourceName}"? You will no longer see World Feed items or discussions from this source.` }, async () => {
@@ -87,6 +92,7 @@ export default function WorldPage({ user }: { user?: any }) {
       await api.post<any>(`/world-feed/sources/${sourceId}/block`);
       setItems(prev => prev.filter(i => i.sourceId !== sourceId));
       await loadBlockedSources();
+      await loadFeed(selectedCategory, selectedSource, 0, selectedItemType || undefined);
     } catch (e: any) {
       setMutationError(e.message || 'Could not block source.');
      throw e; } finally {
@@ -113,8 +119,23 @@ export default function WorldPage({ user }: { user?: any }) {
   async function toggleDiscussion(itemId: number) {
     const d = discussions[itemId];
     if (d?.open) { setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], open: false } })); return; }
-    setDiscussions(prev => ({ ...prev, [itemId]: { open: true, comments: prev[itemId]?.comments || [], loading: true, body: prev[itemId]?.body || '' } }));
-    try { const r = await api.get<any>(`/world-feed/${itemId}/comments`); setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], comments: r.comments, loading: false } })); } catch (e) { setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], loading: false } })); }
+    await loadDiscussion(itemId);
+  }
+
+  async function loadDiscussion(itemId: number, after?: number) {
+    const account = currentAccountId.current;
+    setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], open: true, comments: prev[itemId]?.comments || [], loading: true, body: prev[itemId]?.body || '' } }));
+    try {
+      const r = await api.get<any>(`/world-feed/${itemId}/comments${after ? '?after=' + after : ''}`);
+      if (currentAccountId.current !== account) return;
+      setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId],
+        comments: after ? [...prev[itemId].comments, ...r.comments.filter((c: any) => !prev[itemId].comments.some(known => known.id === c.id))] : r.comments,
+        nextCursor: r.nextCursor ?? null, loading: false } }));
+    } catch {
+      if (currentAccountId.current !== account) return;
+      setMutationError('Could not load discussion. Please retry.');
+      setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], loading: false } }));
+    }
   }
 
   async function addComment(itemId: number) {
@@ -153,6 +174,7 @@ export default function WorldPage({ user }: { user?: any }) {
       {actionDialog}
       <h2>🌍 World Feed</h2>
       <p className="muted">External content from RSS sources. Sorted by published date, newest first.</p>
+      {feedError && <p className="error-msg" role="alert">{feedError}</p>}
       {mutationError && <p className="error-msg" role="alert">{mutationError}</p>}
 
       {blockedSources.length > 0 && (
@@ -231,6 +253,7 @@ export default function WorldPage({ user }: { user?: any }) {
                         </div>
                       ))
                     )}
+                    {disc.nextCursor && <button className="btn btn-ghost" disabled={disc.loading} onClick={() => void loadDiscussion(item.id, disc.nextCursor!)}>Load more comments</button>}
                     {isLoggedIn ? (
                       <form className="world-comment-form" onSubmit={e => { e.preventDefault(); addComment(item.id); }}>
                         <input className="input" placeholder="Add a comment..." value={disc.body} onChange={e => setDiscussions(prev => ({ ...prev, [item.id]: { ...prev[item.id], body: e.target.value } }))} />
@@ -246,7 +269,7 @@ export default function WorldPage({ user }: { user?: any }) {
               </article>
             );
           })}
-          {items.length >= PAGE_SIZE && (
+          {hasMore && (
             <button className="btn btn-ghost" onClick={loadMore} disabled={loading} style={{ display: 'block', margin: '16px auto' }}>Load more</button>
           )}
         </div>

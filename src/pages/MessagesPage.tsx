@@ -49,6 +49,10 @@ export default function MessagesPage({
   const currentThreadKey = useRef(activeThreadKey);
   currentThreadKey.current = activeThreadKey;
 
+  const [conversationOffset, setConversationOffset] = useState(0);
+  const conversationOffsetRef = useRef(0);
+  const [nextConversationOffset, setNextConversationOffset] = useState<number | null>(null);
+  const [conversationError, setConversationError] = useState('');
   const [conversations, setConversations] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [observedThrough, setObservedThrough] = useState<number | null>(null);
@@ -87,6 +91,7 @@ export default function MessagesPage({
     pollInFlight.current = null;
     lastReadAttempt.current = {};
     setConversations([]);
+    conversationOffsetRef.current = 0; setConversationOffset(0);
     setMessages([]);
     setObservedThrough(null);
     setOtherUser(null);
@@ -167,17 +172,20 @@ export default function MessagesPage({
       });
   }, [observedThrough, activeThreadKey]);
 
-  async function loadConversations(viewerId = accountId, showLoading = false) {
+  async function loadConversations(viewerId = accountId, showLoading = false, offset = conversationOffsetRef.current) {
     const isCurrent = conversationGate.current.begin();
     if (showLoading) setLoadingConvs(true);
     try {
-      const response = await api.getConversations();
+      const response = await api.getConversations(offset);
       if (!isCurrent() || currentAccountId.current !== viewerId) return;
+      conversationOffsetRef.current = offset; setConversationOffset(offset);
+      setConversationError('');
       const next = response.conversations || [];
       setConversations(next);
-      onUnreadChange?.(next.filter((conversation: any) => conversation.unreadCount > 0).length);
+      setNextConversationOffset(response.nextOffset ?? null);
+      onUnreadChange?.(response.unreadConversationCount ?? next.filter((conversation: any) => conversation.unreadCount > 0).length);
     } catch (error) {
-      if (isCurrent() && currentAccountId.current === viewerId) console.error(error);
+      if (isCurrent() && currentAccountId.current === viewerId) setConversationError('Could not load conversations. Please retry.');
     } finally {
       if (isCurrent() && currentAccountId.current === viewerId) setLoadingConvs(false);
     }
@@ -330,6 +338,8 @@ export default function MessagesPage({
       {actionDialog}
       <div className={`conv-list ${mobileView === 'thread' ? 'conv-list--hidden-mobile' : ''}`}>
         <div className="conv-list-header"><h3>Messages</h3></div>
+        {conversationError && <p className="error-msg" role="alert">{conversationError}</p>}
+        {conversationOffset > 0 && <button className="btn btn-ghost" disabled={loadingConvs} onClick={() => void loadConversations(accountId, true, Math.max(0, conversationOffset - 50))}>Newer conversations</button>}
         {loadingConvs ? (
           <p className="muted" style={{ padding: '12px 16px' }}>Loading…</p>
         ) : conversations.length === 0 ? (
@@ -338,6 +348,7 @@ export default function MessagesPage({
           </p>
         ) : (
           <div className="conv-list-items">
+            {nextConversationOffset !== null && <button className="btn btn-ghost" onClick={() => void loadConversations(accountId, true, nextConversationOffset)}>Older conversations</button>}
             {conversations.map(conversation => {
               const isActive = conversation.id === activeConvId;
               const hasUnread = conversation.unreadCount > 0;

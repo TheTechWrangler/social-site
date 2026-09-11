@@ -1,11 +1,13 @@
+import { feedTimeSql } from '../feedTime.js';
+import { RequestValidationError } from '../requestValidation.js';
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { optionalAuth, requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
-import { enrichPost } from './posts.js';
-import { getWorldFeed, fetchSource } from '../rssService.js';
+import { enrichPosts } from './posts.js';
+import { getWorldFeed, getWorldFeedPage, fetchSource } from '../rssService.js';
 import { logUsage } from '../usageEvents.js';
 import { notMutedByViewerSql, postAuthorVisibilitySql } from '../visibility.js';
-import { boundedInteger } from '../pagination.js';
+import { pageInteger } from '../pagination.js';
 
 const router = Router();
 
@@ -24,15 +26,12 @@ function worldInjectionLimit(nativeCount: number, preference: string): number {
   return Math.min(10, Math.max(1, Math.ceil(nativeCount / 9)));
 }
 
-function itemTime(item: any): string {
-  return item.type === 'world_item' ? (item.publishedAt || item.published_at || '') : (item.createdAt || '');
-}
 
 // GET /api/feed?level=everyone|extended|friends|world&limit=50&offset=0
 router.get('/', optionalAuth, (req: AuthRequest, res) => {
   try {
-    const limit = boundedInteger(req.query.limit, 50, 1, 100);
-    const offset = boundedInteger(req.query.offset, 0, 0, 100000);
+    const limit = pageInteger(req.query.limit, 50, 1, 100);
+    const offset = pageInteger(req.query.offset, 0, 0, 100000);
     const db = getDb();
     const postVisibility = postAuthorVisibilitySql(req.user as any, 'p', 'u');
     const notMuted = notMutedByViewerSql(req.user as any, 'u');
@@ -56,8 +55,8 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
 
     // ─── World Feed mode ───
     if (level === 'world') {
-      const items = getWorldFeed({ limit, offset, userId: req.user?.id });
-      res.json({ posts: [], worldItems: items, items: items, level });
+      const { items, pagination } = getWorldFeedPage({ limit, offset, userId: req.user?.id });
+      res.json({ posts: [], worldItems: items, items, level, pagination });
       return;
     }
 
@@ -65,57 +64,21 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
     let rows: any[];
 
     if ((level === 'friends' || level === 'extended') && req.user) {
-      const friendLimit = level === 'friends' ? limit : Math.ceil(limit * 0.75);
+      const extended = level === 'extended' ? `OR (u.is_verified = 1 AND p.user_id IN (
+        SELECT following_id FROM follows WHERE status = 'accepted' AND follower_id IN (
+          SELECT following_id FROM follows WHERE follower_id = ? AND status = 'accepted'
+        )))` : '';
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
         WHERE p.parent_id IS NULL AND p.hidden = 0
           AND (p.user_id = ? OR p.user_id IN (
             SELECT following_id FROM follows WHERE follower_id = ? AND status = 'accepted'
-          ))
-          AND ${postVisibility.sql}
-          AND ${notMuted.sql}
-        ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(
-        req.user.id,
-        req.user.id,
-        ...postVisibility.params,
-        ...notMuted.params,
-        friendLimit,
-        offset,
-      );
-
-      if (level === 'extended') {
-        const extLimit = limit - rows.length;
-        if (extLimit > 0) {
-          const extRows = db.prepare(`
-            SELECT DISTINCT p.*, u.username, u.display_name, u.avatar_url
-            FROM posts p JOIN users u ON p.user_id = u.id
-            WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.is_verified = 1
-              AND p.user_id != ?
-              AND p.user_id NOT IN (
-                SELECT following_id FROM follows WHERE follower_id = ? AND status = 'accepted'
-              )
-              AND ${postVisibility.sql}
-              AND ${notMuted.sql}
-              AND p.user_id IN (
-                SELECT following_id FROM follows
-                WHERE status = 'accepted' AND follower_id IN (
-                  SELECT following_id FROM follows WHERE follower_id = ? AND status = 'accepted'
-                )
-              )
-            ORDER BY p.created_at DESC LIMIT ?
-          `).all(
-            req.user.id,
-            req.user.id,
-            ...postVisibility.params,
-            ...notMuted.params,
-            req.user.id,
-            extLimit,
-          );
-          rows = [...rows, ...extRows].sort((a: any, b: any) => b.created_at.localeCompare(a.created_at));
-        }
-      }
+          ) ${extended})
+          AND ${postVisibility.sql} AND ${notMuted.sql}
+        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC LIMIT ? OFFSET ?
+      `).all(req.user.id, req.user.id, ...(level === 'extended' ? [req.user.id] : []),
+        ...postVisibility.params, ...notMuted.params, limit + 1, offset);
     } else if (level === 'everyone' && req.user) {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
@@ -123,22 +86,23 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
         WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.is_verified = 1
           AND ${postVisibility.sql}
           AND ${notMuted.sql}
-        ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(...postVisibility.params, ...notMuted.params, limit, offset);
+        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC LIMIT ? OFFSET ?
+      `).all(...postVisibility.params, ...notMuted.params, limit + 1, offset);
     } else {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
         WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.is_verified = 1
           AND ${postVisibility.sql}
-        ORDER BY p.created_at DESC LIMIT ? OFFSET ?
-      `).all(...postVisibility.params, limit, offset);
+        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC LIMIT ? OFFSET ?
+      `).all(...postVisibility.params, limit + 1, offset);
     }
 
-    const posts = rows.map((r: any) => ({ ...enrichPost(r, req.user as any), type: 'post' }));
+    const hasMore = rows.length > limit && offset + limit <= 100000;
+    const posts = enrichPosts(rows.slice(0, limit), req.user as any).map(post => ({ ...post, type: 'post' }));
     let worldItems: any[] = [];
 
-    if (req.user) {
+    if (req.user && offset === 0) {
       const prefRow = db.prepare('SELECT world_home_injection FROM users WHERE id = ?').get(req.user.id) as any;
       const preference = prefRow?.world_home_injection || 'world_home_few';
       const worldLimit = worldInjectionLimit(posts.length, preference);
@@ -147,10 +111,11 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       }
     }
 
-    const items = [...posts, ...worldItems]
-      .sort((a: any, b: any) => itemTime(b).localeCompare(itemTime(a)));
-    res.json({ posts, worldItems, items, level });
+    // World is a separate recommendation module, never part of native offsets.
+    res.json({ posts, worldItems, items: posts, level, worldPlacement: 'separate',
+      pagination: { limit, offset, hasMore, nextOffset: hasMore ? offset + posts.length : null } });
   } catch (err: any) {
+    if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
     console.error('[feed] Load feed error:', err.message);
     res.status(500).json({ error: 'Could not load feed.' });
   }
@@ -180,22 +145,22 @@ router.post('/replenish', requireAuth, requireVerified, (req: AuthRequest, res) 
     }
 
     // Per-user in-flight guard (non-admin; admins use fetch-all instead)
-    if (!isAdmin && replenishInFlight.has(userId)) {
+    if (replenishInFlight.has(userId)) {
       res.status(429).json({ error: 'A replenish is already running for your account.' });
       return;
     }
 
     // Determine sources before responding so we can report the count
     const sources: any[] = isAdmin
-      ? db.prepare("SELECT id FROM rss_sources WHERE is_active = 1").all() as any[]
-      : db.prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetched_at ASC NULLS FIRST LIMIT 5").all() as any[];
+      ? db.prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetch_attempt_at ASC NULLS FIRST, id LIMIT 20").all() as any[]
+      : db.prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetch_attempt_at ASC NULLS FIRST LIMIT 5").all() as any[];
 
     // Mark cooldown and in-flight immediately — before the async work starts —
     // so a second request during the fetch window is correctly rejected.
     if (!isAdmin) {
       db.prepare("UPDATE users SET last_feed_refresh_at = datetime('now') WHERE id = ?").run(userId);
-      replenishInFlight.add(userId);
     }
+    replenishInFlight.add(userId);
 
     // Respond immediately; actual fetching happens asynchronously
     logUsage({ eventType: 'rss_replenished', userId, featureArea: 'world', metadata: { sourcesChecked: sources.length } });
@@ -206,10 +171,11 @@ router.post('/replenish', requireAuth, requireVerified, (req: AuthRequest, res) 
       try {
         let totalNew = 0;
         const errors: string[] = [];
-        for (const s of sources) {
-          const r = await fetchSource(s.id);
+        for (let start = 0; start < sources.length; start += 4) {
+          for (const r of await Promise.all(sources.slice(start, start + 4).map(s => fetchSource(s.id)))) {
           totalNew += r.itemsInserted;
-          if (r.error) errors.push(`${r.sourceName}: ${r.error}`);
+          if (r.error) errors.push(`Source ${r.sourceId}: ${r.error}`);
+          }
         }
         if (errors.length) console.warn('[feed] Replenish errors:', errors.join('; '));
         console.log(`[feed] Replenish (user ${userId}): ${sources.length} sources, ${totalNew} new items`);

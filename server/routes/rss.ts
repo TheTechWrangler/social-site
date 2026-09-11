@@ -1,7 +1,8 @@
+import { validateRssUrl } from '../rssNetwork.js';
 import { Router } from 'express';
 import { requireAuth, requireAdmin, optionalAuth, requireVerified } from '../middleware.js';
-import { getWorldFeed, getSources, getBlockedSourceIds, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
-import { boundedInteger } from '../pagination.js';
+import { getWorldFeedPage, getSources, getBlockedSourceIds, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
+import { pageInteger } from '../pagination.js';
 import { logAuthEvent } from '../authEvents.js';
 import {
   RequestValidationError,
@@ -26,8 +27,7 @@ function httpUrlField(body: Record<string, unknown>, key: string, options: { req
   const value = stringField(body, key, { required: options.required, maxLength: RSS_URL_MAX, allowEmpty: options.allowEmpty });
   if (value === undefined || value === '') return value ?? undefined;
   try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('unsupported protocol');
+    validateRssUrl(value);
   } catch {
     throw new RequestValidationError(`${key} must be a valid HTTP or HTTPS URL.`);
   }
@@ -68,6 +68,7 @@ interface FetchAllState {
   finishedAt: string | null;
   lastResultSummary: { sourcesChecked: number; totalNew: number; errors: number } | null;
   lastError: string | null;
+  failures?: { sourceId: number; error: string | null }[];
 }
 const fetchAllState: FetchAllState = {
   running: false,
@@ -88,8 +89,9 @@ async function runFetchAllInBackground(): Promise<void> {
     const totalNew = results.reduce((s, r) => s + r.itemsInserted, 0);
     const errors = results.filter(r => r.error).length;
     fetchAllState.lastResultSummary = { sourcesChecked: results.length, totalNew, errors };
+    fetchAllState.failures = results.filter(r => r.error).map(r => ({ sourceId: r.sourceId, error: r.error }));
     if (errors) {
-      const errList = results.filter(r => r.error).map(r => `${r.sourceName}: ${r.error}`).join('; ');
+      const errList = results.filter(r => r.error).map(r => `Source ${r.sourceId}: ${r.error}`).join('; ');
       console.warn('[rss] fetch-all errors:', errList);
     }
     console.log(`[rss] fetch-all complete: ${results.length} sources, ${totalNew} new items, ${errors} errors`);
@@ -110,19 +112,22 @@ function logRssError(context: string, err: unknown): void {
 
 publicRouter.get('/', optionalAuth, (req, res) => {
   try {
-    const sourceId = req.query.sourceId ? Number(req.query.sourceId) : undefined;
-    const category = req.query.category as string | undefined;
-    const limit = boundedInteger(req.query.limit, 50, 1, 100);
-    const offset = boundedInteger(req.query.offset, 0, 0, 100000);
+    const sourceId = req.query.sourceId === undefined ? undefined : pageInteger(req.query.sourceId, 0, 1, Number.MAX_SAFE_INTEGER, 'sourceId');
+    const category = req.query.category;
+    if (category !== undefined && (typeof category !== 'string' || category.length > 80)) {
+      res.status(400).json({ error: 'category must be a string of at most 80 characters.' }); return;
+    }
+    const limit = pageInteger(req.query.limit, 50, 1, 100);
+    const offset = pageInteger(req.query.offset, 0, 0, 100000);
     const rawItemType = req.query.itemType;
     if (rawItemType !== undefined && (typeof rawItemType !== 'string' || !WORLD_ITEM_TYPES.includes(rawItemType as typeof WORLD_ITEM_TYPES[number]))) {
       res.status(400).json({ error: 'itemType must be article or podcast.' }); return;
     }
     const itemType = rawItemType as typeof WORLD_ITEM_TYPES[number] | undefined;
     const userId = (req as any).user?.id;
-    const items = getWorldFeed({ sourceId, category, itemType, limit, offset, userId });
-    res.json({ items });
+    res.json(getWorldFeedPage({ sourceId, category, itemType, limit, offset, userId }));
   } catch (err: any) {
+    if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
     logRssError('Load world feed error', err);
     res.status(500).json({ error: 'Could not load world feed.' });
   }
@@ -244,12 +249,13 @@ adminRouter.patch('/sources/:id', requireAuth, requireAdmin, (req, res) => {
 
 adminRouter.post('/sources/:id/fetch', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const sourceId = Number(req.params.id);
+    const sourceId = positiveIntegerParam(req.params.id, 'sourceId');
     const result = await fetchSource(sourceId);
     const adminId = (req as any).user.id;
     logAuthEvent({ eventType: 'admin_rss_source_fetch', userId: adminId, adminActorId: adminId, meta: { sourceId, itemsInserted: result.itemsInserted ?? 0 } });
-    res.json(result);
+    res.status(result.error ? (result.error === 'Source not found' ? 404 : result.error.includes('capacity') ? 429 : result.error.includes('timed out') ? 504 : 502) : 200).json(result);
   } catch (err: any) {
+    if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
     logRssError('Admin fetch source error', err);
     res.status(500).json({ error: 'Could not fetch RSS source.' });
   }
@@ -267,9 +273,9 @@ adminRouter.post('/fetch-all', requireAuth, requireAdmin, (_req, res) => {
     res.json({ ok: true, started: false, running: true, message: 'A fetch is already in progress.', startedAt: fetchAllState.startedAt });
     return;
   }
-  // Fire-and-forget — setImmediate yields the event loop so the response is sent first
-  setImmediate(() => { runFetchAllInBackground().catch(() => {}); });
-  res.json({ ok: true, started: true, message: 'RSS fetch started in background. Use the status endpoint to monitor progress.' });
+  // Set running synchronously before returning; no scheduling race.
+  void runFetchAllInBackground();
+  res.json({ ok: true, started: true, message: 'Refreshing up to 20 least-recently-attempted sources. Use the status endpoint to monitor progress.' });
 });
 
 export { publicRouter, adminRouter };

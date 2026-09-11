@@ -1,3 +1,4 @@
+import { timestampOrder } from './timestampOrder';
 export interface MessageLike {
   id: number;
   createdAt?: string;
@@ -29,9 +30,9 @@ export function reconcileConversationPreview(
       ? { ...conversation, lastMessage }
       : conversation)
     .sort((a, b) => {
-      const aTime = a.lastMessage?.createdAt ?? '';
-      const bTime = b.lastMessage?.createdAt ?? '';
-      return bTime.localeCompare(aTime)
+      const aTime = timestampOrder(a.lastMessage?.createdAt);
+      const bTime = timestampOrder(b.lastMessage?.createdAt);
+      return bTime - aTime
         || Number(b.lastMessage?.id || 0) - Number(a.lastMessage?.id || 0)
         || b.id - a.id;
     });
@@ -50,4 +51,3 @@ export function setConversationDraft(
 ): Record<number, string> {
   return { ...drafts, [conversationId]: body };
 }
-

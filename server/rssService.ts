@@ -1,19 +1,18 @@
-import Parser from 'rss-parser';
+import { feedTimeSql } from './feedTime.js';
+import { downloadFeed, parseFeedXml, validateRssUrl, RssFetchError } from './rssNetwork.js';
+import { createRefreshCoordinator, RefreshBusyError } from './rssRefresh.js';
 import { getDb } from './database.js';
 import { notMutedByViewerSql, userVisibilitySql } from './visibility.js';
 import { boundedInteger } from './pagination.js';
 
-const parser = new Parser({
-  timeout: 10000,
-  headers: { 'User-Agent': 'SocialSite/0.1 World Feed Reader' },
-});
+const refresh = createRefreshCoordinator();
 
 export interface RssSource {
   id: number; name: string; url: string; homepage_url: string;
-  category: string; is_active: number; last_fetched_at: string | null;
+  category: string; is_active: number; last_fetched_at: string | null; last_fetch_attempt_at: string | null; last_fetch_error: string | null;
 }
 
-interface FetchResult {
+export interface FetchResult {
   sourceId: number;
   sourceName: string;
   category: string;
@@ -44,69 +43,9 @@ function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, '').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/**
- * SSRF guard — returns true if the hostname/IP targets a private/loopback/
- * link-local range that the server should never fetch on behalf of users.
- *
- * Covers without DNS resolution (limitation noted below):
- *   localhost / *.local
- *   127.0.0.0/8  10.0.0.0/8  172.16.0.0/12  192.168.0.0/16
- *   169.254.0.0/16  0.0.0.0/8  100.64.0.0/10  198.18.0.0/15
- *   ::1  fc00::/7 (fc/fd)  fe80::/10
- *
- * DNS-rebinding limitation: a hostname that *resolves* to a private IP at
- * fetch time is not blocked here (no DNS lookup is performed — adding one
- * would require async code and a safe resolver). Mitigated by the fact that
- * only admin users can add sources.
- */
-function isPrivateHostname(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-
-  // Strip IPv6 brackets e.g. [::1]
-  const raw = h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
-
-  // Plain hostname checks
-  if (raw === 'localhost') return true;
-  if (raw === '') return true;
-  if (raw.endsWith('.local')) return true;
-  if (raw.endsWith('.localhost')) return true;
-  if (raw.endsWith('.internal')) return true;
-
-  // IPv6 loopback / ULA / link-local
-  if (raw === '::1' || raw === '0:0:0:0:0:0:0:1') return true;
-  if (raw.startsWith('fc') || raw.startsWith('fd')) return true; // fc00::/7 (ULA)
-  if (raw.startsWith('fe80')) return true; // fe80::/10 (link-local)
-
-  // IPv4 private/reserved ranges
-  const ipv4 = raw.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const [a, b, c] = [Number(ipv4[1]), Number(ipv4[2]), Number(ipv4[3])];
-    if (a === 0) return true;                             // 0.0.0.0/8
-    if (a === 10) return true;                            // 10.0.0.0/8
-    if (a === 100 && b >= 64 && b <= 127) return true;   // 100.64.0.0/10 (shared)
-    if (a === 127) return true;                           // 127.0.0.0/8 (loopback)
-    if (a === 169 && b === 254) return true;              // 169.254.0.0/16 (link-local)
-    if (a === 172 && b >= 16 && b <= 31) return true;    // 172.16.0.0/12
-    if (a === 192 && b === 0 && c === 0) return true;    // 192.0.0.0/24 (IANA special)
-    if (a === 192 && b === 168) return true;              // 192.168.0.0/16
-    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 (benchmarking)
-    if (a >= 240) return true;                            // 240.0.0.0/4 + broadcast
-  }
-
-  return false;
-}
-
-/** Only allow http:// and https:// URLs to public hosts. Returns '' for anything private/invalid. */
 function sanitizeUrl(url: unknown): string {
   if (typeof url !== 'string' || !url) return '';
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
-    if (isPrivateHostname(parsed.hostname)) return '';
-    return parsed.toString();
-  } catch {
-    return '';
-  }
+  try { return validateRssUrl(url).href; } catch { return ''; }
 }
 
 function firstSanitizedUrl(...urls: unknown[]): string {
@@ -126,7 +65,7 @@ export function getSources(): RssSource[] {
 export function addSource(name: string, url: string, homepageUrl: string, category: string): RssSource {
   const r = getDb().prepare(
     'INSERT INTO rss_sources (name, url, homepage_url, category) VALUES (?, ?, ?, ?)'
-  ).run(name, sanitizeUrl(url), sanitizeUrl(homepageUrl), category || 'general');
+  ).run(name, validateRssUrl(url).href, sanitizeUrl(homepageUrl), category || 'general');
   return getDb().prepare('SELECT * FROM rss_sources WHERE id = ?').get(r.lastInsertRowid) as RssSource;
 }
 
@@ -145,7 +84,7 @@ export function updateSource(id: number, updates: RssSourceUpdate): RssSource | 
   // Every SQL identifier below is a server-owned literal. Request keys are
   // validated at the route and can never be interpolated into this statement.
   if (updates.name !== undefined) { fields.push('name = ?'); vals.push(updates.name); }
-  if (updates.url !== undefined) { fields.push('url = ?'); vals.push(sanitizeUrl(updates.url)); }
+  if (updates.url !== undefined) { fields.push('url = ?'); vals.push(validateRssUrl(updates.url).href); }
   if (updates.homepageUrl !== undefined) { fields.push('homepage_url = ?'); vals.push(sanitizeUrl(updates.homepageUrl)); }
   if (updates.category !== undefined) { fields.push('category = ?'); vals.push(updates.category); }
   if (updates.isActive !== undefined) { fields.push('is_active = ?'); vals.push(updates.isActive ? 1 : 0); }
@@ -160,6 +99,17 @@ export function updateSource(id: number, updates: RssSourceUpdate): RssSource | 
 // ─── Fetch & Store ───
 
 export async function fetchSource(sourceId: number): Promise<FetchResult> {
+  const source = getDb().prepare('SELECT url FROM rss_sources WHERE id = ?').get(sourceId) as { url: string } | undefined;
+  if (!source) return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
+  // A corrected URL must not reuse a previous destination's cached outcome.
+  try { return await refresh(`${sourceId}:${source.url}`, () => fetchSourceNow(sourceId)); }
+  catch (error) {
+    return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0,
+      error: error instanceof RefreshBusyError ? error.message : 'Feed refresh failed.' };
+  }
+}
+
+async function fetchSourceNow(sourceId: number): Promise<FetchResult> {
   const db = getDb();
   const source = db.prepare('SELECT * FROM rss_sources WHERE id = ?').get(sourceId) as RssSource | undefined;
   if (!source) return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
@@ -170,7 +120,9 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
   let error: string | null = null;
 
   try {
-    const feed = await parser.parseURL(source.url);
+    const feed = await parseFeedXml(await downloadFeed(source.url));
+    const current = db.prepare('SELECT url FROM rss_sources WHERE id = ?').get(sourceId) as { url: string } | undefined;
+    if (current?.url !== source.url) throw new RssFetchError('Feed configuration changed during refresh; retry.');
     itemsFound = feed.items?.length || 0;
 
     const insert = db.prepare(`
@@ -188,7 +140,8 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
       const contentSnippet = item.content ? sanitize(stripHtml(item.content), 2000) : '';
       const author = sanitize(item.creator || item.author || '', 200);
       const imageUrl = firstSanitizedUrl((item as any).image?.url, (item as any).image, (item as any).itunes?.image, item.enclosure?.url, feedImageUrl);
-      const publishedAt = item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString();
+      const timestamp = Date.parse(item.pubDate || '');
+      const publishedAt = Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date(0).toISOString();
 
       // Podcast detection: enclosure with audio MIME, or iTunes duration
       const encUrl = sanitizeUrl((item.enclosure?.url as string) || '');
@@ -206,19 +159,29 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
 
     db.prepare("UPDATE rss_sources SET last_fetched_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(sourceId);
   } catch (err: any) {
-    error = err.message || 'Unknown fetch error';
+    error = err instanceof RssFetchError ? err.message : 'Feed refresh failed.';
   }
 
+  db.prepare("UPDATE rss_sources SET last_fetch_attempt_at = datetime('now'), last_fetch_error = ? WHERE id = ? AND url = ?").run(error, sourceId, source.url);
   return { sourceId, sourceName: source.name, category: source.category, itemsFound, itemsInserted: inserted, duplicatesSkipped: dupes, error };
 }
 
-export async function fetchAllSources(): Promise<FetchResult[]> {
-  const sources = getDb().prepare("SELECT * FROM rss_sources WHERE is_active = 1").all() as RssSource[];
-  const results: FetchResult[] = [];
-  for (const s of sources) {
-    results.push(await fetchSource(s.id));
-  }
-  return results;
+let allInFlight: Promise<FetchResult[]> | null = null;
+export function fetchAllSources(): Promise<FetchResult[]> {
+  if (allInFlight) return allInFlight;
+  allInFlight = (async () => {
+    const sources = getDb().prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetch_attempt_at ASC NULLS FIRST, id LIMIT 20").all() as { id: number }[];
+    const results: FetchResult[] = new Array(sources.length);
+    let index = 0;
+    await Promise.all(Array.from({ length: Math.min(4, sources.length) }, async () => {
+      while (index < sources.length) {
+        const current = index++;
+        results[current] = await fetchSource(sources[current].id);
+      }
+    }));
+    return results;
+  })().finally(() => { allInFlight = null; });
+  return allInFlight;
 }
 
 // ─── World Feed Query ───
@@ -241,7 +204,7 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; ite
   const perSourceCap = 8;
 
   let whereClause = 'WHERE rs.is_active = 1';
-  const vals: any[] = [...author.params, ...notMuted.params];
+  const vals: any[] = [];
 
   if (params.sourceId) { whereClause += ' AND ri.source_id = ?'; vals.push(params.sourceId); }
   if (params.category) { whereClause += ' AND rs.category = ?'; vals.push(params.category); }
@@ -256,25 +219,27 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; ite
     sql = `
       WITH ranked AS (
         SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
-          ${commentCount} as comment_count,
-          ROW_NUMBER() OVER (PARTITION BY ri.source_id ORDER BY ri.published_at DESC) as rn
+          ROW_NUMBER() OVER (PARTITION BY ri.source_id ORDER BY ${feedTimeSql('ri.published_at')} DESC, ri.id DESC) as rn
         FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
         ${whereClause}
       )
-      SELECT * FROM ranked WHERE rn <= ? ORDER BY published_at DESC LIMIT ? OFFSET ?
+      , page AS (SELECT * FROM ranked WHERE rn <= ? ORDER BY ${feedTimeSql('published_at')} DESC, id DESC LIMIT ? OFFSET ?)
+      SELECT ri.*, ${commentCount} AS comment_count FROM page ri ORDER BY ${feedTimeSql('ri.published_at')} DESC, ri.id DESC
     `;
     vals.push(perSourceCap, limit, offset);
   } else {
     sql = `
-      SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
-        ${commentCount} as comment_count
+      WITH page AS (SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category
       FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
       ${whereClause}
-      ORDER BY ri.published_at DESC LIMIT ? OFFSET ?
+      ORDER BY ${feedTimeSql('ri.published_at')} DESC, ri.id DESC LIMIT ? OFFSET ?)
+      SELECT ri.*, ${commentCount} AS comment_count FROM page ri
+      ORDER BY ${feedTimeSql('ri.published_at')} DESC, ri.id DESC
     `;
     vals.push(limit, offset);
   }
 
+  vals.push(...author.params, ...notMuted.params);
   const items = getDb().prepare(sql).all(...vals) as any[];
   return items.map(i => ({
     id: i.id,
@@ -312,6 +277,15 @@ export function getWorldFeed(params: { sourceId?: number; category?: string; ite
 }
 
 // ─── User Source Blocks ───
+
+export function getWorldFeedPage(params: Parameters<typeof getWorldFeed>[0]) {
+  const limit = params.limit ?? 50;
+  const offset = params.offset ?? 0;
+  const items = getWorldFeed({ ...params, limit, offset });
+  const hasMore = items.length === limit && offset + limit <= 100000 &&
+    getWorldFeed({ ...params, limit: 1, offset: offset + limit }).length > 0;
+  return { items, pagination: { limit, offset, hasMore, nextOffset: hasMore ? offset + limit : null } };
+}
 
 export function getBlockedSourceIds(userId: number): number[] {
   return (getDb().prepare('SELECT source_id FROM user_rss_source_blocks WHERE user_id = ?').all(userId) as any[])

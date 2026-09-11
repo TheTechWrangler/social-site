@@ -3,7 +3,7 @@ export type PostEntityMutation =
   | { type: 'delete'; postId: number; parentId?: number | null }
   | { type: 'hide-author'; userId: number }
   | { type: 'repost'; postId: number; repost: any }
-  | { type: 'comments-loaded'; postId: number; comments: any[] }
+  | { type: 'comments-loaded'; postId: number; comments: any[]; append?: boolean }
   | { type: 'comment-added'; postId: number; comment: any }
   | { type: 'media-loaded'; postId: number; media: any[] }
   | { type: 'media-description'; postId: number; media: any };
@@ -21,6 +21,12 @@ export function mergePostEntity(current: any, incoming: any): any {
   if (incoming.comments) {
     const existing = new Map((current.comments || []).map((comment: any) => [comment.id, comment]));
     next.comments = incoming.comments.map((comment: any) => mergePostEntity(existing.get(comment.id), comment));
+  }
+  if (incoming.media) {
+    // Batched reads follow media-loaded's late-response policy: preserve a
+    // description already reconciled from a successful edit.
+    const existing = new Map((current.media || []).map((media: any) => [media.id, media]));
+    next.media = incoming.media.map((media: any) => existing.get(media.id) || media);
   }
   return next;
 }
@@ -47,7 +53,11 @@ function reconcilePost(post: any, mutation: PostEntityMutation): any | null {
   } else if (mutation.type === 'repost' && post.id === mutation.postId) {
     next = { ...post, repostCount: Number(post.repostCount || 0) + 1 };
   } else if (mutation.type === 'comments-loaded' && post.id === mutation.postId) {
-    next = mergePostEntity(post, { id: post.id, comments: mutation.comments });
+    const existing = post.comments || [];
+    const comments = mutation.append
+      ? [...existing, ...mutation.comments.filter(comment => !existing.some((known: any) => known.id === comment.id))]
+      : mutation.comments;
+    next = mergePostEntity(post, { id: post.id, comments });
   } else if (mutation.type === 'media-loaded' && post.id === mutation.postId) {
     const known = new Map((post.media || []).map((media: any) => [media.id, media]));
     next = { ...post, media: mutation.media.map(media => known.get(media.id) || media) };

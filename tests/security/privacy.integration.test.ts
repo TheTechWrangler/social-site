@@ -796,14 +796,14 @@ test('feed and message pagination cannot disable row limits', async () => {
   try {
     for (const value of ['-1', 'NaN', 'Infinity', '1.5', '99999999999999999999', '0']) {
       const feed = await request(`/api/feed?level=everyone&limit=${value}&offset=-1`);
-      assert.equal(feed.response.status, 200);
-      assert.ok(feed.body.posts.length <= 100);
+      assert.equal(feed.response.status, 400);
+      assert.equal(feed.body.posts, undefined);
       const messages = await request(`/api/messages/${limitedConversationId}?limit=${value}&before=NaN`, 'stranger');
-      assert.equal(messages.response.status, 200);
-      assert.ok(messages.body.messages.length <= 50);
+      assert.equal(messages.response.status, 400);
+      assert.equal(messages.body.messages, undefined);
       const world = await request(`/api/world-feed?limit=${value}&offset=-1`);
-      assert.equal(world.response.status, 200);
-      assert.ok(world.body.items.length <= 100);
+      assert.equal(world.response.status, 400);
+      assert.equal(world.body.items, undefined);
     }
   } finally {
     for (const id of inserted) db.prepare('DELETE FROM posts WHERE id = ?').run(id);

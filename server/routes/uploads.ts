@@ -1,3 +1,4 @@
+import { serializeMedia } from '../mediaDto.js';
 import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
@@ -165,20 +166,6 @@ function uploadedFileSha256(file: Express.Multer.File): string {
   return createHash('sha256').update(fs.readFileSync(file.path)).digest('hex');
 }
 
-function serializeMedia(row: any) {
-  return {
-    id: row.id,
-    post_id: row.post_id,
-    media_type: row.media_type,
-    url: row.url,
-    provider: row.provider ?? null,
-    original_url: row.original_url ?? null,
-    mime_type: row.mime_type ?? null,
-    file_size_bytes: row.file_size_bytes ?? null,
-    asset_id: row.asset_id ?? null,
-    alt_text: row.alt_text ?? '',
-  };
-}
 
 function validateUploadedImageBytes(req: Request, res: Response, next: NextFunction): void {
   if (!req.file) { next(); return; }

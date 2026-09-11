@@ -1,3 +1,4 @@
+import { RequestValidationError } from './requestValidation.js';
 import 'dotenv/config';
 import express from 'express';
 import helmet from 'helmet';
@@ -210,6 +211,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     standardHeaders: true, legacyHeaders: false,
   });
   const feedReadLimiter = rateLimit({
+    skip: req => !skipReadMethods(req),
     windowMs: 15 * 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_FEED_MAX || '120', 10),
     message: { error: 'Too many requests. Please slow down.' },
@@ -228,6 +230,7 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     standardHeaders: true, legacyHeaders: false,
   });
   const userSearchLimiter = rateLimit({
+    skip: req => !skipReadMethods(req) || req.path !== '/',
     windowMs: 15 * 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_USER_SEARCH_MAX || '60', 10),
     message: { error: 'Too many user search requests. Please slow down.' },
@@ -242,6 +245,23 @@ if ((process.env.RATE_LIMIT_ENABLED || 'true') !== 'false') {
     standardHeaders: true, legacyHeaders: false,
   });
 
+  const networkLimiter = rateLimit({
+    windowMs: 60000, max: 6,
+    standardHeaders: true, legacyHeaders: false,
+    skip: req => req.method !== 'POST',
+    message: { error: 'Too many RSS refreshes. Wait a minute before retrying.' },
+  });
+  app.use('/api/admin/rss/sources/:id/fetch', networkLimiter);
+  app.use('/api/admin/rss/fetch-all', networkLimiter);
+  app.use('/api/feed/replenish', networkLimiter);
+  const listReadLimiter = rateLimit({
+    windowMs: 15 * 60000, max: 300,
+    standardHeaders: true, legacyHeaders: false,
+    skip: req => !skipReadMethods(req) || req.path === '/unread-count',
+    message: { error: 'Too many list requests. Please slow down.' },
+  });
+  app.use(['/api/world-feed', '/api/groups', '/api/comments', '/api/messages', '/api/notifications', '/api/games'], listReadLimiter);
+  app.use(['/api/groups', '/api/users', '/api/notifications'], writeLimiter);
   // Feed read endpoints
   app.use('/api/feed', feedReadLimiter);
   // User search/profile endpoints
@@ -403,6 +423,7 @@ if (IS_PROD) {
 // Never leaks secrets, tokens, stack traces, or request bodies to clients.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error & { status?: number; type?: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
   if (err.status === 400 && err.type === 'entity.parse.failed') {
     res.status(400).json({ error: 'Request body must contain valid JSON.' });
     return;

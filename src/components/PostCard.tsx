@@ -20,6 +20,8 @@ const LABELS: Record<string, string> = { like: 'Like', love: 'Love', laugh: 'Lau
 const REPORT_ERROR = 'Please select a reason and briefly explain the problem.';
 
 export default function PostCard({ post, currentUser, onMutation }: { post: any; currentUser: any; onMutation: (mutation: PostEntityMutation) => void }) {
+  const [commentCursor, setCommentCursor] = useState<number | null>(null);
+  const [loadingComments, setLoadingComments] = useState(false);
   const [showComments, setShowComments] = useState(false);
   const comments: any[] = post.comments || [];
   const [commentText, setCommentText] = useState('');
@@ -69,6 +71,7 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
     setShowRepostConfirm(false);
     setShowReportModal(false);
     setShowComments(false);
+    setCommentCursor(null); setLoadingComments(false);
     setCommentText('');
     setMutationError('');
     setStatusMessage('');
@@ -83,7 +86,7 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
     mediaGate.current.invalidate();
     commentGate.current.invalidate();
     mutationGate.current.invalidate();
-    void loadMedia(post.id);
+    if (!Array.isArray(post.media)) void loadMedia(post.id);
     return () => {
       mediaGate.current.invalidate();
       commentGate.current.invalidate();
@@ -160,15 +163,18 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
     }
   }
 
-  async function refreshComments(postId: number) {
+  async function refreshComments(postId: number, after?: number) {
+    setLoadingComments(true);
     const requestScope = scopeKey;
     const isCurrent = commentGate.current.begin();
     try {
-      const response = await api.getComments(postId);
+      const response = await api.getComments(postId, after);
       if (isCurrent() && currentScopeKey.current === requestScope) {
-        onMutation({ type: 'comments-loaded', postId, comments: response.comments });
+        setCommentCursor(response.nextCursor ?? null);
+        onMutation({ type: 'comments-loaded', postId, comments: response.comments, append: !!after });
       }
-    } catch (e) { console.error(e); }
+    } catch (e) { if (isCurrent()) setMutationError('Could not load comments.'); }
+    finally { if (isCurrent()) setLoadingComments(false); }
   }
 
   function loadComments() {
@@ -499,6 +505,7 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
               )}
             </div>
           ))}
+          {commentCursor && <button className="btn btn-ghost" disabled={loadingComments} onClick={() => void refreshComments(post.id, commentCursor)}>Load more comments</button>}
           <form className="comment-form" onSubmit={addComment}>
             {isPrivateProfile && (
               <span className="muted" style={{ fontSize: '0.78rem' }}>

@@ -15,8 +15,8 @@ const LEVELS = [
 ];
 const WORLD_HOME_OPTIONS = [
   { key: 'world_home_off', label: 'Off', help: 'Only native posts appear in this feed.' },
-  { key: 'world_home_few', label: 'Few', help: 'Occasionally adds approved RSS/podcast items.' },
-  { key: 'world_home_balanced', label: 'Balanced', help: 'Adds more approved RSS/podcast items.' },
+  { key: 'world_home_few', label: 'Few', help: 'Shows a small separate World suggestions section.' },
+  { key: 'world_home_balanced', label: 'Balanced', help: 'Shows a larger separate World suggestions section.' },
 ];
 const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
 const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
@@ -25,6 +25,8 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   const [posts, setPosts] = useState<any[]>([]);
   const [worldItems, setWorldItems] = useState<any[]>([]);
   const [feedItems, setFeedItems] = useState<any[]>([]);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [posting, setPosting] = useState(false);
@@ -77,6 +79,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     const requestedLevel = lv || level;
     const isCurrent = feedGate.current.begin();
     setLoading(true);
+    setLoadingMore(false);
     try {
       const response = await api.feed({ limit: 50, offset: 0, level: requestedLevel } as any);
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return false;
@@ -84,6 +87,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       const normalizedItems = Array.isArray(response.items)
         ? response.items
         : nativePosts.map((post: any) => ({ ...post, type: post.type || 'post' }));
+      setNextOffset(response.pagination?.nextOffset ?? null);
       setPosts(nativePosts);
       setWorldItems(Array.isArray(response.worldItems) ? response.worldItems : []);
       setFeedItems(normalizedItems);
@@ -97,6 +101,21 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     } finally {
       if (isCurrent() && currentAccountId.current === requestedAccountId) setLoading(false);
     }
+  }
+
+  async function loadMoreFeed() {
+    if (nextOffset === null || loadingMore) return;
+    const isCurrent = feedGate.current.capture();
+    setLoadingMore(true);
+    try {
+      const response = await api.feed({ limit: 50, offset: nextOffset, level });
+      if (!isCurrent()) return;
+      setPosts(previous => [...previous, ...response.posts.filter(post => !previous.some(p => p.id === post.id))]);
+      setFeedItems(previous => [...previous, ...(response.items || response.posts).filter(post => !previous.some(p => p.id === post.id))]);
+      if (level === 'world') setWorldItems(previous => [...previous, ...(response.worldItems || []).filter(item => !previous.some(p => p.id === item.id))]);
+      setNextOffset(response.pagination?.nextOffset ?? null);
+    } catch { if (isCurrent()) setPreferenceError('Could not load the next feed page.'); }
+    finally { if (isCurrent()) setLoadingMore(false); }
   }
 
   async function handleLevelChange(lv: string) {
@@ -269,7 +288,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     try {
       const r: any = await api.post('/admin/rss/fetch-all');
       if (r.started || r.running) {
-        setRepopulateMsg('Repopulate started in background — new items will appear shortly.');
+        setRepopulateMsg('Refreshing up to 20 sources in the background. Refresh the feed to see new items.');
         setTimeout(async () => { await loadFeed(); setRepopulating(false); }, 4000);
         return;
       }
@@ -385,7 +404,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
               <button className="btn btn-ghost btn-sm" onClick={() => loadFeed()}>↻ Refresh Feed</button>
               {user?.role === 'admin' ? (
                 <button className="btn btn-sm" onClick={handleRepopulate} disabled={repopulating}>
-                  {repopulating ? 'Fetching sources…' : '🔄 Repopulate World Feed'}
+                  {repopulating ? 'Fetching sources…' : '🔄 Refresh next 20 sources'}
                 </button>
               ) : isVerified && (
                 <button className="btn btn-ghost btn-sm" onClick={handleReplenish}
@@ -401,7 +420,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
               ? <div className="empty-state">
                   <p>No world feed items have been fetched yet.</p>
                   {user?.role === 'admin'
-                    ? <p className="muted">Click "Repopulate World Feed" above, or go to Admin → RSS Sources.</p>
+                    ? <p className="muted">Click "Refresh next 20 sources" above, or go to Admin → RSS Sources.</p>
                     : <p className="muted">An admin needs to fetch RSS sources before content appears here.</p>}
                 </div>
               : <div className="world-feed-list">{worldItems.map(item => <WorldCard key={item.id} item={item} />)}</div>
@@ -425,6 +444,13 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
           </div>
         )
       }
+      {!loading && nextOffset !== null && <button className="btn btn-ghost" disabled={loadingMore} onClick={() => void loadMoreFeed()}>{level === 'world' ? 'Load more World items' : 'Load more posts'}</button>}
+      {!loading && level !== 'world' && worldItems.length > 0 && (
+        <section aria-label="World suggestions"><h3>World suggestions</h3>
+          <p className="muted">Separate from your paginated posts.</p>
+          {worldItems.map(item => <WorldCard key={item.id} item={item} />)}
+        </section>
+      )}
     </div>
   );
 }

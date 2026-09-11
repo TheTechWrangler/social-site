@@ -1,7 +1,8 @@
+import { pageInteger } from '../pagination.js';
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
-import { enrichPost } from './posts.js';
+import { enrichPost, enrichPosts } from './posts.js';
 import { canInteractWithPost, canViewPost, userVisibilitySql } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
 import { createCommentNotification } from '../notificationService.js';
@@ -49,15 +50,18 @@ router.post('/:postId', requireAuth, requireVerified, (req: AuthRequest, res) =>
 router.get('/:postId', optionalAuth, (req: AuthRequest, res) => {
   const parentId = Number(req.params.postId);
   if (!canViewPost(req.user as any, parentId)) { res.status(404).json({ error: 'Post not found.' }); return; }
+  const limit = pageInteger(req.query.limit, 50, 1, 100, 'limit');
+  const after = pageInteger(req.query.after, 0, 1, Number.MAX_SAFE_INTEGER, 'after');
   const authorVisibility = userVisibilitySql(req.user as any, 'u', 'public-context');
   const rows = getDb().prepare(`
     SELECT p.*, u.username, u.display_name, u.avatar_url
     FROM posts p JOIN users u ON p.user_id = u.id
-    WHERE p.parent_id = ? AND p.hidden = 0 AND ${authorVisibility.sql}
-    ORDER BY p.created_at ASC
-  `).all(parentId, ...authorVisibility.params);
+    WHERE p.parent_id = ? AND p.id > ? AND p.hidden = 0 AND ${authorVisibility.sql}
+    ORDER BY p.id ASC LIMIT ?
+  `).all(parentId, after, ...authorVisibility.params, limit + 1);
 
-  res.json({ comments: rows.map((r: any) => enrichPost(r, req.user as any)) });
+  const page = rows.slice(0, limit) as any[];
+  res.json({ comments: enrichPosts(page, req.user as any), hasMore: rows.length > limit, nextCursor: rows.length > limit ? page.at(-1)?.id : null });
 });
 
 export default router;

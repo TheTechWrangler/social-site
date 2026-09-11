@@ -1,3 +1,4 @@
+import { feedTimeSql } from './feedTime.js';
 import Database from 'better-sqlite3';
 import { ensureDatabaseDirectory, getStorageConfig } from './config.js';
 
@@ -480,6 +481,20 @@ export function initializeDatabase(): void {
     `);
   });
   enforceNotificationInvariants();
+
+  // Batch 14: operational fetch status, not a trust marker. Every fetch revalidates.
+  const rssColumns = db.prepare('PRAGMA table_info(rss_sources)').all() as Array<{ name: string }>;
+  if (!rssColumns.some(c => c.name === 'last_fetch_attempt_at')) db.exec('ALTER TABLE rss_sources ADD COLUMN last_fetch_attempt_at TEXT');
+  if (!rssColumns.some(c => c.name === 'last_fetch_error')) db.exec('ALTER TABLE rss_sources ADD COLUMN last_fetch_error TEXT');
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_posts_parent_id ON posts(parent_id, id);
+    CREATE INDEX IF NOT EXISTS idx_posts_repost_id ON posts(repost_of, id);
+    CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, id);
+    CREATE INDEX IF NOT EXISTS idx_rss_comments_item_id ON rss_item_comments(rss_item_id, id);
+    CREATE INDEX IF NOT EXISTS idx_posts_feed_time ON posts(${feedTimeSql('created_at')} DESC, id DESC) WHERE parent_id IS NULL AND hidden = 0;
+    CREATE INDEX IF NOT EXISTS idx_rss_item_time ON rss_items(${feedTimeSql('published_at')} DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_rss_source_time ON rss_items(source_id, ${feedTimeSql('published_at')} DESC, id DESC);
+  `);
 
   const postMediaColumns = db.prepare('PRAGMA table_info(post_media)').all() as Array<{ name: string }>;
   if (!postMediaColumns.some(c => c.name === 'asset_id')) {

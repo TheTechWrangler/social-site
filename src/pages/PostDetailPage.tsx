@@ -26,12 +26,32 @@ export default function PostDetailPage({ user }: Props) {
     return () => requestGate.current.invalidate();
   }, [routeKey]);
 
+  const [commentCursor, setCommentCursor] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [commentsPageError, setCommentsPageError] = useState('');
+
+  async function loadMoreComments() {
+    if (!post || !commentCursor || loadingMore) return;
+    const isCurrent = requestGate.current.capture();
+    setLoadingMore(true);
+    setCommentsPageError('');
+    try {
+      const response = await api.getComments(post.id, commentCursor);
+      if (!isCurrent()) return;
+      handlePostMutation({ type: 'comments-loaded', postId: post.id, comments: response.comments, append: true });
+      setCommentCursor(response.nextCursor ?? null);
+    } catch { if (isCurrent()) setCommentsPageError('Could not load more comments. Please retry.'); }
+    finally { if (isCurrent()) setLoadingMore(false); }
+  }
+
   async function loadPost() {
     const requestedRouteKey = routeKey;
     if (currentRouteKey.current !== requestedRouteKey) return;
     const isCurrent = requestGate.current.begin();
     setStateRouteKey(requestedRouteKey);
     setLoadState('loading');
+    setLoadingMore(false); setCommentCursor(null);
+    setCommentsPageError('');
     setCommentsLoadState('idle');
     setPost(null);
 
@@ -58,6 +78,7 @@ export default function PostDetailPage({ user }: Props) {
       setPost((previous: any) => previous ? applyPostEntityMutation([previous], {
         type: 'comments-loaded', postId, comments: response.comments || [],
       })[0] : previous);
+      setCommentCursor(response.nextCursor ?? null);
       setCommentsLoadState('loaded');
     } catch (error) {
       if (!isCurrent()) return;
@@ -114,7 +135,9 @@ export default function PostDetailPage({ user }: Props) {
       )}
       {commentsLoadState === 'loaded' && comments.length > 0 && (
         <div className="post-detail-comments">
+          {commentsPageError && <p className="error-msg" role="alert">{commentsPageError}</p>}
           <h4 className="comments-heading">Comments</h4>
+          {commentCursor && <button className="btn btn-ghost" disabled={loadingMore} onClick={() => void loadMoreComments()}>Load more comments</button>}
           {comments.map(c => (
             <PostCard key={c.id} post={c} currentUser={user} onMutation={handlePostMutation} />
           ))}
