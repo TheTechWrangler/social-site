@@ -285,6 +285,8 @@ export const api = {
     request<{ media: any; replayed?: boolean }>(`/uploads/assets/${encodeURIComponent(assetId)}/attach`, {
       method: 'POST', body: JSON.stringify({ postId, altText }),
     }),
+  editImageDescription: (mediaId: number, altText: string) =>
+    request<{ media: any }>(`/uploads/media/${mediaId}/description`, { method: 'PATCH', body: JSON.stringify({ altText }) }),
   uploadAvatar: async (file: File): Promise<{ media: any }> => {
     const form = new FormData();
     form.append('file', file);

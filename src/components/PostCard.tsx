@@ -1,5 +1,7 @@
+import { useActionDialog, ActionDialog } from './ActionDialog';
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
+import ImageDescription from './ImageDescription';
 import { api } from '../api/client';
 import { RouteRequestGate } from '../routeLoadState';
 import type { PostEntityMutation } from '../postEntityState';
@@ -21,10 +23,14 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   const [showComments, setShowComments] = useState(false);
   const comments: any[] = post.comments || [];
   const [commentText, setCommentText] = useState('');
-  const [media, setMedia] = useState<any[]>([]);
+  const media: any[] = post.media || [];
+  const [descriptionDraft, setDescriptionDraft] = useState<{ id: number; value: string } | null>(null);
+  const [descriptionPending, setDescriptionPending] = useState(false);
+  const descriptionLock = useRef(false);
   const [showReactions, setShowReactions] = useState(false);
   const [showRepostConfirm, setShowRepostConfirm] = useState(false);
   const [reposting, setReposting] = useState(false);
+  const repostSubmission = useRef(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportTarget, setReportTarget] = useState<any>(null);
   const [reportTargetType, setReportTargetType] = useState<'post' | 'comment'>('post');
@@ -33,9 +39,11 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   const [reportSubmitted, setReportSubmitted] = useState(false);
   const [reportError, setReportError] = useState('');
   const [mutationError, setMutationError] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [reportSubmitting, setReportSubmitting] = useState(false);
+  const reportSubmission = useRef(false);
   const [editState, setEditState] = useState(EMPTY_POST_EDIT);
   const editSubmission = useRef(false);
   const entityId = useRef(post.id);
@@ -52,15 +60,24 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   const reactions = post.reactions || {};
   const totalReactions = Object.values(reactions).reduce((a: number, b: any) => a + (b || 0), 0);
 
+  const { confirmAction, actionDialog } = useActionDialog(scopeKey);
+
   useEffect(() => {
-    setMedia([]);
+    setDescriptionDraft(null);
+    setDescriptionPending(false);
+    descriptionLock.current = false;
+    setShowRepostConfirm(false);
+    setShowReportModal(false);
     setShowComments(false);
     setCommentText('');
     setMutationError('');
+    setStatusMessage('');
     setPendingAction(null);
     setCommentSubmitting(false);
     setReportSubmitting(false);
+    reportSubmission.current = false;
     setReposting(false);
+    repostSubmission.current = false;
     setEditState(EMPTY_POST_EDIT);
     editSubmission.current = false;
     mediaGate.current.invalidate();
@@ -82,12 +99,12 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
     const isCurrent = mediaGate.current.begin();
     try {
       const r = await api.getPostMedia(postId);
-      if (isCurrent() && entityId.current === postId) setMedia(r.media || []);
+      if (isCurrent() && entityId.current === postId) onMutation({ type: 'media-loaded', postId, media: r.media || [] });
     } catch (e) { /* no media */ }
   }
 
   async function handleReaction(type: string) {
-    if (!isVerified) { alert('Account verification required before you can react.'); return; }
+    if (!isVerified) { setMutationError('Account verification required before you can react.'); return; }
     if (pendingAction) return;
     const requestScope = scopeKey;
     const isCurrent = mutationGate.current.capture();
@@ -116,22 +133,30 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   }
 
   async function handleRepost() {
+    if (reposting || repostSubmission.current) return;
     setShowRepostConfirm(true);
   }
 
   async function confirmRepost() {
+    if (reposting || repostSubmission.current) return;
+    repostSubmission.current = true;
     const requestScope = scopeKey;
     const isCurrent = mutationGate.current.capture();
     setReposting(true);
+    setMutationError('');
     try {
       const result = await api.repost(post.id);
       if (!isCurrent() || currentScopeKey.current !== requestScope) return;
       onMutation({ type: 'repost', postId: post.id, repost: result.post });
       setShowRepostConfirm(false);
     } catch (e) {
-      if (isCurrent() && currentScopeKey.current === requestScope) { console.error(e); alert('Repost failed'); }
+      if (isCurrent() && currentScopeKey.current === requestScope) { console.error(e); setMutationError('Repost failed'); }
+      throw e;
     } finally {
-      if (isCurrent() && currentScopeKey.current === requestScope) setReposting(false);
+      if (isCurrent() && currentScopeKey.current === requestScope) {
+        repostSubmission.current = false;
+        setReposting(false);
+      }
     }
   }
 
@@ -175,7 +200,7 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   }
 
   async function handleDelete() {
-    if (!confirm('Delete this post?')) return;
+    return confirmAction({ title: "Delete post", description: 'Delete this post?', confirmLabel: 'Delete post' }, async () => {
     if (pendingAction) return;
     const requestScope = scopeKey;
     const isCurrent = mutationGate.current.capture();
@@ -190,9 +215,10 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
         console.error(e);
         setMutationError(e.message || 'Could not delete post.');
       }
-    } finally {
+     throw e; } finally {
       if (isCurrent() && currentScopeKey.current === requestScope) setPendingAction(null);
     }
+  });
   }
 
   function canEdit(target: any) {
@@ -293,15 +319,21 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   }
 
   function closeReportModal() {
+    if (reportSubmitting || reportSubmission.current) return;
     setShowReportModal(false);
     setReportSubmitted(false);
     setReportError('');
   }
 
   async function submitReport() {
-    if (!reportReason || !reportDetails.trim() || reportDetails.trim().length < 5) { setReportError(REPORT_ERROR); return; }
+    if (reportSubmitting || reportSubmitted || reportSubmission.current) return;
+    if (!reportReason || !reportDetails.trim() || reportDetails.trim().length < 5) {
+      setReportError(REPORT_ERROR);
+      throw new Error(REPORT_ERROR);
+    }
     setReportError('');
     if (reportSubmitting) return;
+    reportSubmission.current = true;
     const requestScope = scopeKey;
     const isCurrent = mutationGate.current.capture();
     setReportSubmitting(true);
@@ -309,18 +341,23 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
       await api.reportContent(reportTargetType, reportTarget?.id, reportReason, reportDetails.trim());
       if (!isCurrent() || currentScopeKey.current !== requestScope) return;
       setReportSubmitted(true);
+      setStatusMessage('Report submitted. Thank you.');
     } catch (e: any) {
       if (isCurrent() && currentScopeKey.current === requestScope) {
         console.error(e);
         setReportError(e.message || REPORT_ERROR);
       }
+      throw e;
     } finally {
-      if (isCurrent() && currentScopeKey.current === requestScope) setReportSubmitting(false);
+      if (isCurrent() && currentScopeKey.current === requestScope) {
+        reportSubmission.current = false;
+        setReportSubmitting(false);
+      }
     }
   }
 
   async function handleMuteUser() {
-    if (!confirm(`Mute @${post.username}? You will stop seeing their posts.`)) return;
+    return confirmAction({ title: "Mute user", description: `Mute @${post.username}? You will stop seeing their posts.` }, async () => {
     const requestScope = scopeKey;
     const isCurrent = mutationGate.current.capture();
     try {
@@ -329,11 +366,12 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
       onMutation({ type: 'hide-author', userId: post.userId });
     } catch (e: any) {
       if (isCurrent() && currentScopeKey.current === requestScope) { console.error(e); setMutationError(e.message || 'Could not mute user.'); }
-    }
+     throw e; }
+  });
   }
 
   async function handleBlockUser() {
-    if (!confirm(`Block @${post.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
+    return confirmAction({ title: "Block user", description: `Block @${post.username}? They will not be able to interact with you, and you will stop seeing their posts.` }, async () => {
     const requestScope = scopeKey;
     const isCurrent = mutationGate.current.capture();
     try {
@@ -342,6 +380,25 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
       onMutation({ type: 'hide-author', userId: post.userId });
     } catch (e: any) {
       if (isCurrent() && currentScopeKey.current === requestScope) { console.error(e); setMutationError(e.message || 'Could not block user.'); }
+     throw e; }
+  });
+  }
+
+  async function saveDescription() {
+    if (!descriptionDraft || descriptionLock.current) return;
+    const draft = descriptionDraft;
+    const requestScope = scopeKey;
+    const isCurrent = mutationGate.current.capture();
+    descriptionLock.current = true; setDescriptionPending(true); setMutationError('');
+    try {
+      const result = await api.editImageDescription(draft.id, draft.value);
+      if (!isCurrent() || currentScopeKey.current !== requestScope) return;
+      onMutation({ type: 'media-description', postId: post.id, media: result.media });
+      setDescriptionDraft(null);
+    } catch (error: any) {
+      if (isCurrent() && currentScopeKey.current === requestScope) setMutationError(error.message || 'Could not save image description. Your draft was preserved.');
+    } finally {
+      if (isCurrent() && currentScopeKey.current === requestScope) { descriptionLock.current = false; setDescriptionPending(false); }
     }
   }
 
@@ -353,6 +410,7 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
 
   return (
     <div className="post-card">
+      {actionDialog}
       {post.repostOf && post.repostedPost && <div className="repost-header">🔄 Reposted</div>}
       <div className="post-header">
         <Link to={`/profile/${post.username}`} className="post-user">
@@ -375,7 +433,15 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
         <>
           {editState.postId === post.id ? renderEditForm(post) : <div className="post-content">{post.content}</div>}
           {images.map((img: any) => (
-            <div key={img.id} className="post-media-wrap"><img src={img.url} alt={img.alt_text || ''} className="post-media-img" loading="lazy" /></div>
+            <div key={img.id} className="post-media-wrap">
+              <img src={img.url} alt={img.alt_text ?? ''} className="post-media-img" loading="lazy" />
+              {descriptionDraft && descriptionDraft.id === img.id ? <form onSubmit={event => { event.preventDefault(); void saveDescription(); }}>
+                <ImageDescription value={descriptionDraft.value} onChange={value => setDescriptionDraft({ id: img.id, value })} disabled={descriptionPending} />
+                <button type="button" className="btn btn-ghost" disabled={descriptionPending} onClick={() => setDescriptionDraft(null)}>Cancel description edit</button>
+                <button className="btn" disabled={descriptionPending}>{descriptionPending ? 'Saving…' : 'Save description'}</button>
+              </form> : img.canEditAlt && currentUser?.id === post.userId && <button type="button" className="btn btn-sm" disabled={!!descriptionDraft}
+                onClick={() => setDescriptionDraft({ id: img.id, value: img.alt_text ?? '' })}>Edit image description</button>}
+            </div>
           ))}
           {videos.map((vid: any) => (
             <div key={vid.id} className="post-media-wrap post-video-wrap">
@@ -388,35 +454,36 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
       <div className="post-actions">
         <div className="reaction-picker-wrap">
           <button className={`action-btn ${post.liked ? 'active' : ''}`}
-            onClick={() => setShowReactions(!showReactions)}>
+            aria-label="Choose reaction" onClick={() => setShowReactions(!showReactions)}>
             {post.userReaction ? EMOJI[post.userReaction] : '🤍'} {totalReactions || ''}
           </button>
           {showReactions && (
             <div className="reaction-picker">
               {REACTIONS.map(r => (
                 <button key={r} className={`reaction-btn ${post.userReaction === r ? 'active' : ''}`}
-                  title={LABELS[r]} onClick={() => handleReaction(r)} disabled={pendingAction === 'reaction'}>
+                  aria-label={LABELS[r]} title={LABELS[r]} onClick={() => handleReaction(r)} disabled={pendingAction === 'reaction'}>
                   {EMOJI[r]} <span className="reaction-count">{reactions[r] || 0}</span>
                 </button>
               ))}
             </div>
           )}
         </div>
-        <button className="action-btn" onClick={loadComments}>💬 {post.commentCount || 0}</button>
-        <button className="action-btn" onClick={handleRepost}>🔄 {post.repostCount || 0}</button>
+        <button className="action-btn" aria-label="Comments" onClick={loadComments}>💬 {post.commentCount || 0}</button>
+        <button className="action-btn" aria-label="Repost" onClick={handleRepost} disabled={reposting}>🔄 {post.repostCount || 0}</button>
         {canEdit(post) && editState.postId !== post.id && (
           <button className="action-btn" onClick={() => setEditState(beginPostEdit(post))} disabled={editState.postId !== null}>Edit</button>
         )}
-        {(currentUser?.id === post.userId || currentUser?.role === 'admin') && <button className="action-btn danger" onClick={handleDelete} disabled={pendingAction === 'delete'}>🗑</button>}
-        {currentUser && currentUser.id !== post.userId && <button className="action-btn" onClick={() => openReportModal(post, 'post')} title="Report">🚩</button>}
+        {(currentUser?.id === post.userId || currentUser?.role === 'admin') && <button className="action-btn danger" aria-label="Delete post" onClick={handleDelete} disabled={pendingAction === 'delete'}>🗑</button>}
+        {currentUser && currentUser.id !== post.userId && <button className="action-btn" onClick={() => openReportModal(post, 'post')} aria-label="Report post" title="Report">🚩</button>}
         {currentUser?.id !== post.userId && currentUser && (
           <>
-            <button className="action-btn" onClick={handleMuteUser} title="Mute">🔇</button>
-            <button className="action-btn" onClick={handleBlockUser} title="Block">🚫</button>
+            <button className="action-btn" aria-label="Mute user" onClick={handleMuteUser} title="Mute">🔇</button>
+            <button className="action-btn" aria-label="Block user" onClick={handleBlockUser} title="Block">🚫</button>
           </>
         )}
       </div>
       {mutationError && <p className="error-msg" role="alert">{mutationError}</p>}
+      {statusMessage && <p className="muted" role="status">{statusMessage}</p>}
 
       {showComments && (
         <div className="comments-section">
@@ -444,46 +511,15 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
         </div>
       )}
 
-      {/* Repost confirmation modal */}
-      {showRepostConfirm && (
-        <div className="modal-overlay" onClick={() => setShowRepostConfirm(false)}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            <h4>Share this post to your feed?</h4>
-            <p className="muted">Reposted from @{post.username}: {post.content?.slice(0, 100)}</p>
-            <div className="modal-actions">
-              <button className="btn btn-ghost" onClick={() => setShowRepostConfirm(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={confirmRepost} disabled={reposting}>{reposting ? 'Sharing...' : 'Share'}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Report modal */}
-      {showReportModal && (
-        <div className="modal-overlay" onClick={closeReportModal}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
-            {reportSubmitted ? (
-              <>
-                <h4>Report submitted. Thank you.</h4>
-                <button className="btn btn-primary" onClick={closeReportModal}>Close</button>
-              </>
-            ) : (
-              <>
-                <h4>Report this {reportTargetType}</h4>
-                <select className="input" value={reportReason} onChange={e => setReportReason(e.target.value)} style={{ marginBottom: 10 }} required>
-                  {['Spam','Harassment','Hate or abuse','Sexual content','Violence or threats','Scam or unsafe link','Other'].map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
-                <textarea className="input" placeholder="Briefly explain what is wrong with this content." value={reportDetails} onChange={e => setReportDetails(e.target.value)} rows={2} required minLength={5} />
-                {reportError && <p className="error-msg">{reportError}</p>}
-                <div className="modal-actions">
-                  <button className="btn btn-ghost" onClick={closeReportModal}>Cancel</button>
-                  <button className="btn btn-primary" onClick={submitReport} disabled={reportSubmitting}>{reportSubmitting ? 'Submitting...' : 'Submit Report'}</button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      {showRepostConfirm && <ActionDialog title="Share this post?" description={`Reposted from @${post.username}: ${post.content?.slice(0, 100)}`}
+        intent="normal" confirmLabel="Share" actionPending={reposting} onConfirm={confirmRepost} onClose={() => setShowRepostConfirm(false)} />}
+      {showReportModal && <ActionDialog title={`Report this ${reportTargetType}`} description="Tell moderators why this content needs review."
+        intent="normal" confirmLabel="Submit Report" actionPending={reportSubmitting} actionError={reportError} onConfirm={submitReport} onClose={closeReportModal}>
+        <label>Reason<select className="input" value={reportReason} onChange={e => setReportReason(e.target.value)}>
+          {['Spam','Harassment','Hate or abuse','Sexual content','Violence or threats','Scam or unsafe link','Other'].map(r => <option key={r}>{r}</option>)}
+        </select></label>
+        <label>Details<textarea className="input" value={reportDetails} onChange={e => setReportDetails(e.target.value)} rows={3} /></label>
+      </ActionDialog>}
     </div>
   );
 }

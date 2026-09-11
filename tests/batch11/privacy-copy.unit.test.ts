@@ -55,14 +55,16 @@ test('PostCard renders named and neutral group origins from the authorized DTO',
 test('privacy and public-context copy is explicit and no private-group control is introduced', () => {
   const profile = fs.readFileSync(path.join(PROJECT_ROOT, 'src/pages/ProfilePage.tsx'), 'utf8');
   const group = fs.readFileSync(path.join(PROJECT_ROOT, 'src/pages/GroupPage.tsx'), 'utf8');
+  const groupComposer = fs.readFileSync(path.join(PROJECT_ROOT, 'src/components/GroupPostComposer.tsx'), 'utf8');
   const groups = fs.readFileSync(path.join(PROJECT_ROOT, 'src/pages/GroupsPage.tsx'), 'utf8');
   const lfg = fs.readFileSync(path.join(PROJECT_ROOT, 'src/pages/GameDetailPage.tsx'), 'utf8');
   const post = fs.readFileSync(path.join(PROJECT_ROOT, 'src/components/PostCard.tsx'), 'utf8');
   assert.match(profile, /people request to follow; you approve new followers/);
   assert.match(profile, /public groups, comments in accessible public threads, and active LFG listings remain public/);
-  assert.match(group, /Public group — posts here may be visible/);
+  assert.match(group, /<GroupPostComposer/);
+  assert.match(groupComposer, /Public group — posts here may be visible/);
   assert.match(groups, /Private groups are not available/);
   assert.match(lfg, /Active LFG listings are public discovery content/);
   assert.match(post, /comment is visible to anyone who can view this thread/);
-  assert.doesNotMatch(`${group}\n${groups}`, /private-group-selector|visibility.*private.*group/i);
+  assert.doesNotMatch(`${group}\n${groupComposer}\n${groups}`, /private-group-selector|visibility.*private.*group/i);
 });

@@ -1,3 +1,4 @@
+import { useActionDialog } from '../components/ActionDialog';
 import { useState, useEffect, useRef } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
@@ -108,10 +109,13 @@ export default function ProfilePage({
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
   const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null);
   const gameDiscoveryEnabled =
     currentUser?.game_discovery_enabled === 1 ||
     currentUser?.gameDiscoveryEnabled === true;
+
+  const { confirmAction, actionDialog } = useActionDialog(routeKey);
 
   useEffect(() => {
     void loadProfile();
@@ -206,17 +210,18 @@ export default function ProfilePage({
 
   async function handleMute() {
     if (!profile || pendingProfileAction) return;
-    if (!confirm(`Mute @${profile.username}? You will stop seeing their posts.`)) return;
+    return confirmAction({ title: "Mute user", description: `Mute @${profile.username}? You will stop seeing their posts.` }, async () => {
     setPendingProfileAction('mute');
     setActionError('');
     try {
       await api.post(`/users/${profile.id}/mute`);
-      alert('User muted.');
+      setActionNotice('User muted.');
     } catch (e: any) {
       setActionError(e.message || 'Could not mute user.');
-    } finally {
+     throw e; } finally {
       setPendingProfileAction(null);
     }
+  });
   }
 
   async function handleMessage() {
@@ -225,13 +230,13 @@ export default function ProfilePage({
       const r = await api.startConversation(profile.id);
       navigate(`/messages/${r.conversationId}`);
     } catch (e: any) {
-      alert(e.message || 'Cannot start a conversation with this user.');
+      setActionError(e.message || 'Cannot start a conversation with this user.');
     }
   }
 
   async function handleBlock() {
     if (!profile || pendingProfileAction) return;
-    if (!confirm(`Block @${profile.username}? They will not be able to interact with you, and you will stop seeing their posts.`)) return;
+    return confirmAction({ title: "Block user", description: `Block @${profile.username}? They will not be able to interact with you, and you will stop seeing their posts.` }, async () => {
     setPendingProfileAction('block');
     setActionError('');
     try {
@@ -239,9 +244,10 @@ export default function ProfilePage({
       window.location.reload();
     } catch (e: any) {
       setActionError(e.message || 'Could not block user.');
-    } finally {
+     throw e; } finally {
       setPendingProfileAction(null);
     }
+  });
   }
 
   async function handleSaveProfile() {
@@ -281,8 +287,8 @@ export default function ProfilePage({
     const file = e.target.files?.[0];
     if (!file) return;
     const ext = file.name.split('.').pop()?.toLowerCase();
-    if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { alert(IMAGE_UPLOAD_ERROR); if (avatarInputRef.current) avatarInputRef.current.value = ''; return; }
-    if (file.size > 2 * 1024 * 1024) { alert('Avatar must be under 2MB.'); return; }
+    if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { setActionError(IMAGE_UPLOAD_ERROR); if (avatarInputRef.current) avatarInputRef.current.value = ''; return; }
+    if (file.size > 2 * 1024 * 1024) { setActionError('Avatar must be under 2MB.'); return; }
     const isCurrent = mutationGate.current.begin();
     setAvatarUploading(true);
     try {
@@ -293,7 +299,7 @@ export default function ProfilePage({
         return { ...previous, avatarUrl: r.media.url };
       });
     } catch (e: any) {
-      if (isCurrent()) alert(e.message || 'Avatar upload failed');
+      if (isCurrent()) setActionError(e.message || 'Avatar upload failed');
     }
     if (isCurrent()) setAvatarUploading(false);
   }
@@ -378,18 +384,19 @@ export default function ProfilePage({
   }
 
   async function removeGame(gameId: number, slug: string) {
-    if (!confirm('Remove this game from your profile?')) return;
+    return confirmAction({ title: "Remove game", description: 'Remove this game from your profile?' }, async () => {
     try {
       await api.delete(`/games/${slug}/profile`);
       setGameMessage('Game removed.');
       await loadProfile();
-    } catch (e: any) { setGameMessage(e.message || 'Could not remove game.'); }
+    } catch (e: any) { setGameMessage(e.message || 'Could not remove game.');  throw e; }
+  });
   }
 
   function handleFindPlayers(e: React.MouseEvent, slug: string) {
     if (!gameDiscoveryEnabled) {
       e.preventDefault();
-      alert('Turn on Game Discovery in Settings to find players who share your games.');
+      setActionNotice('Turn on Game Discovery in Settings to find players who share your games.');
       return;
     }
   }
@@ -425,6 +432,7 @@ export default function ProfilePage({
 
   return (
     <div className="profile-page">
+      {actionDialog}
       {/* ─── Profile Header ─── */}
       <div className="profile-header">
         <div className="profile-avatar-wrap">
@@ -493,6 +501,7 @@ export default function ProfilePage({
         </div>
       </div>
       {actionError && <p className="error-msg" role="alert">{actionError}</p>}
+      {actionNotice && <p className="muted" role="status">{actionNotice}</p>}
 
       {/* ─── Structured sections (read view) ─── */}
       {(!isLimited || isOwn) && !editing && (

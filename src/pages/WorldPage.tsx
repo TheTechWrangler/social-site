@@ -1,3 +1,4 @@
+import { useActionDialog } from '../components/ActionDialog';
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
@@ -23,6 +24,8 @@ export default function WorldPage({ user }: { user?: any }) {
   currentAccountId.current = user?.id ?? null;
 
   const [discussions, setDiscussions] = useState<Record<number, { open: boolean; comments: any[]; loading: boolean; body: string }>>({});
+
+  const { confirmAction, actionDialog } = useActionDialog(user?.id);
 
   useEffect(() => {
     setItems([]);
@@ -76,7 +79,7 @@ export default function WorldPage({ user }: { user?: any }) {
   function loadMore() { const next = page + 1; setPage(next); loadFeed(selectedCategory, selectedSource, next, selectedItemType || undefined); }
 
   async function handleBlock(sourceId: number, sourceName: string) {
-    if (!confirm(`Block "${sourceName}"? You will no longer see World Feed items or discussions from this source.`)) return;
+    return confirmAction({ title: "Block source", description: `Block "${sourceName}"? You will no longer see World Feed items or discussions from this source.` }, async () => {
     if (pendingMutation) return;
     setPendingMutation(`block:${sourceId}`);
     setMutationError('');
@@ -86,9 +89,10 @@ export default function WorldPage({ user }: { user?: any }) {
       await loadBlockedSources();
     } catch (e: any) {
       setMutationError(e.message || 'Could not block source.');
-    } finally {
+     throw e; } finally {
       setPendingMutation(null);
     }
+  });
   }
 
   async function handleUnblock(sourceId: number) {
@@ -146,6 +150,7 @@ export default function WorldPage({ user }: { user?: any }) {
 
   return (
     <div className="world-page">
+      {actionDialog}
       <h2>🌍 World Feed</h2>
       <p className="muted">External content from RSS sources. Sorted by published date, newest first.</p>
       {mutationError && <p className="error-msg" role="alert">{mutationError}</p>}

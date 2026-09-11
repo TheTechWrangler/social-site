@@ -24,7 +24,8 @@
     "test:batch09": "tsx --test --test-concurrency=1 tests/batch09/*.test.ts",
     "test:batch10": "tsx --test --test-concurrency=1 tests/batch10/*.test.ts",
     "test:batch11": "tsx --test --test-concurrency=1 tests/batch11/*.test.ts",
-    "test:batch12": "tsx --test --test-concurrency=1 tests/batch12/*.test.ts"
+    "test:batch12": "tsx --test --test-concurrency=1 tests/batch12/*.test.ts",
+    "test:batch13": "tsx --test --test-concurrency=1 tests/batch13/*.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -64,6 +65,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^8.2.2",
+    "playwright-core": "1.55.1",
     "react-test-renderer": "18.3.1",
     "tsx": "^4.16.0",
     "typescript": "^5.5.0",

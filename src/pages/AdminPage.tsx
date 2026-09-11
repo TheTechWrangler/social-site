@@ -1,3 +1,4 @@
+import { useActionDialog } from '../components/ActionDialog';
 import { useState, useEffect, Fragment } from 'react';
 import { api } from '../api/client';
 
@@ -192,6 +193,8 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     setTabError(prev => ({ ...prev, [key]: message }));
   }
 
+  const { confirmAction, actionDialog } = useActionDialog(currentUser?.id);
+
   useEffect(() => {
     if (tab === 'rss') loadRss();
     else if (tab === 'servers') loadServers();
@@ -349,7 +352,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     try {
       const r = await api.generatePasswordResetToken(userId);
       setResetLinks(prev => ({ ...prev, [userId]: { link: r.resetLink, expiresAt: r.expiresAt } }));
-    } catch (e: any) { alert(e.message || 'Could not generate reset link.'); }
+    } catch (e: any) { setRoleMsg(e.message || 'Could not generate reset link.'); }
     setGeneratingReset(null);
   }
 
@@ -358,7 +361,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   }
 
   async function runBackupNow() {
-    if (!confirm('Run a database backup now? This typically takes a few seconds.')) return;
+    return confirmAction({ title: "Run database backup", description: 'Run a database backup now? This typically takes a few seconds.', intent: 'normal', confirmLabel: 'Run backup' }, async () => {
     setBackupRunning(true);
     setBackupRunResult(null);
     try {
@@ -367,16 +370,16 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
         setBackupRunResult(`✅ Done (${r.durationMs}ms)\n\n${r.output}`);
         await loadBackupStatus(); // refresh status card
       } else {
-        setBackupRunResult(`❌ Failed: ${r.error}\n\n${r.output || ''}`);
+        throw new Error(r.error || 'Database backup failed.');
       }
     } catch (e: any) {
       setBackupRunResult(`❌ Request error: ${e.message || 'Unknown'}`);
-    }
-    setBackupRunning(false);
+     throw e; } finally { setBackupRunning(false); }
+  });
   }
 
   async function runUploadBackupNow() {
-    if (!confirm('Run an uploads/media backup now? This archives the uploads directory without deleting live files.')) return;
+    return confirmAction({ title: "Run media backup", description: 'Run an uploads/media backup now? This archives the uploads directory without deleting live files.', intent: 'normal', confirmLabel: 'Run backup' }, async () => {
     setUploadBackupRunning(true);
     setUploadBackupRunResult(null);
     try {
@@ -386,12 +389,12 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
         setUploadBackupRunResult(`✅ Done (${r.durationMs}ms)${latest ? `\n${latest.filename} (${formatBytes(latest.sizeBytes)})` : ''}`);
         await loadBackupStatus();
       } else {
-        setUploadBackupRunResult(`❌ Failed: ${r.error || 'Upload backup failed.'}`);
+        throw new Error(r.error || 'Upload backup failed.');
       }
     } catch (e: any) {
       setUploadBackupRunResult(`❌ Request error: ${e.message || 'Unknown'}`);
-    }
-    setUploadBackupRunning(false);
+     throw e; } finally { setUploadBackupRunning(false); }
+  });
   }
 
   async function addServer(e: React.FormEvent) {
@@ -435,7 +438,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
   }
 
   async function deleteServer(id: number) {
-    if (!confirm('Delete this server?')) return;
+    return confirmAction({ title: "Delete server", description: 'Delete this server?' }, async () => {
     if (serverMutation) return;
     setServerMutation(`delete:${id}`);
     try {
@@ -444,9 +447,10 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
     } catch (e: any) {
       console.error(e);
       setLoadError('servers', errorMessage(e, 'Could not delete game server.'));
-    } finally {
+     throw e; } finally {
       setServerMutation(null);
     }
+  });
   }
 
   async function updateReportStatus(id: number, status: 'dismissed' | 'resolved', adminNote: string) {
@@ -459,7 +463,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       await updateReportStatus(report.id, status, reportNotes[report.id] || '');
       await loadReports(reportFilter);
       loadStats();
-    } catch (e: any) { console.error(e); setReportActionError(e.message || 'Could not update report.'); }
+    } catch (e: any) { console.error(e); setReportActionError(e.message || 'Could not update report.'); if (status === 'resolved') throw e; }
   }
 
   async function changeRole(id: number, role: string) {
@@ -477,7 +481,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       const data = await api.post<any>(`/admin/users/${id}/role`, { role });
       setUsers(prev => prev.map(u => u.id === id ? { ...u, role: data.role } : u));
       setRoleMsg(`Role updated to ${role}`);
-    } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not change role.')); }
+    } catch (e: any) { console.error(e); setRoleMsg(errorMessage(e, 'Could not change role.')); throw e; }
   }
 
   async function toggleBan(id: number, banned: boolean) {
@@ -492,11 +496,12 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       return;
     }
     const action = banned ? 'Unban' : 'Ban';
-    if (!confirm(`${action} @${target?.username}?`)) return;
+    return confirmAction({ title: "Change ban status", description: `${action} @${target?.username}?` }, async () => {
     try {
       await (banned ? api.unbanUser(id) : api.banUser(id));
       setUsers(prev => prev.map(u => u.id === id ? { ...u, banned: banned ? 0 : 1 } : u));
-    } catch (e: any) { console.error(e); setRoleMsg(e.message || 'Could not update ban status.'); }
+    } catch (e: any) { console.error(e); setRoleMsg(e.message || 'Could not update ban status.');  throw e; }
+  });
   }
 
   async function toggleHide(id: number, hidden: boolean) {
@@ -525,15 +530,16 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   async function deleteUser(u: any) {
     if (isLastActiveAdmin(u)) {
-      alert('Cannot delete the last active admin.');
+      setRoleMsg('Cannot delete the last active admin.');
       return;
     }
-    if (!confirm(`Delete @${u.username}? This removes the user and their related content. This cannot be undone.`)) return;
+    return confirmAction({ title: "Delete user", description: `Delete @${u.username}? This removes the user and their related content. This cannot be undone.`, confirmationText: u.username, confirmLabel: 'Delete user permanently' }, async () => {
     try {
       await api.deleteUser(u.id);
       setUsers(prev => prev.filter(x => x.id !== u.id));
       loadStats();
-    } catch (e: any) { alert(e.message || 'Could not delete user.'); }
+    } catch (e: any) { setRoleMsg(e.message || 'Could not delete user.');  throw e; }
+  });
   }
 
   async function loadAnalytics() {
@@ -582,6 +588,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   return (
     <div className="admin-page">
+      {actionDialog}
       <h2>🛡 Admin Dashboard</h2>
       <div className="admin-stats">
         <div className="admin-stat-card"><span className="admin-stat-num">{adminStats.totalUsers || 0}</span><span>Users</span></div>
@@ -636,7 +643,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
             <span className="muted" style={{ fontSize: '0.82rem' }}>Page {userPage} of {userTotalPages}</span>
             <button className="btn btn-sm" disabled={userPage >= userTotalPages || usersLoading} onClick={() => setUserPage(p => p + 1)}>Next</button>
           </div>
-          {roleMsg && <p className="muted" style={{ marginBottom: 8, color: 'var(--green)' }}>{roleMsg}</p>}
+          {roleMsg && <p className="muted" role="status" style={{ marginBottom: 8 }}>{roleMsg}</p>}
           <div className="admin-users-list">
             {users.length === 0 && !usersLoading ? <p className="muted">No users match the current filters.</p> : users.map(u => (
                 <Fragment key={u.id}>
@@ -670,9 +677,10 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                     {userRoleDraft[u.id] && userRoleDraft[u.id] !== u.role && !adminRoleChangeDisabled(u) && (
                       <button className="btn btn-sm" onClick={() => {
                         const next = userRoleDraft[u.id];
-                        if (!confirm(`Change @${u.username}'s role from ${u.role} → ${next}?`)) return;
-                        changeRole(u.id, next);
-                        setUserRoleDraft(prev => { const d = { ...prev }; delete d[u.id]; return d; });
+                        confirmAction({ title: 'Change role', description: `Change @${u.username}'s role from ${u.role} → ${next}?` }, async () => {
+                          await changeRole(u.id, next);
+                          setUserRoleDraft(prev => { const d = { ...prev }; delete d[u.id]; return d; });
+                        });
                       }}>Apply</button>
                     )}
                     {u.role !== 'admin' && (u.is_verified ? (
@@ -789,8 +797,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
                   <div className="report-card-actions">
                     <button className="btn btn-sm report-btn-approve" onClick={() => reviewReport(r, 'dismissed')}>Dismiss Report</button>
                     <button className="btn btn-sm report-btn-delete" onClick={() => {
-                      if (!confirm('Hide this content and mark the report resolved? The post will be hidden from public view.')) return;
-                      reviewReport(r, 'resolved');
+                      confirmAction({ title: 'Hide and resolve report', description: 'Hide this content and mark the report resolved? The post will be hidden from public view.', confirmLabel: 'Hide & Resolve' }, () => reviewReport(r, 'resolved'));
                     }}>Hide & Resolve</button>
                   </div>
                 )}

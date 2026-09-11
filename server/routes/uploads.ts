@@ -9,6 +9,7 @@ import { optionalAuth, requireAuth, requireVerified } from '../middleware.js';
 import { canViewPost } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
 import { PENDING_ASSET_TTL_MS } from '../assetLifecycle.js';
+import { validatedObjectBody, integerField, stringField, positiveIntegerParam, validationErrorMessage } from '../requestValidation.js';
 import type { Request, Response, NextFunction } from 'express';
 
 const storageConfig = getStorageConfig();
@@ -285,6 +286,13 @@ router.post('/image', requireAuth, requireVerified, requireImageUploadsEnabled, 
       return;
     }
 
+    try { validatedObjectBody(req.body, [], { allowEmpty: true }); }
+    catch (error) {
+      deleteRejectedUpload(req.file);
+      res.status(400).json({ error: validationErrorMessage(error) || 'Invalid upload fields.' });
+      return;
+    }
+
     const user = (req as any).user;
     const url = `/uploads/${req.file.filename}`;
     const nowMs = Date.now();
@@ -326,7 +334,15 @@ router.post('/image', requireAuth, requireVerified, requireImageUploadsEnabled, 
 // operation returns the existing relationship.
 router.post('/assets/:assetId/attach', requireAuth, requireVerified, requireImageUploadsEnabled, (req, res) => {
   const assetId = String(req.params.assetId || '');
-  const postId = Number(req.body?.postId);
+  let postId: number;
+  let altText: string;
+  try {
+    const body = validatedObjectBody(req.body, ['postId', 'altText']);
+    postId = integerField(body, 'postId', { required: true, min: 1, max: Number.MAX_SAFE_INTEGER })!;
+    altText = stringField(body, 'altText', { allowEmpty: true, maxLength: 500 }) ?? '';
+  } catch (error) {
+    res.status(400).json({ error: validationErrorMessage(error) || 'Invalid attachment request.' }); return;
+  }
   if (!/^[a-f0-9]{32}$/.test(assetId) || !Number.isSafeInteger(postId) || postId <= 0) {
     res.status(400).json({ error: 'Invalid attachment request.' });
     return;
@@ -335,9 +351,9 @@ router.post('/assets/:assetId/attach', requireAuth, requireVerified, requireImag
   try {
     const attach = getDb().transaction(() => {
       const post = getDb().prepare(
-        'SELECT id FROM posts WHERE id = ? AND user_id = ? AND hidden = 0'
+        'SELECT * FROM posts WHERE id = ? AND user_id = ? AND hidden = 0'
       ).get(postId, user.id) as any;
-      if (!post) return { status: 404, error: 'Post not found.' };
+      if (!post || !canViewPost(user, post.id)) return { status: 404, error: 'Post not found.' };
 
       const asset = getDb().prepare(`
         SELECT * FROM managed_assets WHERE id = ? AND owner_user_id = ?
@@ -367,9 +383,6 @@ router.post('/assets/:assetId/attach', requireAuth, requireVerified, requireImag
         return { status: 410, error: 'Asset is no longer available.' };
       }
 
-      const altText = typeof req.body?.altText === 'string'
-        ? req.body.altText.trim().slice(0, 500)
-        : '';
       const inserted = getDb().prepare(`
         INSERT INTO post_media (
           post_id, asset_id, media_type, url, mime_type, file_size_bytes, alt_text
@@ -377,9 +390,9 @@ router.post('/assets/:assetId/attach', requireAuth, requireVerified, requireImag
       `).run(postId, assetId, asset.url, asset.mime_type, asset.file_size_bytes, altText);
       getDb().prepare(`
         UPDATE managed_assets
-        SET purpose = 'post_image', state = 'active', pending_expires_at_ms = NULL, alt_text = ?
+        SET purpose = 'post_image', state = 'active', pending_expires_at_ms = NULL
         WHERE id = ?
-      `).run(altText, assetId);
+      `).run(assetId);
       const media = getDb().prepare('SELECT * FROM post_media WHERE id = ?')
         .get(inserted.lastInsertRowid);
       return { status: 201, media: serializeMedia(media), replayed: false };
@@ -472,7 +485,34 @@ router.get('/post/:postId', optionalAuth, (req, res) => {
   const media = getDb().prepare(
     'SELECT * FROM post_media WHERE post_id = ? ORDER BY sort_order'
   ).all(postId);
-  res.json({ media });
+  const user = (req as any).user;
+  const post = getDb().prepare('SELECT user_id FROM posts WHERE id = ?').get(postId) as any;
+  res.json({ media: media.map(row => ({ ...serializeMedia(row), canEditAlt: !!user && user.id === post.user_id && (user.is_verified === 1 || user.role === 'admin') && (row as any).media_type === 'image' })) });
+});
+
+// Description metadata is independent of post-text concurrency and asset lifecycle.
+router.patch('/media/:mediaId/description', requireAuth, requireVerified, (req, res) => {
+  let mediaId: number;
+  let altText: string;
+  try {
+    mediaId = positiveIntegerParam(req.params.mediaId, 'mediaId');
+    const body = validatedObjectBody(req.body, ['altText']);
+    altText = stringField(body, 'altText', { required: true, allowEmpty: true, maxLength: 500 })!;
+  } catch (error) {
+    res.status(400).json({ error: validationErrorMessage(error) || 'Invalid description.' }); return;
+  }
+  const db = getDb();
+  const user = (req as any).user;
+  const result = db.transaction(() => {
+    const media = db.prepare("SELECT * FROM post_media WHERE id = ? AND media_type = 'image'").get(mediaId) as any;
+    const post = media && db.prepare('SELECT * FROM posts WHERE id = ?').get(media.post_id) as any;
+    if (!post || post.user_id !== user.id || !canViewPost(user, post.id)) return null;
+    const changed = db.prepare('UPDATE post_media SET alt_text = ? WHERE id = ? AND post_id = ?').run(altText, mediaId, post.id);
+    if (changed.changes !== 1) return null;
+    return { ...serializeMedia({ ...media, alt_text: altText }), canEditAlt: true };
+  }).immediate();
+  if (!result) { res.status(404).json({ error: 'Image not found.' }); return; }
+  res.json({ media: result });
 });
 
 export default router;

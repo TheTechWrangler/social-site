@@ -9,13 +9,14 @@ export interface AttachmentDraft {
   imageFile: File | null;
   youtubeUrl: string;
   imageAssetId?: string | null;
+  imageAltText?: string;
   videoAttachmentKey?: string | null;
 }
 
 export interface ComposerDependencies {
   createPost: (content: string, submissionKey: string) => Promise<{ post: { id: number } }>;
   uploadImage: (file: File) => Promise<{ asset: { id: string } }>;
-  attachImage: (assetId: string, postId: number) => Promise<unknown>;
+  attachImage: (assetId: string, postId: number, altText?: string) => Promise<unknown>;
   attachYouTube: (url: string, postId: number, attachmentKey: string) => Promise<unknown>;
 }
 
@@ -66,7 +67,7 @@ export async function attachComposerMedia(
         }
         imageAssetId = uploaded.asset.id;
       }
-      await dependencies.attachImage(imageAssetId, postId);
+      await dependencies.attachImage(imageAssetId, postId, draft.imageAltText ?? '');
       attached.push('image');
       imageAssetId = null;
     } catch (error) {

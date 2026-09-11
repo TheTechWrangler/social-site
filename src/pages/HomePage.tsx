@@ -1,3 +1,4 @@
+import ImageDescription from '../components/ImageDescription';
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
@@ -37,6 +38,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   const initialLevel = ['everyone', 'extended', 'friends', 'world'].includes(user?.feed_exposure) ? user.feed_exposure : 'everyone';
   const [level, setLevel] = useState(initialLevel);
   const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
+  const [imageAltText, setImageAltText] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -143,15 +145,17 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     const file = e.target.files?.[0];
     if (!file) return;
     const ext = file.name.split('.').pop()?.toLowerCase();
-    if (['mp4', 'mov', 'webm', 'avi', 'mkv'].includes(ext || '')) { alert('Direct video uploads are currently disabled.'); return; }
-    if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { alert(IMAGE_UPLOAD_ERROR); if (fileInputRef.current) fileInputRef.current.value = ''; return; }
-    if (file.size > 5 * 1024 * 1024) { alert('Image must be under 5MB.'); return; }
+    if (['mp4', 'mov', 'webm', 'avi', 'mkv'].includes(ext || '')) { setComposerError('Direct video uploads are currently disabled.'); return; }
+    if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { setComposerError(IMAGE_UPLOAD_ERROR); if (fileInputRef.current) fileInputRef.current.value = ''; return; }
+    if (file.size > 5 * 1024 * 1024) { setComposerError('Image must be under 5MB.'); return; }
+    setImageAltText('');
     setImageFile(file); setImagePreview(URL.createObjectURL(file));
     setImageAssetId(null);
     if (partialPostId === null) setSubmissionKey(null);
   }
 
   function removeImage() {
+    setImageAltText('');
     setImageFile(null); setImagePreview(null); setImageAssetId(null);
     if (partialPostId === null) setSubmissionKey(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -186,7 +190,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       if (!submissionKey) setSubmissionKey(key);
       const result = await submitComposerPost(
         content,
-        { imageFile, youtubeUrl, imageAssetId, videoAttachmentKey },
+        { imageFile, youtubeUrl, imageAssetId, videoAttachmentKey, imageAltText },
         key,
         {
           createPost: (text, operationKey) => api.createPost(text, undefined, operationKey),
@@ -236,7 +240,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     try {
       const result = await attachComposerMedia(
         partialPostId,
-        { imageFile, youtubeUrl, imageAssetId, videoAttachmentKey },
+        { imageFile, youtubeUrl, imageAssetId, videoAttachmentKey, imageAltText },
         { uploadImage: api.uploadImage, attachImage: api.attachImage, attachYouTube: api.attachYouTube },
       );
       applyAttachmentResult(result);
@@ -354,11 +358,11 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
 
       {isVerified && level !== 'world' && (
         <form className="post-composer" onSubmit={handlePost}>
-          <textarea className="input" placeholder="What's on your mind?" value={content} onChange={e => { setContent(e.target.value); if (partialPostId === null) setSubmissionKey(null); }} rows={3} disabled={partialPostId !== null} />
-          {imagePreview && (<div className="image-preview-wrap"><img src={imagePreview} alt="Preview" className="image-preview" /><button type="button" className="btn btn-sm" onClick={removeImage}>✕ Remove</button></div>)}
+          <textarea className="input" aria-label="Post text" placeholder="What's on your mind?" value={content} onChange={e => { setContent(e.target.value); if (partialPostId === null) setSubmissionKey(null); }} rows={3} disabled={posting || partialPostId !== null} />
+          {imagePreview && (<div className="image-preview-wrap"><img src={imagePreview} alt={imageAltText} className="image-preview" /><ImageDescription value={imageAltText} onChange={setImageAltText} disabled={posting} /><button type="button" className="btn btn-sm" disabled={posting} onClick={removeImage}>✕ Remove</button></div>)}
           <div className="composer-actions">
-            <label className="composer-upload-btn">🖼 Image<input type="file" ref={fileInputRef} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleFileSelect} style={{ display: 'none' }} /></label>
-            <input className="input" placeholder="YouTube link (optional)" value={youtubeUrl} onChange={e => { setYoutubeUrl(e.target.value); setVideoAttachmentKey(null); if (partialPostId === null) setSubmissionKey(null); }} style={{ flex: 1 }} />
+            <label className="composer-upload-btn">🖼 Image<input type="file" ref={fileInputRef} disabled={posting} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleFileSelect} style={{ width: 180, maxWidth: '100%' }} /></label>
+            <input className="input" aria-label="YouTube link (optional)" disabled={posting} placeholder="YouTube link (optional)" value={youtubeUrl} onChange={e => { setYoutubeUrl(e.target.value); setVideoAttachmentKey(null); if (partialPostId === null) setSubmissionKey(null); }} style={{ flex: 1 }} />
             <button className="btn btn-primary" disabled={posting || (partialPostId === null && !content.trim() && !imageFile)}>
               {posting ? 'Working...' : partialPostId !== null ? 'Retry attachment' : 'Post'}
             </button>

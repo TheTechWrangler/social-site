@@ -76,7 +76,7 @@ export default function FriendsPage({ user }: { user: any }) {
       const r = await api.startConversation(userId);
       navigate(`/messages/${r.conversationId}`);
     } catch (e: any) {
-      alert(e.message || 'Cannot start a conversation with this user.');
+      setActionError(e.message || 'Cannot start a conversation with this user.');
     }
   }
 

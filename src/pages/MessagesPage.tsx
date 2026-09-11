@@ -1,3 +1,4 @@
+import { useActionDialog } from '../components/ActionDialog';
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
@@ -75,6 +76,8 @@ export default function MessagesPage({
 
   const body = activeConvId ? (drafts[activeConvId] || '') : '';
   const sending = activeConvId ? !!sendingByConversation[activeConvId] : false;
+
+  const { confirmAction, actionDialog } = useActionDialog(activeThreadKey);
 
   useEffect(() => {
     conversationGate.current.invalidate();
@@ -285,7 +288,8 @@ export default function MessagesPage({
   }
 
   async function handleDelete(msgId: number) {
-    if (!activeConvId || !confirm('Delete this message?')) return;
+    if (!activeConvId) return;
+    return confirmAction({ title: "Delete message", description: 'Delete this message?' }, async () => {
     const targetConversationId = activeConvId;
     const targetAccountId = accountId;
     const targetThreadKey = activeThreadKey;
@@ -304,8 +308,9 @@ export default function MessagesPage({
       ));
       void loadConversations(targetAccountId, false);
     } catch (error: any) {
-      if (currentThreadKey.current === targetThreadKey) alert(error.message || 'Could not delete.');
-    }
+      if (currentThreadKey.current === targetThreadKey) setSendError(error.message || 'Could not delete.');
+     throw error; }
+  });
   }
 
   function formatTime(iso: string) {
@@ -322,6 +327,7 @@ export default function MessagesPage({
 
   return (
     <div className="messages-layout">
+      {actionDialog}
       <div className={`conv-list ${mobileView === 'thread' ? 'conv-list--hidden-mobile' : ''}`}>
         <div className="conv-list-header"><h3>Messages</h3></div>
         {loadingConvs ? (
@@ -420,7 +426,7 @@ export default function MessagesPage({
             </div>
 
             <form className="conv-composer" onSubmit={handleSend}>
-              {sendError && <p className="conv-send-error">{sendError}</p>}
+              {sendError && <p className="conv-send-error" role="alert">{sendError}</p>}
               <div className="conv-composer-row">
                 <textarea
                   ref={textareaRef}

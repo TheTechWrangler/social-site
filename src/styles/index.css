@@ -524,6 +524,20 @@ p { margin: 0 0 8px; }
 .reaction-count { font-size: 0.7rem; color: var(--text-dim); }
 
 /* Modal */
+.action-dialog {
+  color: inherit;
+  background: var(--bg-card, #20232b);
+  border: 1px solid var(--border, #555);
+  border-radius: 12px;
+  padding: 24px;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+.action-dialog::backdrop { background: rgba(0, 0, 0, .7); }
+.action-dialog h2 { margin-top: 0; }
+.action-dialog :focus-visible { outline: 3px solid var(--accent, #8bbcff); outline-offset: 3px; }
+
 .modal-overlay {
   position: fixed;
   inset: 0;

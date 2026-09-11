@@ -1,9 +1,10 @@
+import GroupPostComposer from '../components/GroupPostComposer';
+import { useActionDialog } from '../components/ActionDialog';
 import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import PostCard from '../components/PostCard';
 import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
-import { createClientOperationKey } from '../postComposerSubmission';
 import { applyPostEntityMutation, type PostEntityMutation } from '../postEntityState';
 
 export default function GroupPage({ user }: { user: any }) {
@@ -18,31 +19,22 @@ export default function GroupPage({ user }: { user: any }) {
   const requestGate = useRef(new RouteRequestGate());
   const [members, setMembers] = useState<any[]>([]);
   const [posts, setPosts] = useState<any[]>([]);
-  const [content, setContent] = useState('');
-  const [posting, setPosting] = useState(false);
-  const [postSubmissionKey, setPostSubmissionKey] = useState<string | null>(null);
-  const [postError, setPostError] = useState('');
   const [membershipError, setMembershipError] = useState('');
   const [showMembers, setShowMembers] = useState(false);
   const [transferTargetId, setTransferTargetId] = useState('');
   const [confirmingTransfer, setConfirmingTransfer] = useState(false);
   const [transferring, setTransferring] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [deleteName, setDeleteName] = useState('');
-  const [deleting, setDeleting] = useState(false);
   const [lifecycleError, setLifecycleError] = useState('');
 
   const isVerified = user?.is_verified === 1 || user?.isVerified === true;
 
+  const { confirmAction, actionDialog } = useActionDialog(routeKey);
+
   useEffect(() => {
     setShowMembers(false);
     setMembershipError('');
-    setPostError('');
-    setPostSubmissionKey(null);
     setTransferTargetId('');
     setConfirmingTransfer(false);
-    setConfirmingDelete(false);
-    setDeleteName('');
     setLifecycleError('');
     void loadGroup();
     return () => requestGate.current.invalidate();
@@ -116,16 +108,12 @@ export default function GroupPage({ user }: { user: any }) {
     } finally { setTransferring(false); }
   }
 
-  async function handleDeleteGroup() {
-    if (deleteName !== group.name || deleting) return;
-    setDeleting(true); setLifecycleError('');
-    try {
+  function handleDeleteGroup() {
+    confirmAction({ title: 'Delete group', confirmLabel: 'Delete group permanently', confirmationText: group.name,
+      description: 'Deleting this group permanently removes all posts published in it, including posts by other members, plus their comments, reposts, reactions, notifications, and media links. This cannot be undone.' }, async () => {
       await api.deleteGroup(Number(id));
       navigate('/groups', { replace: true });
-    } catch (e: any) {
-      setLifecycleError(e.message || 'Could not delete group.');
-      setDeleting(false);
-    }
+    });
   }
 
   async function handleOwnerLeaveAttempt() {
@@ -141,35 +129,23 @@ export default function GroupPage({ user }: { user: any }) {
   }
 
   async function handleLeave() {
-    if (!confirm('Leave this group?')) return;
+    return confirmAction({ title: "Leave group", description: 'Leave this group?' }, async () => {
     setMembershipError('');
     try { await api.leaveGroup(Number(id)); await loadGroup(); }
-    catch (e: any) { setMembershipError(e.message || 'Could not leave.'); }
-  }
-
-  async function handlePost(e: React.FormEvent) {
-    e.preventDefault();
-    if (!content.trim()) return;
-    setPosting(true); setPostError('');
-    const key = postSubmissionKey ?? createClientOperationKey();
-    if (!postSubmissionKey) setPostSubmissionKey(key);
-    try {
-      await api.createPost(content, Number(id), key);
-      setContent(''); setPostSubmissionKey(null);
-      await loadGroup();
-    }
-    catch (e: any) { setPostError(e.message || 'Could not post. Your draft was preserved.'); }
-    finally { setPosting(false); }
+    catch (e: any) { setMembershipError(e.message || 'Could not leave.');  throw e; }
+  });
   }
 
   async function handleRemoveMember(memberId: number, displayName: string) {
-    if (!confirm(`Remove ${displayName} from this group?`)) return;
+    return confirmAction({ title: "Remove member", description: `Remove ${displayName} from this group?` }, async () => {
     try { await api.removeGroupMember(Number(id), memberId); await loadGroup(); }
-    catch (e: any) { alert(e.message || 'Could not remove member.'); }
+    catch (e: any) { setMembershipError(e.message || 'Could not remove member.');  throw e; }
+  });
   }
 
   return (
     <div className="group-page">
+      {actionDialog}
       <Link to="/groups" className="btn-ghost back-link">← Groups</Link>
 
       {/* Group header */}
@@ -238,26 +214,7 @@ export default function GroupPage({ user }: { user: any }) {
             <p className="muted">This group has no other eligible member. Deletion is the available cleanup path.</p>
           )}
 
-          {!confirmingDelete ? (
-            <button className="btn btn-sm btn-danger" type="button" onClick={() => { setConfirmingDelete(true); setLifecycleError(''); }}>
-              Delete group…
-            </button>
-          ) : (
-            <div role="group" aria-labelledby="delete-group-warning">
-              <p id="delete-group-warning" className="error-msg">
-                Deleting this group permanently removes all posts published in it, including posts by other members, plus their comments, reposts, reactions, notifications, and media links. This cannot be undone.
-              </p>
-              <label htmlFor="delete-group-name">Type <strong>{group.name}</strong> to confirm</label>
-              <input id="delete-group-name" className="input" value={deleteName}
-                onChange={event => setDeleteName(event.target.value)} disabled={deleting} autoComplete="off" />
-              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                <button className="btn btn-sm btn-danger" type="button" disabled={deleting || deleteName !== group.name}
-                  onClick={handleDeleteGroup}>{deleting ? 'Deleting…' : 'Delete group permanently'}</button>
-                <button className="btn btn-sm btn-ghost" type="button" disabled={deleting}
-                  onClick={() => { setConfirmingDelete(false); setDeleteName(''); }}>Cancel</button>
-              </div>
-            </div>
-          )}
+          <button className="btn btn-sm btn-danger" type="button" onClick={handleDeleteGroup}>Delete group…</button>
         </section>
       )}
       {!isVerified && !isMember && (
@@ -266,17 +223,7 @@ export default function GroupPage({ user }: { user: any }) {
 
       {/* Post composer — members only */}
       {isMember && isVerified && (
-        <form className="post-composer" onSubmit={handlePost}>
-          <p className="muted" style={{ fontSize: '0.82rem', margin: 0 }}>
-            Public group — posts here may be visible to people who cannot view your private profile.
-          </p>
-          <textarea className="input" placeholder="Post to this group…" value={content}
-            onChange={e => { setContent(e.target.value); setPostSubmissionKey(null); }} rows={2} />
-          {postError && <p className="error-msg">{postError}</p>}
-          <button className="btn btn-primary" disabled={posting || !content.trim()}>
-            {posting ? 'Posting…' : 'Post'}
-          </button>
-        </form>
+        <GroupPostComposer key={routeKey} groupId={Number(id)} onCreated={loadGroup} />
       )}
 
       {/* Members section */}

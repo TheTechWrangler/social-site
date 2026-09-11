@@ -4,7 +4,9 @@ export type PostEntityMutation =
   | { type: 'hide-author'; userId: number }
   | { type: 'repost'; postId: number; repost: any }
   | { type: 'comments-loaded'; postId: number; comments: any[] }
-  | { type: 'comment-added'; postId: number; comment: any };
+  | { type: 'comment-added'; postId: number; comment: any }
+  | { type: 'media-loaded'; postId: number; media: any[] }
+  | { type: 'media-description'; postId: number; media: any };
 
 /** A late interaction or comment fetch must not roll back already-edited text. */
 export function mergePostEntity(current: any, incoming: any): any {
@@ -46,6 +48,14 @@ function reconcilePost(post: any, mutation: PostEntityMutation): any | null {
     next = { ...post, repostCount: Number(post.repostCount || 0) + 1 };
   } else if (mutation.type === 'comments-loaded' && post.id === mutation.postId) {
     next = mergePostEntity(post, { id: post.id, comments: mutation.comments });
+  } else if (mutation.type === 'media-loaded' && post.id === mutation.postId) {
+    const known = new Map((post.media || []).map((media: any) => [media.id, media]));
+    next = { ...post, media: mutation.media.map(media => known.get(media.id) || media) };
+  } else if (mutation.type === 'media-description' && post.id === mutation.postId) {
+    const media = post.media || [];
+    next = { ...post, media: media.some((item: any) => item.id === mutation.media.id)
+      ? media.map((item: any) => item.id === mutation.media.id ? mutation.media : item)
+      : [...media, mutation.media] };
   } else if (mutation.type === 'comment-added' && post.id === mutation.postId) {
     const comments = post.comments || [];
     if (!comments.some((comment: any) => comment.id === mutation.comment.id)) {

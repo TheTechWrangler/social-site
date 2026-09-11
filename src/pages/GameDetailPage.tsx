@@ -33,6 +33,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [creatingLfg, setCreatingLfg] = useState(false);
   const [lfgError, setLfgError] = useState('');
+  const [followError, setFollowError] = useState('');
 
   const isVerified = user?.is_verified === 1 || user?.isVerified === true;
 
@@ -133,6 +134,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
   }
 
   async function followPlayer(player: any) {
+    setFollowError('');
     try {
       const result = await api.follow(player.user_id);
       setPlayers(prev => prev.map(p => p.user_id === player.user_id ? {
@@ -140,7 +142,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
         is_following: result.following ? 1 : 0,
         follow_status: result.relationshipStatus,
       } : p));
-    } catch (e: any) { alert(e.message || 'Could not follow player.'); }
+    } catch (e: any) { setFollowError(e.message || 'Could not follow player.'); }
   }
 
   const visibleLoadState = routeStateForKey(routeKey, stateRouteKey, loadState);
@@ -173,6 +175,7 @@ export default function GameDetailPage({ user }: { user?: any }) {
 
   return (
     <div className="game-detail-page">
+      {followError && <p className="error-msg" role="alert">{followError}</p>}
       <Link to="/games" className="btn-ghost">← All Games</Link>
       <h2>{game.name}</h2>
       {game.platforms && <p className="muted">{game.platforms}</p>}
