@@ -1,3 +1,4 @@
+import { auditOperation } from '../operationalAudit.js';
 import { pageInteger } from '../pagination.js';
 import { Router } from 'express';
 import { getDb } from '../database.js';
@@ -205,6 +206,7 @@ router.put('/:id/owner', requireAuth, (req: AuthRequest, res) => {
         UPDATE groups_table SET owner_id = ? WHERE id = ? AND owner_id = ?
       `).run(targetUserId, groupId, group.owner_id);
       if (updated.changes !== 1) throw new Error('Group ownership changed concurrently.');
+      auditOperation(getDb(), 'group.transferred', viewer.id, 'group', groupId);
       return { status: 200, target, previousOwnerId: group.owner_id, replayed: false };
     });
     const result = transferOwnership();
@@ -249,6 +251,7 @@ router.delete('/:id', requireAuth, (req: AuthRequest, res) => {
       ).get(groupId) as any).c as number;
       const deleted = getDb().prepare('DELETE FROM groups_table WHERE id = ?').run(groupId);
       if (deleted.changes !== 1) throw new Error('Group deletion did not complete.');
+      auditOperation(getDb(), 'group.deleted', viewer.id, 'group', groupId);
       return { name: group.name as string, memberCount, postCount };
     });
     const result = deleteGroup();

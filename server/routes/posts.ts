@@ -1,3 +1,4 @@
+import { auditOperation } from '../operationalAudit.js';
 import { serializeMedia } from '../mediaDto.js';
 import { Router } from 'express';
 import { createHash } from 'node:crypto';
@@ -325,6 +326,7 @@ router.delete('/:id', requireAuth, requireVerified, (req: AuthRequest, res) => {
     if (post.repost_of !== null) removeRepostNotification(post.user_id, post.repost_of);
     const result = getDb().prepare('DELETE FROM posts WHERE id = ?').run(post.id);
     if (result.changes !== 1) throw new Error('Post deletion did not complete.');
+    auditOperation(getDb(), 'post.deleted', req.user!.id, 'post', post.id);
   });
   deletePost();
   res.json({ ok: true });

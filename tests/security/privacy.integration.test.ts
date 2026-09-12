@@ -1407,8 +1407,8 @@ test('managed assets enforce ownership, idempotency, visibility, and deferred re
   const untracked = reclaimManagedAssets(db, {
     uploadsDir, nodeEnv: 'test', allowPhysicalDeletion: true, nowMs: Date.now(),
   });
-  assert.equal(untracked.untrackedDeleted, 1);
-  assert.equal(fs.existsSync(untrackedPath), false);
+  assert.equal(untracked.untrackedDeleted, 0);
+  assert.equal(fs.existsSync(untrackedPath), true); // Batch 15: unknown ownership is never inferred from a filename.
 
   const abandonedPath = path.join(uploadsDir, abandonedFile);
   if (fs.existsSync(abandonedPath)) fs.unlinkSync(abandonedPath);

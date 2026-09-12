@@ -145,10 +145,15 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   const existing = findExisting1on1(senderId, recipientId);
   if (existing) { res.json({ conversationId: existing }); return; }
 
-  const conv = db.prepare('INSERT INTO dm_conversations DEFAULT VALUES').run();
-  const cid = conv.lastInsertRowid as number;
-  db.prepare('INSERT INTO dm_conversation_members (conversation_id, user_id) VALUES (?, ?)').run(cid, senderId);
-  db.prepare('INSERT INTO dm_conversation_members (conversation_id, user_id) VALUES (?, ?)').run(cid, recipientId);
+  const cid = db.transaction(() => {
+    const existing = findExisting1on1(senderId, recipientId);
+    if (existing) return existing;
+    const conv = db.prepare('INSERT INTO dm_conversations DEFAULT VALUES').run();
+    const cid = conv.lastInsertRowid as number;
+    db.prepare('INSERT INTO dm_conversation_members (conversation_id, user_id) VALUES (?, ?)').run(cid, senderId);
+    db.prepare('INSERT INTO dm_conversation_members (conversation_id, user_id) VALUES (?, ?)').run(cid, recipientId);
+    return cid;
+  }).immediate();
 
   res.status(201).json({ conversationId: cid });
 });

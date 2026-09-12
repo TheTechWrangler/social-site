@@ -1,6 +1,6 @@
+import { auditOperation } from '../operationalAudit.js';
 import { Router } from 'express';
 import { randomBytes, createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,7 +98,10 @@ router.post('/users/:id/ban', requireAuth, requireAdmin, (req, res) => {
     res.status(400).json({ error: 'Cannot ban the last active admin.' }); return;
   }
 
-  db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(targetId);
+  db.transaction(() => {
+    db.prepare('UPDATE users SET banned = 1 WHERE id = ?').run(targetId);
+    auditOperation(db, 'user.banned', adminId, 'user', targetId);
+  })();
   logAuthEvent({ eventType: 'admin_ban', userId: targetId, adminActorId: adminId, targetUserId: targetId });
   res.json({ ok: true });
 });
@@ -107,7 +110,12 @@ router.post('/users/:id/ban', requireAuth, requireAdmin, (req, res) => {
 router.post('/users/:id/unban', requireAuth, requireAdmin, (req, res) => {
   const adminId = (req as any).user.id;
   const targetId = Number(req.params.id);
-  getDb().prepare('UPDATE users SET banned = 0 WHERE id = ?').run(targetId);
+  const changed = getDb().transaction(() => {
+    const changed = getDb().prepare('UPDATE users SET banned = 0 WHERE id = ?').run(targetId).changes;
+    if (changed) auditOperation(getDb(), 'user.unbanned', adminId, 'user', targetId);
+    return changed;
+  })();
+  if (!changed) { res.status(404).json({ error: 'User not found.' }); return; }
   logAuthEvent({ eventType: 'admin_unban', userId: targetId, adminActorId: adminId, targetUserId: targetId });
   res.json({ ok: true });
 });
@@ -124,7 +132,11 @@ router.get('/posts', requireAuth, requireAdmin, (_req, res) => {
 router.post('/posts/:id/hide', requireAuth, requireAdmin, (req, res) => {
   const adminId = (req as any).user.id;
   const postId = Number(req.params.id);
-  const result = getDb().prepare('UPDATE posts SET hidden = 1 WHERE id = ?').run(postId);
+  const result = getDb().transaction(() => {
+    const result = getDb().prepare('UPDATE posts SET hidden = 1 WHERE id = ?').run(postId);
+    if (result.changes) auditOperation(getDb(), 'post.hidden', adminId, 'post', postId);
+    return result;
+  })();
   if (result.changes === 0) { res.status(404).json({ error: 'Content not found.' }); return; }
   logAuthEvent({ eventType: 'admin_hide_post', userId: adminId, adminActorId: adminId, meta: { postId } });
   res.json({ ok: true });
@@ -134,7 +146,11 @@ router.post('/posts/:id/hide', requireAuth, requireAdmin, (req, res) => {
 router.post('/posts/:id/unhide', requireAuth, requireAdmin, (req, res) => {
   const adminId = (req as any).user.id;
   const postId = Number(req.params.id);
-  const result = getDb().prepare('UPDATE posts SET hidden = 0 WHERE id = ?').run(postId);
+  const result = getDb().transaction(() => {
+    const result = getDb().prepare('UPDATE posts SET hidden = 0 WHERE id = ?').run(postId);
+    if (result.changes) auditOperation(getDb(), 'post.unhidden', adminId, 'post', postId);
+    return result;
+  })();
   if (result.changes === 0) { res.status(404).json({ error: 'Content not found.' }); return; }
   logAuthEvent({ eventType: 'admin_unhide_post', userId: adminId, adminActorId: adminId, meta: { postId } });
   res.json({ ok: true });
@@ -202,6 +218,7 @@ router.patch('/reports/:id', requireAuth, requireAdmin, (req, res) => {
     if (note !== undefined) { updates.push('admin_note = ?'); vals.push(note); }
     vals.push(report.id);
     db.prepare(`UPDATE reports SET ${updates.join(', ')} WHERE id = ?`).run(...vals);
+    auditOperation(db, 'report.updated', (req as any).user.id, 'report', report.id);
   });
 
   updateReport();
@@ -270,14 +287,18 @@ router.delete('/users/:id', requireAuth, requireAdmin, (req, res) => {
   }
 
   const deleteAccount = getDb().transaction(() => {
+    // Revalidate under the write reservation, including other SQLite writers.
+    if (getDb().prepare('SELECT 1 FROM groups_table WHERE owner_id = ? LIMIT 1').get(targetId)) {
+      throw new Error('Account acquired group ownership; resolve ownership before deletion.');
+    }
     // reports.resolved_by has no cascade — null it within the same transaction.
     getDb().prepare('UPDATE reports SET resolved_by = NULL WHERE resolved_by = ?').run(targetId);
     const deleted = getDb().prepare('DELETE FROM users WHERE id = ?').run(targetId);
     if (deleted.changes !== 1) throw new Error('Account deletion did not complete.');
+    auditOperation(getDb(), 'user.deleted', viewerId, 'user', targetId);
   });
-  deleteAccount();
+  deleteAccount.immediate();
 
-  logAuthEvent({ eventType: 'admin_delete_user', adminActorId: viewerId, targetUserId: targetId, meta: { username: target.username, role: target.role } });
   res.json({ ok: true });
 });
 
@@ -324,7 +345,10 @@ router.post('/users/:id/role', requireAuth, requireAdmin, (req, res) => {
     }
   }
 
-  db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
+  db.transaction(() => {
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, targetId);
+    auditOperation(db, 'user.role_changed', adminId, 'user', targetId);
+  })();
   logAuthEvent({ eventType: 'admin_role_change', userId: targetId, adminActorId: adminId, targetUserId: targetId, meta: { newRole: role } });
   res.json({ ok: true, role });
 });
@@ -494,16 +518,17 @@ router.post('/users/:id/password-reset-token', requireAuth, requireAdmin, (req, 
     res.status(400).json({ error: 'User has no local password (OAuth-only account).' }); return;
   }
 
-  // Invalidate any existing unused tokens for this user before creating a new one
-  db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(targetId);
-
   const rawToken = randomBytes(32).toString('hex');
   const tokenHash = createHash('sha256').update(rawToken).digest('hex');
   const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(); // 2 hours
 
-  db.prepare(
-    'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, created_by_admin_id) VALUES (?, ?, ?, ?)'
-  ).run(targetId, tokenHash, expiresAt, adminId);
+  db.transaction(() => {
+    db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(targetId);
+    db.prepare(
+      'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, created_by_admin_id) VALUES (?, ?, ?, ?)'
+    ).run(targetId, tokenHash, expiresAt, adminId);
+    auditOperation(db, 'user.reset_issued', adminId, 'user', targetId);
+  }).immediate();
 
   logAuthEvent({ eventType: 'admin_password_reset_token', userId: targetId, adminActorId: adminId, targetUserId: targetId, meta: { username: target.username } });
 
@@ -686,50 +711,6 @@ router.get('/analytics/feature-usage', requireAuth, requireAdmin, (_req, res) =>
   res.json({ featureAreas });
 });
 
-// ─── Backup Routes ───
-// All paths and commands are fixed — no user input ever reaches the shell.
-
-const BACKUP_DIR = '/home/brock/backups/refugecloud-db';
-const BACKUP_RETENTION_DAYS = 14;
-const BACKUP_SCRIPT = path.resolve(__dirname, '../../scripts/backup-db.sh');
-const UPLOADS_DIR = '/home/brock/social-site/uploads';
-const UPLOAD_BACKUP_DIR = '/home/brock/backups/refugecloud-uploads';
-const UPLOAD_BACKUP_RETENTION_DAYS = 14;
-const UPLOAD_BACKUP_SCRIPT = path.resolve(__dirname, '../../scripts/backup-uploads.sh');
-const UPLOAD_BACKUP_TIMER = 'refugecloud-uploads-backup.timer';
-const UPLOAD_BACKUP_SERVICE = 'refugecloud-uploads-backup.service';
-
-type BackupFileInfo = { name: string; fullPath: string; sizeBytes: number; mtime: number };
-
-/** Run a fixed command safely. Returns trimmed stdout or 'unavailable' on any error/timeout. */
-function spawnSafe(cmd: string, args: string[], timeoutMs = 5000): string {
-  try {
-    const r = spawnSync(cmd, args, { timeout: timeoutMs, encoding: 'utf8' });
-    if (r.error) return 'unavailable';
-    return (r.stdout || '').trim() || 'unavailable';
-  } catch {
-    return 'unavailable';
-  }
-}
-
-function listBackupFiles(dir: string, prefix: string, suffix: string): BackupFileInfo[] {
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter(f => f.startsWith(prefix) && f.endsWith(suffix))
-    .map(name => {
-      const fullPath = path.join(dir, name);
-      const stat = fs.statSync(fullPath);
-      return { name, fullPath, sizeBytes: stat.size, mtime: stat.mtimeMs };
-    })
-    .sort((a, b) => b.mtime - a.mtime);
-}
-
-function backupSummary(file: BackupFileInfo | undefined): any {
-  if (!file) return null;
-  const ageHours = Math.round(((Date.now() - file.mtime) / 3_600_000) * 10) / 10;
-  return { filename: file.name, sizeBytes: file.sizeBytes, mtimeMs: file.mtime, ageHours };
-}
-
 function directoryStats(dir: string): { exists: boolean; fileCount: number; totalSizeBytes: number } {
   if (!fs.existsSync(dir)) return { exists: false, fileCount: 0, totalSizeBytes: 0 };
   let fileCount = 0;
@@ -752,218 +733,15 @@ function directoryStats(dir: string): { exists: boolean; fileCount: number; tota
   return { exists: true, fileCount, totalSizeBytes };
 }
 
-function nextScheduledRunFromTimer(timerListRaw: string): string {
-  if (timerListRaw === 'unavailable') return 'unavailable';
-  const parts = timerListRaw.split(/\s+/);
-  return parts.length >= 4 ? `${parts[0]} ${parts[1]} ${parts[2]} ${parts[3]}` : 'unavailable';
-}
-
-function safeServiceLog(raw: string): string {
-  if (!raw || raw === 'unavailable') return raw || 'unavailable';
-  return raw
-    .split(/\r?\n/)
-    .slice(-20)
-    .map(line => line.slice(0, 240))
-    .join('\n')
-    .slice(0, 3000);
-}
-
-function logAdminBackupRun(
-  eventType: 'admin_backup_run' | 'admin_upload_backup_run',
-  adminId: number,
-  success: boolean,
-  reason: string,
-  durationMs: number,
-): void {
-  logAuthEvent({
-    eventType,
-    userId: adminId,
-    success,
-    reason,
-    adminActorId: adminId,
-    meta: { durationMs },
-  });
-}
-
-// GET /api/admin/backups/status — backup directory health, latest file info, timer status
+// Paired recovery is an offline operator workflow, never a live destructive request.
 router.get('/backups/status', requireAuth, requireAdmin, (_req, res) => {
-  if (!runtimeStorage.isProduction) {
-    res.status(503).json({ error: 'Production backup controls are disabled outside production.' });
-    return;
-  }
-
-  // ── 1. Enumerate backup files ────────────────────────────────────────────
-  let backupDirExists = false;
-  let backupFiles: BackupFileInfo[] = [];
-  let uploadBackupDirExists = false;
-  let uploadBackupFiles: BackupFileInfo[] = [];
-
-  try {
-    backupDirExists = fs.existsSync(BACKUP_DIR);
-    if (backupDirExists) backupFiles = listBackupFiles(BACKUP_DIR, 'refugecloud-social-', '.db');
-  } catch { /* non-fatal */ }
-
-  try {
-    uploadBackupDirExists = fs.existsSync(UPLOAD_BACKUP_DIR);
-    if (uploadBackupDirExists) uploadBackupFiles = listBackupFiles(UPLOAD_BACKUP_DIR, 'refugecloud-uploads-', '.tar.gz');
-  } catch { /* non-fatal */ }
-
-  // ── 2. Latest backup metadata ─────────────────────────────────────────────
-  let latestBackup: any = null;
-  let integrityCheck: 'ok' | 'failed' | 'unavailable' = 'unavailable';
-
-  if (backupFiles.length > 0) {
-    const latest = backupFiles[0];
-    latestBackup = backupSummary(latest);
-
-    // Integrity check on backup file only — fixed command, no user input in path
-    try {
-      const r = spawnSync('sqlite3', [latest.fullPath, 'PRAGMA integrity_check;'], {
-        timeout: 15_000, encoding: 'utf8',
-      });
-      if (r.error || r.status !== 0) {
-        integrityCheck = 'failed';
-      } else {
-        integrityCheck = (r.stdout || '').trim() === 'ok' ? 'ok' : 'failed';
-      }
-    } catch { integrityCheck = 'unavailable'; }
-  }
-
-  const totalSizeBytes = backupFiles.reduce((sum, f) => sum + f.sizeBytes, 0);
-  const uploadBackupTotalSizeBytes = uploadBackupFiles.reduce((sum, f) => sum + f.sizeBytes, 0);
-  const uploadsSourceStats = directoryStats(UPLOADS_DIR);
-  const uploadBackupScriptExists = fs.existsSync(UPLOAD_BACKUP_SCRIPT);
-  const uploadsCovered = uploadBackupScriptExists && uploadBackupFiles.length > 0;
-
-  // ── 3. Systemd timer / service status (fixed commands only) ───────────────
-  const timerActive     = spawnSafe('systemctl', ['is-active', 'refugecloud-db-backup.timer']);
-  const timerListRaw    = spawnSafe('systemctl', ['list-timers', '--no-pager', '--no-legend', 'refugecloud-db-backup.timer']);
-  const lastServiceLog  = spawnSafe('journalctl', ['-u', 'refugecloud-db-backup.service', '-n', '15', '--no-pager', '--output=cat']);
-  const uploadTimerActive    = spawnSafe('systemctl', ['is-active', UPLOAD_BACKUP_TIMER]);
-  const uploadTimerListRaw   = spawnSafe('systemctl', ['list-timers', '--no-pager', '--no-legend', UPLOAD_BACKUP_TIMER]);
-  const uploadLastServiceLog = spawnSafe('journalctl', ['-u', UPLOAD_BACKUP_SERVICE, '-n', '15', '--no-pager', '--output=cat']);
-
-  // Parse "NEXT" datetime from list-timers: first 4 whitespace tokens are Day Date Time TZ
-  const nextScheduledRun = nextScheduledRunFromTimer(timerListRaw);
-  const uploadNextScheduledRun = nextScheduledRunFromTimer(uploadTimerListRaw);
-
-  res.json({
-    backupDirExists,
-    backupDir: BACKUP_DIR,
-    retentionDays: BACKUP_RETENTION_DAYS,
-    backupCount: backupFiles.length,
-    totalSizeBytes,
-    latestBackup,
-    integrityCheck,
-    timerActive,
-    nextScheduledRun,
-    lastServiceLog: safeServiceLog(lastServiceLog),
-    uploadsCovered,
-    uploadBackups: {
-      sourceDir: UPLOADS_DIR,
-      sourceDirExists: uploadsSourceStats.exists,
-      sourceFileCount: uploadsSourceStats.fileCount,
-      sourceSizeBytes: uploadsSourceStats.totalSizeBytes,
-      backupDirExists: uploadBackupDirExists,
-      backupDir: UPLOAD_BACKUP_DIR,
-      retentionDays: UPLOAD_BACKUP_RETENTION_DAYS,
-      backupCount: uploadBackupFiles.length,
-      totalSizeBytes: uploadBackupTotalSizeBytes,
-      latestBackup: backupSummary(uploadBackupFiles[0]),
-      backupScriptExists: uploadBackupScriptExists,
-      uploadsCovered,
-      timerName: UPLOAD_BACKUP_TIMER,
-      serviceName: UPLOAD_BACKUP_SERVICE,
-      timerActive: uploadTimerActive,
-      nextScheduledRun: uploadNextScheduledRun,
-      lastServiceLog: safeServiceLog(uploadLastServiceLog),
-    },
+  res.json({ maintenanceRequired: true, formatVersion: 1, physicalGcEnabled: false,
+    message: 'Paired database and uploads backups require controlled maintenance. See docs/backups.md.' });
+});
+for (const route of ['/backups/run', '/backups/run-uploads']) {
+  router.post(route, requireAuth, requireAdmin, (_req, res) => {
+    res.status(409).json({ error: 'Live standalone backups are retired. Stop storage writers and run the paired recovery command in docs/backups.md.' });
   });
-});
-
-// POST /api/admin/backups/run — run the backup script (fixed command, no user args)
-router.post('/backups/run', requireAuth, requireAdmin, (req, res) => {
-  if (!runtimeStorage.isProduction) {
-    res.status(503).json({ error: 'Production backup controls are disabled outside production.' });
-    return;
-  }
-
-  const startMs = Date.now();
-  const adminId = (req as any).user.id;
-  try {
-    if (!fs.existsSync(BACKUP_SCRIPT)) {
-      logAdminBackupRun('admin_backup_run', adminId, false, 'script_missing', Date.now() - startMs);
-      res.status(500).json({ ok: false, error: 'Backup script not found at expected path.' });
-      return;
-    }
-    const result = spawnSync('bash', [BACKUP_SCRIPT], {
-      timeout: 120_000, // 2 minutes max
-      encoding: 'utf8',
-      env: { ...process.env },
-    });
-    const durationMs = Date.now() - startMs;
-    if (result.error) {
-      logAdminBackupRun('admin_backup_run', adminId, false, 'launch_failed', durationMs);
-      res.json({ ok: false, error: result.error.message, durationMs });
-      return;
-    }
-    const stdout = (result.stdout || '').trim();
-    const stderr = (result.stderr || '').trim();
-    if (result.status !== 0) {
-      logAdminBackupRun('admin_backup_run', adminId, false, 'script_failed', durationMs);
-      res.json({ ok: false, error: stderr || 'Script exited with non-zero status.', output: stdout, durationMs });
-      return;
-    }
-    logAdminBackupRun('admin_backup_run', adminId, true, 'completed', durationMs);
-    res.json({ ok: true, output: stdout, durationMs });
-  } catch (e: any) {
-    logAdminBackupRun('admin_backup_run', adminId, false, 'unexpected_error', Date.now() - startMs);
-    res.json({ ok: false, error: e.message || 'Unexpected error.', durationMs: Date.now() - startMs });
-  }
-});
-
-// POST /api/admin/backups/run-uploads — run the uploads backup script (fixed command, no user args)
-router.post('/backups/run-uploads', requireAuth, requireAdmin, (req, res) => {
-  if (!runtimeStorage.isProduction) {
-    res.status(503).json({ error: 'Production backup controls are disabled outside production.' });
-    return;
-  }
-
-  const startMs = Date.now();
-  const adminId = (req as any).user.id;
-  try {
-    if (!fs.existsSync(UPLOAD_BACKUP_SCRIPT)) {
-      logAdminBackupRun('admin_upload_backup_run', adminId, false, 'script_missing', Date.now() - startMs);
-      res.status(500).json({ ok: false, error: 'Upload backup script not found at expected path.' });
-      return;
-    }
-    const result = spawnSync('bash', [UPLOAD_BACKUP_SCRIPT], {
-      timeout: 300_000, // 5 minutes max
-      encoding: 'utf8',
-      env: { ...process.env },
-    });
-    const durationMs = Date.now() - startMs;
-    if (result.error) {
-      console.error('[backup-uploads] Script launch error:', result.error.message);
-      logAdminBackupRun('admin_upload_backup_run', adminId, false, 'launch_failed', durationMs);
-      res.json({ ok: false, error: 'Upload backup timed out or could not start.', durationMs });
-      return;
-    }
-    if (result.status !== 0) {
-      const stderr = (result.stderr || '').trim();
-      console.error('[backup-uploads] Script failed:', stderr.slice(0, 500) || `status ${result.status}`);
-      logAdminBackupRun('admin_upload_backup_run', adminId, false, 'script_failed', durationMs);
-      res.json({ ok: false, error: 'Upload backup failed.', durationMs });
-      return;
-    }
-    const latest = backupSummary(listBackupFiles(UPLOAD_BACKUP_DIR, 'refugecloud-uploads-', '.tar.gz')[0]);
-    logAdminBackupRun('admin_upload_backup_run', adminId, true, 'completed', durationMs);
-    res.json({ ok: true, durationMs, latestBackup: latest });
-  } catch (e: any) {
-    console.error('[backup-uploads] Unexpected error:', e.message);
-    logAdminBackupRun('admin_upload_backup_run', adminId, false, 'unexpected_error', Date.now() - startMs);
-    res.json({ ok: false, error: 'Unexpected upload backup error.', durationMs: Date.now() - startMs });
-  }
-});
+}
 
 export default router;

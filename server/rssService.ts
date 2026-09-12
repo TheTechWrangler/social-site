@@ -109,19 +109,11 @@ export async function fetchSource(sourceId: number): Promise<FetchResult> {
   }
 }
 
-async function fetchSourceNow(sourceId: number): Promise<FetchResult> {
-  const db = getDb();
-  const source = db.prepare('SELECT * FROM rss_sources WHERE id = ?').get(sourceId) as RssSource | undefined;
-  if (!source) return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
+export function persistFetchedFeed(db: ReturnType<typeof getDb>, source: RssSource, feed: any) {
+  return db.transaction(() => {
+    let inserted = 0, dupes = 0, itemsFound = 0;
 
-  let inserted = 0;
-  let dupes = 0;
-  let itemsFound = 0;
-  let error: string | null = null;
-
-  try {
-    const feed = await parseFeedXml(await downloadFeed(source.url));
-    const current = db.prepare('SELECT url FROM rss_sources WHERE id = ?').get(sourceId) as { url: string } | undefined;
+    const current = db.prepare('SELECT url FROM rss_sources WHERE id = ?').get(source.id) as { url: string } | undefined;
     if (current?.url !== source.url) throw new RssFetchError('Feed configuration changed during refresh; retry.');
     itemsFound = feed.items?.length || 0;
 
@@ -157,12 +149,32 @@ async function fetchSourceNow(sourceId: number): Promise<FetchResult> {
       if (r.changes > 0) inserted++; else dupes++;
     }
 
-    db.prepare("UPDATE rss_sources SET last_fetched_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(sourceId);
+    db.prepare("UPDATE rss_sources SET last_fetched_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(source.id);
+    db.prepare("UPDATE rss_sources SET last_fetch_attempt_at = datetime('now'), last_fetch_error = NULL WHERE id = ?").run(source.id);
+
+    return { inserted, dupes, itemsFound };
+  }).immediate();
+}
+
+async function fetchSourceNow(sourceId: number): Promise<FetchResult> {
+  const db = getDb();
+  const source = db.prepare('SELECT * FROM rss_sources WHERE id = ?').get(sourceId) as RssSource | undefined;
+  if (!source) return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
+
+  let inserted = 0;
+  let dupes = 0;
+  let itemsFound = 0;
+  let error: string | null = null;
+
+  try {
+    const feed = await parseFeedXml(await downloadFeed(source.url));
+    ({ inserted, dupes, itemsFound } = persistFetchedFeed(db, source, feed));
   } catch (err: any) {
+    inserted = 0; dupes = 0;
     error = err instanceof RssFetchError ? err.message : 'Feed refresh failed.';
   }
 
-  db.prepare("UPDATE rss_sources SET last_fetch_attempt_at = datetime('now'), last_fetch_error = ? WHERE id = ? AND url = ?").run(error, sourceId, source.url);
+  if (error) db.prepare("UPDATE rss_sources SET last_fetch_attempt_at = datetime('now'), last_fetch_error = ? WHERE id = ? AND url = ?").run(error, sourceId, source.url);
   return { sourceId, sourceName: source.name, category: source.category, itemsFound, itemsInserted: inserted, duplicatesSkipped: dupes, error };
 }
 

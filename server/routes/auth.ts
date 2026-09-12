@@ -47,10 +47,12 @@ function generateAndStoreVerifToken(userId: number): string {
   const expiresAt = utcExpiryFromNow(ttlHours);
   const db = getDb();
   // Invalidate previous unused tokens so only the latest link works.
-  db.prepare("UPDATE email_verification_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(userId);
-  db.prepare(
-    'INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
-  ).run(userId, hash, expiresAt);
+  db.transaction(() => {
+    db.prepare("UPDATE email_verification_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(userId);
+    db.prepare(
+      'INSERT INTO email_verification_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
+    ).run(userId, hash, expiresAt);
+  }).immediate();
   return rawToken;
 }
 
@@ -253,15 +255,15 @@ router.post('/forgot-password', async (req, res) => {
   const ttlHours = Math.max(1, parseInt(process.env.PASSWORD_RESET_TTL_HOURS || '1', 10));
 
   try {
-    // Invalidate any existing unused tokens to ensure only the newest link works.
-    db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(user.id);
-
     const rawToken = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(rawToken).digest('hex');
     const expiresAt = utcExpiryFromNow(ttlHours);
-    db.prepare(
-      'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
-    ).run(user.id, tokenHash, expiresAt);
+    db.transaction(() => {
+      db.prepare("UPDATE password_reset_tokens SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(user.id);
+      db.prepare(
+        'INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)'
+      ).run(user.id, tokenHash, expiresAt);
+    }).immediate();
 
     // Build the reset URL pointing to the frontend route (not the API).
     const webBase = (process.env.WEB_BASE_URL || 'http://localhost:5174').replace(/\/$/, '');

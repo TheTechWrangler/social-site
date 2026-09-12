@@ -1,241 +1,184 @@
-# RefugeCloud — Database Backup & Restore Guide
+# Paired backup, offline restore, and asset reclamation
 
-## Overview
+## Safety decision
 
-The main database (`data/social.db`) contains all community data:
-users, posts, comments, messages, notifications, groups, sessions,
-analytics events, auth logs, and more.
+**KEEP PHYSICAL GC DISABLED.** Production deletion is hard-disabled in code,
+including when `allowPhysicalDeletion` is supplied. There is no production enable
+command or environment flag in this release. An operator-reviewed, production-sized
+restore drill and off-host recovery copy are still required before a separately
+authorized enablement change. Passing isolated tests does not enable deletion.
 
-Uploaded media lives outside the database in `uploads/`. A complete restore needs
-both the database backup and a matching uploads backup.
+Do not execute recovery commands against production during development or QA.
+Use explicit isolated paths. Never delete a lock merely to bypass a running writer.
 
-**Back up regularly. Verify your backups. Test restore before you need it.**
+## Recovery format and consistency
 
----
+A format-1 recovery set is a private directory containing `database.sqlite`,
+`uploads/`, and `manifest.json`. The manifest records application identity,
+schema migration IDs, creation time, completion state, every filename, size and
+SHA-256, and total bytes. SQLite `VACUUM INTO` captures committed WAL data in a
+single coherent database file. **Copying only the live main database is unsafe.**
 
-## Where Backups Are Stored
+Both backup and restore require maintenance: stop the application, scheduled
+storage jobs, and all other writers. The app and operational CLI share an exclusive
+`<database>.operation-lock` lease. This prevents application startup, concurrent
+operational commands, or accidental live backups through supported commands.
+It does not police external SQLite tools: stopping those is an operator requirement.
+Do not run seed, migration, or arbitrary filesystem tools during maintenance.
 
-```
-/home/brock/backups/refugecloud-db/
-  refugecloud-social-YYYY-MM-DD_HH-MM-SS.db
-  refugecloud-social-YYYY-MM-DD_HH-MM-SS.db
-  ...
+With writers stopped, the DB snapshot and immutable upload inventory describe the
+same recovery boundary. All regular files in the configured flat upload directory
+are included: managed images, avatars, legacy files, and staged files conservatively.
+Referenced missing local images make backup fail; they are never silently omitted.
+Unknown files are backed up, not inferred to be disposable. Nested upload folders,
+symlinks (including ancestor symlinks), hard links, overlapping backup/upload roots,
+and unsafe filenames are refused. Review legacy layouts before adoption.
 
-/home/brock/backups/refugecloud-uploads/
-  refugecloud-uploads-YYYY-MM-DD_HH-MM-SS.tar.gz
-  refugecloud-uploads-YYYY-MM-DD_HH-MM-SS.tar.gz
-  ...
-```
+No code, build output, dependencies, environment secrets, or infrastructure is
+included. Keep the matching application code separately in version control.
+The application package version is currently unchanged across batches; migration
+IDs, rather than that ambiguous package number, define schema compatibility.
 
-Database and uploads backups older than **14 days** are automatically removed
-when their scripts run.
+Backup writes a unique `.staging-*` directory, verifies copies and references,
+flushes files/directories, then renames it to `recovery-<uuid>`. Only completed set
+IDs are accepted by verification/restore. Failed staging remains for investigation.
+No recovery set is overwritten. Checksums detect corruption, not a malicious
+operator rewriting both manifest and contents; keep backup roots access-controlled.
 
----
+## Limits and retention
 
-## Backup Method
+Limits: 50,000 upload files, 20 GiB total per set, 16 MiB manifest, and 30 entries
+per recovery root (including staging). Hashing uses 64 KiB chunks rather than
+loading images into memory. Directory traversal is streamed and bounded.
+Operations are synchronous maintenance jobs; duration depends on disk speed and
+inventory size. They never block an active web request, because the app must stop.
+Provision a maintenance window and enough free space for backup, staging, and the
+pre-restore copy. A limit failure leaves active data untouched and requires review.
 
-Backups use **`VACUUM INTO`** — SQLite's safe live-snapshot command.
+There is **no automatic backup pruning**. Unlike the retired age-only scripts, no
+job can remove the only known-good recovery point. When the root is full, verify
+and move older completed sets to a separately controlled archive; keep at least
+two verified recoverable sets and one off-host copy. Failed/staging directories
+never count as known-good backups. Restore also needs room for its pre-restore set.
+Retained previous-state directories after restore require deliberate operator
+review; they are not automatically collected.
 
-Why this matters:
-- The live database runs in **WAL (Write-Ahead Logging) mode**, which means
-  the database is spread across `social.db`, `social.db-wal`, and `social.db-shm`.
-- A plain `cp` would capture only the main file, missing uncommitted WAL pages
-  and potentially producing an inconsistent snapshot.
-- `VACUUM INTO` reads the current consistent state (main DB + WAL) and writes
-  a single, clean, defragmented file — no sidecar files, no service stop needed.
+## Operator commands
 
----
-
-## Manual Backup
-
-From the project directory:
-
-```bash
-npm run backup:db
-# or directly:
-bash scripts/backup-db.sh
-```
-
-For uploads/media:
-
-```bash
-npm run backup:uploads
-# or directly:
-bash scripts/backup-uploads.sh
-```
-
-Expected output:
-```
-[backup-db 2026-05-16_03-00-00] Starting backup.
-[backup-db 2026-05-16_03-00-00] Source : /home/brock/social-site/data/social.db
-[backup-db 2026-05-16_03-00-00] Dest   : /home/brock/backups/refugecloud-db/refugecloud-social-2026-05-16_03-00-00.db
-[backup-db 2026-05-16_03-00-00] Size   : 8523776 bytes
-[backup-db 2026-05-16_03-00-00] Integrity check: ok
-[backup-db 2026-05-16_03-00-00] Done. Backup stored at: ...
-```
-
-If integrity check does not return `ok`, the script exits with a non-zero status
-and the bad backup file is not kept.
-
-Upload backups are gzip-compressed tar archives of the relative `uploads/` path.
-The script verifies that the archive exists, is non-empty, and can be listed.
-
----
-
-## Verifying a Backup
-
-Always verify before relying on a backup for restore:
+Use reviewed absolute paths, not values supplied by HTTP callers. First create a
+dedicated recovery root with owner-only permissions. The CLI does not create one
+implicitly, and requires explicit database/upload paths even in production.
 
 ```bash
-# Quick integrity check
-sqlite3 /home/brock/backups/refugecloud-db/refugecloud-social-YYYY-MM-DD_HH-MM-SS.db \
-  "PRAGMA integrity_check;"
-# Expected: ok
+# Placeholders: replace with reviewed paths for the selected environment.
+export NODE_ENV='<test-or-production>'
+export DATABASE_PATH='/absolute/path/to/database.sqlite'
+export UPLOADS_DIR='/absolute/path/to/uploads'
+export RECOVERY_ROOT='/absolute/path/to/private-recovery-root'
 
-# Check row counts look sane
-sqlite3 /home/brock/backups/refugecloud-db/refugecloud-social-YYYY-MM-DD_HH-MM-SS.db \
-  "SELECT 'users', COUNT(*) FROM users UNION ALL
-   SELECT 'posts', COUNT(*) FROM posts UNION ALL
-   SELECT 'sessions', COUNT(*) FROM sessions;"
+# Stop the application and all storage writers using your deployment procedure.
+npm run recovery -- backup --maintenance-confirmed
+# Returns a server-generated recovery-<uuid> ID only after completion.
+npm run recovery -- verify 'recovery-<uuid>'
 ```
 
----
+The old `backup:db` and `backup:uploads` commands now exit unsuccessfully with
+instructions; they do not create or prune anything. Existing timer installations
+must be reviewed by an operator rather than continuing to assume those commands
+make complete recovery points. This batch does not install or change timers.
+Old DB/tar archives are preserved, but must not be treated as verified paired sets.
+Admin backup run endpoints return HTTP 409 with maintenance instructions. The
+Admin UI makes no claim that a legacy archive proves recoverability. There is no
+online restore endpoint or restore button.
 
-## Automatic Backup (Daily via systemd Timer)
-
-Systemd unit files are in `deploy/`. They are **not active yet** — you must
-install and enable them manually after reviewing:
+## Offline restore
 
 ```bash
-# Install units
-sudo cp deploy/refugecloud-db-backup.service /etc/systemd/system/
-sudo cp deploy/refugecloud-db-backup.timer   /etc/systemd/system/
-sudo systemctl daemon-reload
-
-# Enable and start the timer (fires daily at ~02:30 AM)
-sudo systemctl enable --now refugecloud-db-backup.timer
-
-# Verify it is scheduled
-sudo systemctl list-timers refugecloud-db-backup.timer --no-pager
-
-# Check last run
-sudo journalctl -u refugecloud-db-backup -n 50 --no-pager
+# Application and all writers must remain stopped throughout.
+npm run recovery -- verify 'recovery-<uuid>'
+npm run recovery -- restore 'recovery-<uuid>' --restore-offline-confirmed
+# Restart the same compatible application, then run read-only health/media checks.
 ```
 
-Optional uploads/media timer files are also in `deploy/`. They are **not active
-until installed and enabled manually**:
+Restore verifies the entire manifest, hashes, SQLite integrity, foreign keys,
+local references, and exact current migration IDs before altering active data.
+It copies into unique staging paths, creates a verified paired pre-restore recovery
+point, invalidates historical sessions/reset/verification tokens in the staged DB,
+and rotates every restored user's credential version. **Everyone must log in
+again.** Otherwise restoring historical sessions could resurrect revoked access.
+Profile/content/relationship state intentionally returns to the snapshot time;
+operators must account for bans or privacy changes made after that snapshot.
+
+The current WAL is checkpointed, and original DB, sidecars, and uploads are moved
+to unique `.previous-*` paths. Staged DB/uploads are then renamed into place.
+Original files and the pre-restore set remain recoverable. A durable restore
+journal lists every rename. Ordinary failures reverse completed renames; a failed
+rollback or process crash leaves the lease/journal, blocking startup. A two-directory
+filesystem swap is not globally atomic: this maintenance fence is essential.
+
+Do not manually copy a backup over a running SQLite database. Do not remove old
+WAL files or extract an unverified tar archive into active uploads.
+
+## Crash or failure recovery
+
+1. Keep maintenance mode and stop all writers. Preserve the recovery root, lock,
+   `.restore-journal`, staged paths, and `.previous-*` paths.
+2. Inspect the lock PID and deployment process state; a missing PID alone is not
+   permission to delete data. Confirm no writer is using any selected path.
+3. For a restore journal, review its recorded source/destination rename pairs and
+   filesystem presence. Reverse only completed moves in reverse order to restore
+   original state, or complete the verified staged switch. Do not guess when a
+   source and destination both exist. Keep the verified pre-restore set unchanged.
+4. Verify SQLite integrity and local media against the selected recovery point.
+   If recovery is ambiguous, leave the app stopped and escalate to the operator.
+5. Only after reconciliation, remove the exact reviewed journal/lease and restart.
+   Crashed backup staging is not valid and can be archived for investigation.
+
+External full-disk failure still requires an off-host copy; local backups alone
+do not protect against loss of the machine or disk. No cloud infrastructure is
+introduced here.
+
+## Migrations and audit
+
+Startup runs ordered schema guards in one immediate SQLite transaction. Known
+data conversions have IDs in `schema_migrations`; they are marked only after
+success. The baseline is `015-atomic-baseline`. Follow/identity/version and foreign
+key preconditions still run on restart. Failed DDL/backfill leaves no partial
+schema or success marker. Ambiguous identities/follows or authored duplicate
+reposts require operator review; no guessing or silent content deletion.
+Rehearse upgrades on a verified isolated copy before production startup.
+
+`operational_audit` stores event, actor ID when available, target type/ID and time,
+with no cascading foreign keys or content payloads. Required mutation evidence
+is committed with user/group/post/admin changes. Operator backup/restore/GC events
+have a null application actor. Existing best-effort auth/usage logs remain separate.
+GC attempt evidence is committed before irreversible unlink; a later failure
+can leave an attempt without completion, which is deliberate recovery evidence.
+Audit records are not part of automatic log retention.
+
+## GC dry run and deletion gate
 
 ```bash
-sudo cp deploy/refugecloud-uploads-backup.service /etc/systemd/system/
-sudo cp deploy/refugecloud-uploads-backup.timer   /etc/systemd/system/
-sudo systemctl daemon-reload
-
-# Enable and start the timer (fires daily at ~02:50 AM)
-sudo systemctl enable --now refugecloud-uploads-backup.timer
-
-sudo systemctl list-timers refugecloud-uploads-backup.timer --no-pager
-sudo journalctl -u refugecloud-uploads-backup -n 50 --no-pager
+# Explicit isolated or reviewed production paths as above; stop writers first.
+npm run recovery -- gc-dry-run
 ```
 
----
+Dry run opens SQLite read-only and reports bounded counts: examined, eligible,
+referenced, grace-period, unsafe-path, missing, failed. It changes neither lifecycle
+metadata nor files. Default batch is 100; library maximum is 500. It does not scan
+and delete untracked files. Pending-expiry bookkeeping on non-dry runs is also
+bounded to the batch size and grants a fresh 24-hour grace period.
 
-## Restore Procedure
+Actual deletion is available only to isolated non-production library callers with
+explicit `allowPhysicalDeletion: true`; production is always rejected. Each candidate
+is re-read under an immediate DB transaction, including current state, grace time,
+post/avatar references (including legacy URL references), managed namespace, ancestor
+and leaf symlinks, hard links, file size/hash, and inode identity before unlink.
+No transaction includes a network call. Missing files converge to deleted state;
+filesystem or DB failures retain reclaimable state for a later bounded retry.
+No automatic retry worker is enabled. Unknown files are always left alone.
 
-> ⚠️  **Read all steps before starting. Restoring overwrites live data.**
-
-### Before you start
-1. **Make fresh safety backups of the current live database and uploads** even if you think they are broken:
-   ```bash
-   npm run backup:db
-   npm run backup:uploads
-   ```
-2. Identify the database and uploads backups you want to restore:
-   ```bash
-   ls -lht /home/brock/backups/refugecloud-db/
-   ls -lht /home/brock/backups/refugecloud-uploads/
-   ```
-3. Verify the database backup is intact:
-   ```bash
-   sqlite3 /home/brock/backups/refugecloud-db/refugecloud-social-YYYY-MM-DD_HH-MM-SS.db \
-     "PRAGMA integrity_check;"
-   # Must return: ok
-   ```
-4. Verify the uploads archive can be listed:
-   ```bash
-   tar -tzf /home/brock/backups/refugecloud-uploads/refugecloud-uploads-YYYY-MM-DD_HH-MM-SS.tar.gz | head
-   ```
-
-### Restore steps
-
-```bash
-# 1. Stop the service — REQUIRED. Do not restore while the app is writing.
-sudo systemctl stop refugecloud
-
-# 2. Keep safety copies of the current live DB and uploads.
-#    Never delete live uploads without a fresh backup.
-cp /home/brock/social-site/data/social.db \
-   /home/brock/social-site/data/social.db.pre-restore-$(date +%Y%m%d%H%M%S)
-tar -czf /home/brock/social-site/uploads.pre-restore-$(date +%Y%m%d%H%M%S).tar.gz \
-   -C /home/brock/social-site uploads
-
-# 3. Remove WAL sidecar files from the OLD database.
-#    CRITICAL: if you leave these behind they will be applied to the restored
-#    database on next open, corrupting it.
-rm -f /home/brock/social-site/data/social.db-wal \
-      /home/brock/social-site/data/social.db-shm
-
-# 4. Copy the backup into place
-cp /home/brock/backups/refugecloud-db/refugecloud-social-YYYY-MM-DD_HH-MM-SS.db \
-   /home/brock/social-site/data/social.db
-
-# 5. Restore uploads if needed.
-#    This archive contains the relative uploads/ directory.
-tar -xzf /home/brock/backups/refugecloud-uploads/refugecloud-uploads-YYYY-MM-DD_HH-MM-SS.tar.gz \
-   -C /home/brock/social-site
-
-# 6. Verify the restored database file
-sqlite3 /home/brock/social-site/data/social.db "PRAGMA integrity_check;"
-# Must return: ok
-
-# 7. Restart the service
-sudo systemctl start refugecloud
-sudo systemctl status refugecloud --no-pager
-
-# 8. Confirm the app is responding
-curl -s http://127.0.0.1:3003/api/health
-# Expected: {"ok":true,"app":"social-site"}
-```
-
-### After restore
-- Users whose sessions were created after the restored snapshot will be logged out
-  (their session IDs will not exist in the restored sessions table). This is expected.
-- If you restore a database snapshot without the matching uploads archive, posts and
-  avatars may reference media files that do not exist on disk.
-- Inform the community if significant recent data was lost.
-
----
-
-## What Is NOT Backed Up by This Script
-
-| Item | Location | Status |
-|---|---|---|
-| SQLite database | `data/social.db` | ✅ Backed up |
-| User uploads / media | `uploads/` | ✅ Backed up locally |
-| Environment config | `.env` | ❌ Do not back up to shared storage (contains secrets) |
-| App code | git repository | ✅ Version controlled |
-
----
-
-## Offsite / Remote Backup (Recommended Future Step)
-
-The current database and uploads backups write to the same physical disk as the
-live app. A disk failure would lose the live files and local backups. Consider
-adding a secondary copy:
-
-```bash
-# Example: rsync to a NAS or remote host (add to cron or after the backup script)
-rsync -a /home/brock/backups/refugecloud-db/ user@nas:/backups/refugecloud-db/
-rsync -a /home/brock/backups/refugecloud-uploads/ user@nas:/backups/refugecloud-uploads/
-```
-
-Do not store `.env` or secrets in any shared backup target.
+Before a future production enablement, require a reviewed production-sized paired
+backup/restore drill, off-host recovery, all reference/path/failure tests, explicit
+operator approval, and a separately implemented default-off production gate.
+Until then the code hard-disable is the immediate stop mechanism; do not bypass it.

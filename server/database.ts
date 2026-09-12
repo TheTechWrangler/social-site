@@ -1,3 +1,5 @@
+import { applyMigration, prepareMigrationLedger } from './migrations.js';
+import { initializeOperationalAudit } from './operationalAudit.js';
 import { feedTimeSql } from './feedTime.js';
 import Database from 'better-sqlite3';
 import { ensureDatabaseDirectory, getStorageConfig } from './config.js';
@@ -12,7 +14,10 @@ db.pragma('foreign_keys = ON');
 export function getDb(): Database.Database { return db; }
 export function getDatabasePath(): string { return DB_PATH; }
 
-export function initializeDatabase(): void {
+export function initializeDatabase(database: Database.Database = db): void {
+  const db = database;
+  db.transaction(() => {
+  prepareMigrationLedger(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -421,6 +426,13 @@ export function initializeDatabase(): void {
   // Source-linked notification rows intentionally represent active actions;
   // stale reversals and malformed/self rows are removed once during migration.
   const enforceNotificationInvariants = db.transaction(() => {
+    const meaningfulDuplicate = db.prepare(`SELECT 1 FROM posts p
+      WHERE p.repost_of IS NOT NULL AND p.id NOT IN (
+        SELECT MIN(id) FROM posts WHERE repost_of IS NOT NULL GROUP BY user_id,repost_of
+      ) AND (trim(p.content) != '' OR EXISTS (SELECT 1 FROM posts child WHERE child.parent_id = p.id OR child.repost_of = p.id)
+        OR EXISTS (SELECT 1 FROM post_media media WHERE media.post_id = p.id)
+        OR EXISTS (SELECT 1 FROM reports r WHERE r.post_id = p.id)) LIMIT 1`).get();
+    if (meaningfulDuplicate) throw new Error('Notification migration refused duplicate reposts with authored data; operator review required.');
     db.exec(`
       DELETE FROM posts
       WHERE repost_of IS NOT NULL
@@ -480,7 +492,7 @@ export function initializeDatabase(): void {
         ON notifications(user_id, actor_id, group_id) WHERE type = 'group_invite';
     `);
   });
-  enforceNotificationInvariants();
+  applyMigration(db, '010-notification-invariants', enforceNotificationInvariants);
 
   // Batch 14: operational fetch status, not a trust marker. Every fetch revalidates.
   const rssColumns = db.prepare('PRAGMA table_info(rss_sources)').all() as Array<{ name: string }>;
@@ -686,10 +698,9 @@ export function initializeDatabase(): void {
 
   // ─── Back-fill is_verified for existing OAuth-only users ───
   // Any user linked to a Google or Steam account is considered email-verified via
-  // their provider. This is safe to run repeatedly — verified_at guard prevents
-  // double-updates, and it only touches users who were created before the
+  // their provider. This versioned backfill only runs once, and touches users created before the
   // is_verified=1 default was added to the OAuth registration path.
-  try {
+  applyMigration(db, 'legacy-provider-verification', () => {
     db.prepare(`
       UPDATE users
       SET is_verified = 1, verified_at = datetime('now')
@@ -697,7 +708,7 @@ export function initializeDatabase(): void {
         AND verified_at IS NULL
         AND id IN (SELECT DISTINCT user_id FROM user_auth_providers)
     `).run();
-  } catch { /* non-fatal — table may not exist yet on a brand-new install */ }
+  });
 
   // ─── sessions table (used by SQLiteSessionStore / express-session) ───
   // IF NOT EXISTS is safe for both fresh installs and existing databases.
@@ -727,6 +738,10 @@ export function initializeDatabase(): void {
   if (!sessionColumns.some(c => c.name === 'expire_ms')) {
     db.exec('ALTER TABLE sessions ADD COLUMN expire_ms INTEGER');
   }
+  initializeOperationalAudit(db);
+  if ((db.pragma('foreign_key_check') as unknown[]).length) throw new Error('Migration refused foreign-key violations.');
+  applyMigration(db, '015-atomic-baseline', () => {});
+  }).immediate();
 }
 
 // ─── Retention Cleanup ───

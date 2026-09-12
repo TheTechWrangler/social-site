@@ -1,3 +1,4 @@
+import './runtimeLease.js';
 import { RequestValidationError } from './requestValidation.js';
 import 'dotenv/config';
 import express from 'express';
