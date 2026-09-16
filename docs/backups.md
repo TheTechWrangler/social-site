@@ -84,8 +84,9 @@ npm run recovery -- verify 'recovery-<uuid>'
 
 The old `backup:db` and `backup:uploads` commands now exit unsuccessfully with
 instructions; they do not create or prune anything. Existing timer installations
-must be reviewed by an operator rather than continuing to assume those commands
-make complete recovery points. This batch does not install or change timers.
+must be retired by an operator using the [deployment instructions](../deploy/README.md).
+The retired unit templates have been removed; no automatic replacement timer is
+provided, and repository changes do not alter installed units.
 Old DB/tar archives are preserved, but must not be treated as verified paired sets.
 Admin backup run endpoints return HTTP 409 with maintenance instructions. The
 Admin UI makes no claim that a legacy archive proves recoverability. There is no

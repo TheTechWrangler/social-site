@@ -2,6 +2,7 @@ node_modules
 dist
 data/*.db
 data/*.db-*
+/data/*.db.operation-lock
 uploads/*
 !uploads/.gitkeep
 uploads-dev/

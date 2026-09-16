@@ -19,19 +19,6 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   admin_last_admin_demote_blocked: '👑 Last admin demotion blocked',
 };
 
-// ── Backup tab helpers ────────────────────────────────────────────────────────
-function formatBackupAge(ageHours: number): string {
-  if (ageHours < 1) return `${Math.round(ageHours * 60)} min ago`;
-  if (ageHours < 24) return `${Math.round(ageHours)}h ago`;
-  return `${(ageHours / 24).toFixed(1)}d ago`;
-}
-function formatBytes(bytes: number): string {
-  const safeBytes = Number.isFinite(bytes) ? bytes : 0;
-  if (safeBytes < 1024) return `${safeBytes} B`;
-  if (safeBytes < 1_048_576) return `${(safeBytes / 1024).toFixed(1)} KB`;
-  return `${(safeBytes / 1_048_576).toFixed(1)} MB`;
-}
-
 function UserDetailPanel({ act, resetLink, generatingReset, onGenerateReset, onDismissReset, onCopyLink }: {
   act: any; resetLink?: { link: string; expiresAt: string }; generatingReset: boolean;
   onGenerateReset: () => void; onDismissReset: () => void; onCopyLink: () => void;

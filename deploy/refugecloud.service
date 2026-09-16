@@ -52,9 +52,10 @@ RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallArchitectures=native
 
-# Keep application code and the host filesystem read-only. SQLite/WAL, uploads,
-# and the existing admin-triggered production backup functions need writes only
-# in these explicit locations.
+# Keep application code and the host filesystem read-only. SQLite/WAL and uploads
+# need writes in their explicit locations. Legacy backup directory allowances
+# below are retained pending deployment review; the web app no longer runs backups.
+# Paired recovery is an offline operator workflow; see deploy/README.md.
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/brock/social-site/data

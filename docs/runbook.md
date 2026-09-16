@@ -48,7 +48,10 @@ Look for `[startup] FATAL:` lines in the journal. Add the missing variable to th
 sqlite3 /home/brock/social-site/data/social.db "PRAGMA integrity_check;"
 # Expected: ok
 ```
-If corrupt, restore from backup (see docs/backups.md).
+If corrupt, keep the service stopped and preserve the database, sidecars, uploads,
+and recovery evidence. The paired restore CLI requires a valid current database
+and cannot repair corruption or bootstrap missing storage. Escalate for an
+operator-reviewed recovery plan; see [backup and recovery](backups.md).
 
 **Out of disk space:**
 ```bash
@@ -137,56 +140,94 @@ After recovery, immediately change the password and delete or demote the recover
 
 ---
 
-## Database restore
+## Paired backup and offline restore
 
-See **docs/backups.md** for the full step-by-step restore procedure, integrity checks, and WAL sidecar file handling.
+Use the [Batch 15 recovery procedure](backups.md). A recovery set pairs a
+WAL-aware SQLite snapshot with all persistent uploads and a checksummed manifest.
+Standalone DB/tar archives are not verified paired recovery sets. Do not overwrite
+the database, delete WAL/SHM files, or restore uploads independently.
 
-Quick reference:
+Before either operation:
+
+1. Schedule maintenance and stop the application, scheduled storage jobs, and all
+   other database/upload writers. The shared operation lock blocks the application
+   and recovery CLI from overlapping, but does not police external SQLite tools.
+2. Select explicit absolute paths for the intended environment. Use a dedicated,
+   existing recovery directory with owner-only permissions, outside the database
+   and upload storage. Symlinks, hard links and unsupported upload layouts are
+   refused; review the limits in [backups.md](backups.md).
+3. Allow space for staging, a pre-restore recovery set, and retained previous
+   files. The recovery root permits 30 entries including staging; there is no
+   automatic pruning. Keep matching application code available.
+
+Run from the project root as the storage owner. Replace every placeholder with
+reviewed values; these are operator commands, not commands to run during QA:
+
 ```bash
-# 1. Stop service
+export NODE_ENV='<test-or-production>'
+export DATABASE_PATH='/absolute/path/to/database.sqlite'
+export UPLOADS_DIR='/absolute/path/to/uploads'
+export RECOVERY_ROOT='/absolute/path/to/private-recovery-root'
+
+# For this systemd deployment; also stop every other storage writer.
 sudo systemctl stop refugecloud
+sudo systemctl is-active refugecloud
+# Confirm inactive before proceeding. A surviving lock requires investigation.
+```
 
-# 2. Safety-copy current live DB
-cp /home/brock/social-site/data/social.db \
-   /home/brock/social-site/data/social.db.pre-restore-$(date +%Y%m%d%H%M%S)
+To create a backup while writers remain stopped:
 
-# 3. Remove WAL sidecars (CRITICAL — do not skip)
-rm -f /home/brock/social-site/data/social.db-wal \
-      /home/brock/social-site/data/social.db-shm
+```bash
+npm run recovery -- backup --maintenance-confirmed
+# Use the returned recovery-<uuid> ID:
+npm run recovery -- verify 'recovery-<uuid>'
+```
 
-# 4. Copy backup into place (replace filename)
-cp /home/brock/backups/refugecloud-db/refugecloud-social-YYYY-MM-DD_HH-MM-SS.db \
-   /home/brock/social-site/data/social.db
+To restore a selected completed recovery set while writers remain stopped:
 
-# 5. Verify
-sqlite3 /home/brock/social-site/data/social.db "PRAGMA integrity_check;"
+```bash
+npm run recovery -- verify 'recovery-<uuid>'
+npm run recovery -- restore 'recovery-<uuid>' --restore-offline-confirmed
+# Verify the pre-restore ID returned in the recoveryPoint field:
+npm run recovery -- verify 'recovery-<pre-restore-uuid>'
+```
 
-# 6. Restart
+Restore requires a valid current database with exactly matching migration IDs,
+an existing upload directory, and current referenced media sufficient to create
+a coherent pre-restore recovery point. Missing/corrupt current storage requires
+an operator-reviewed recovery plan; do not bypass these checks.
+
+The CLI verifies hashes, SQLite integrity, foreign keys and local references,
+stages the replacement, and creates the pre-restore recovery set. It checkpoints
+WAL and retains original database/sidecars/uploads under unique `.previous-*`
+paths. Renames are journaled and ordinary failures reverse completed moves; the
+filesystem swap is not globally atomic. Historical sessions and reset/verification
+tokens are invalidated, so everyone must log in again. Review bans and privacy
+changes made after the selected snapshot.
+
+Only after successful completion and verification, restart the compatible app:
+
+```bash
 sudo systemctl start refugecloud
+sudo systemctl status refugecloud --no-pager
 npm run smoke:live
 ```
 
----
+Also check restored content and media with the appropriate access permissions.
+Preserve the pre-restore set and previous files until operator review. On failure,
+keep maintenance mode and preserve the lock, `.restore-journal`, staging and
+previous paths. Follow [crash or failure recovery](backups.md#crash-or-failure-recovery);
+never remove a live lock or delete a journal just to make startup succeed.
+Production physical GC remains disabled.
 
-## Uploads restore
+## Retired backup timers
 
-See **docs/backups.md** for the full uploads restore procedure.
-
-Quick reference:
-```bash
-# Stop service first
-sudo systemctl stop refugecloud
-
-# Safety-archive current uploads
-tar -czf /home/brock/social-site/uploads.pre-restore-$(date +%Y%m%d%H%M%S).tar.gz \
-   -C /home/brock/social-site uploads
-
-# Restore from archive (replace filename)
-tar -xzf /home/brock/backups/refugecloud-uploads/refugecloud-uploads-YYYY-MM-DD_HH-MM-SS.tar.gz \
-   -C /home/brock/social-site
-
-sudo systemctl start refugecloud
-```
+The old database and uploads backup services invoke scripts that intentionally
+fail. Do not install, enable, or manually start them. Follow the
+[deployment retirement instructions](../deploy/README.md) for installed copies.
+Batch 15 supplies no automatic replacement timer: operators must arrange reviewed
+maintenance windows for the paired recovery workflow above and maintain an
+off-host copy. Preserve old archives as evidence; do not label them paired sets.
 
 ---
 
@@ -209,7 +250,7 @@ sudo journalctl --disk-usage
 
 **Safe recovery options (in order of preference):**
 
-1. Rotate old backup files — the backup scripts keep 14 days by default. If you have more, remove the oldest manually from `/home/brock/backups/` after confirming newer ones are intact.
+1. Review completed paired recovery sets using `npm run recovery -- verify` with the explicit environment/storage paths above. There is no automatic or age-based pruning. Archive older verified sets to separately controlled storage, retaining at least two verified recoverable sets and one off-host copy. Preserve failed staging and previous-state files until operator review; leave room for the next pre-restore set.
 
 2. Vacuum the journal:
    ```bash
@@ -222,7 +263,7 @@ sudo journalctl --disk-usage
    du -sh /tmp/
    ```
 
-> ⚠️ Do NOT delete `data/social.db`, `data/social.db-wal`, or any file in `uploads/` without a confirmed good backup. Do NOT delete backups until you have verified at least two newer backups are good.
+> Do not delete live database/sidecar/upload files, operation locks or restore journals to free space. Preserve recovery evidence; production physical GC remains disabled.
 
 ---
 
@@ -264,21 +305,6 @@ sudo journalctl -u refugecloud -n 100 --no-pager
 # Logs since a timestamp
 sudo journalctl -u refugecloud --since "2026-05-16 03:00:00" --no-pager
 
-# Check backup timer status
-sudo systemctl status refugecloud-db-backup.timer --no-pager
-sudo systemctl list-timers refugecloud-db-backup.timer --no-pager
-
-# Check uploads backup timer
-sudo systemctl status refugecloud-uploads-backup.timer --no-pager
-sudo systemctl list-timers refugecloud-uploads-backup.timer --no-pager
-
-# Last backup service run logs
-sudo journalctl -u refugecloud-db-backup.service -n 30 --no-pager
-sudo journalctl -u refugecloud-uploads-backup.service -n 30 --no-pager
-
 # Reload systemd after editing unit files
 sudo systemctl daemon-reload
-
-# Enable a timer to survive reboots
-sudo systemctl enable --now refugecloud-db-backup.timer
 ```
