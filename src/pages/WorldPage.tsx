@@ -3,10 +3,11 @@ import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { RouteRequestGate } from '../routeLoadState';
+import type { PublicExternalSourceDto } from '../../shared/externalContent';
 
 export default function WorldPage({ user }: { user?: any }) {
   const [items, setItems] = useState<any[]>([]);
-  const [sources, setSources] = useState<any[]>([]);
+  const [sources, setSources] = useState<PublicExternalSourceDto[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [feedLoaded, setFeedLoaded] = useState(false);
@@ -24,7 +25,10 @@ export default function WorldPage({ user }: { user?: any }) {
   const [pendingMutation, setPendingMutation] = useState<string | null>(null);
   const PAGE_SIZE = 30;
   const feedGate = useRef(new RouteRequestGate());
+  const sourceGate = useRef(new RouteRequestGate());
   const blockedGate = useRef(new RouteRequestGate());
+  const mutationGate = useRef(new RouteRequestGate());
+  const mutationLock = useRef<symbol | null>(null);
   const currentAccountId = useRef(user?.id ?? null);
   currentAccountId.current = user?.id ?? null;
 
@@ -44,19 +48,32 @@ export default function WorldPage({ user }: { user?: any }) {
     void loadSources();
     void loadFeed();
     if (user) void loadBlockedSources();
-    return () => { feedGate.current.invalidate(); blockedGate.current.invalidate(); };
+    return () => {
+      feedGate.current.invalidate();
+      sourceGate.current.invalidate();
+      blockedGate.current.invalidate();
+      mutationGate.current.invalidate();
+      mutationLock.current = null;
+    };
   }, [user?.id]);
 
   const isLoggedIn = !!user;
 
   async function loadSources() {
+    const requestedAccountId = user?.id ?? null;
+    const isCurrent = sourceGate.current.begin();
     setSourcesError('');
     try {
       const r = await api.get<any>('/world-feed/sources');
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       setSources(r.sources);
       setCategories(r.categories);
     } catch {
-      setSourcesError('World filters are unavailable.');
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setSourcesError(sources.length
+          ? 'Could not refresh the approved source catalog. Previously loaded source information may be stale.'
+          : 'Approved source catalog is unavailable.');
+      }
     }
   }
 
@@ -100,34 +117,78 @@ export default function WorldPage({ user }: { user?: any }) {
 
   async function handleBlock(sourceId: number, sourceName: string) {
     return confirmAction({ title: "Block source", description: `Block "${sourceName}"? You will no longer see World Feed items or discussions from this source.` }, async () => {
-    if (pendingMutation) return;
+    if (mutationLock.current) return;
+    const mutationToken = Symbol('source-mutation');
+    mutationLock.current = mutationToken;
+    const requestedAccountId = user?.id ?? null;
+    const isCurrent = mutationGate.current.begin();
     setPendingMutation(`block:${sourceId}`);
     setMutationError('');
     try {
       await api.post<any>(`/world-feed/sources/${sourceId}/block`);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       setItems(prev => prev.filter(i => i.sourceId !== sourceId));
+      setSources(prev => prev.map(source => source.id === sourceId && source.viewer
+        ? { ...source, viewer: { ...source.viewer, blocked: true } }
+        : source));
       await loadBlockedSources();
       await loadFeed(selectedCategory, selectedSource, 0, selectedItemType || undefined);
     } catch (e: any) {
-      setMutationError(e.message || 'Could not block source.');
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setMutationError(e.message || 'Could not block source.');
      throw e; } finally {
-      setPendingMutation(null);
+      if (mutationLock.current === mutationToken) mutationLock.current = null;
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setPendingMutation(null);
     }
   });
   }
 
   async function handleUnblock(sourceId: number) {
-    if (pendingMutation) return;
+    if (mutationLock.current) return;
+    const mutationToken = Symbol('source-mutation');
+    mutationLock.current = mutationToken;
+    const requestedAccountId = user?.id ?? null;
+    const isCurrent = mutationGate.current.begin();
     setPendingMutation(`unblock:${sourceId}`);
     setMutationError('');
     try {
       await api.delete(`/world-feed/sources/${sourceId}/block`);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       setBlockedSources(prev => prev.filter(s => s.id !== sourceId));
+      setSources(prev => prev.map(source => source.id === sourceId && source.viewer
+        ? { ...source, viewer: { ...source.viewer, blocked: false } }
+        : source));
       await loadFeed(selectedCategory, selectedSource, 0, selectedItemType || undefined);
     } catch (e: any) {
-      setMutationError(e.message || 'Could not unblock source.');
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setMutationError(e.message || 'Could not unblock source.');
     } finally {
-      setPendingMutation(null);
+      if (mutationLock.current === mutationToken) mutationLock.current = null;
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setPendingMutation(null);
+    }
+  }
+
+  async function handleSubscription(sourceId: number, subscribe: boolean) {
+    if (mutationLock.current) return;
+    const mutationToken = Symbol('source-mutation');
+    mutationLock.current = mutationToken;
+    const requestedAccountId = user?.id ?? null;
+    const isCurrent = mutationGate.current.begin();
+    setPendingMutation(`subscription:${sourceId}`);
+    setMutationError('');
+    try {
+      const confirmed = subscribe
+        ? await api.put<any>(`/world-feed/sources/${sourceId}/subscription`)
+        : await api.delete<any>(`/world-feed/sources/${sourceId}/subscription`);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
+      setSources(previous => previous.map(source => source.id === sourceId && source.viewer
+        ? { ...source, viewer: { subscribed: !!confirmed.subscribed, blocked: !!confirmed.blocked } }
+        : source));
+    } catch (e: any) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setMutationError(e.message || 'Could not update this source subscription. The previous server-confirmed setting remains active.');
+      }
+    } finally {
+      if (mutationLock.current === mutationToken) mutationLock.current = null;
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setPendingMutation(null);
     }
   }
 
@@ -182,17 +243,48 @@ export default function WorldPage({ user }: { user?: any }) {
     }
   }
 
-  const filteredCategories = categories.filter(c => c.toLowerCase().includes('gaming'));
-
   return (
     <div className="world-page">
       {actionDialog}
       <h2>🌍 World Feed</h2>
-      <p className="muted">External content from RSS sources. Sorted by published date, newest first.</p>
+      <p className="muted">Articles and podcasts from approved external sources. Sorted by published date, newest first.</p>
       {feedError && <p className="error-msg" role="alert">{feedError} <button className="btn btn-sm" onClick={() => void loadFeed(selectedCategory, selectedSource, 0, selectedItemType || undefined)}>Retry</button></p>}
       {sourcesError && <p className="error-msg" role="alert">{sourcesError} <button className="btn btn-sm" onClick={() => void loadSources()}>Retry filters</button></p>}
       {blockedError && isLoggedIn && <p className="error-msg" role="alert">{blockedError} <button className="btn btn-sm" onClick={() => void loadBlockedSources()}>Retry preferences</button></p>}
       {mutationError && <p className="error-msg" role="alert">{mutationError}</p>}
+
+      {isLoggedIn && sources.length > 0 && (
+        <section aria-labelledby="approved-sources-heading" className="blocked-sources-panel">
+          <h3 id="approved-sources-heading">Approved external sources</h3>
+          <p className="muted">Choose which approved sources appear in your personal Home feed. Blocking remains a separate preference.</p>
+          <div className="blocked-sources-list">
+            {sources.map(source => {
+              const subscribed = !!source.viewer?.subscribed;
+              const unavailable = source.availability !== 'active';
+              const pending = pendingMutation === `subscription:${source.id}`;
+              return <div key={source.id} className="blocked-source-row">
+                <span>
+                  {source.homepageUrl ? <a href={source.homepageUrl} target="_blank" rel="noopener noreferrer">{source.name}</a> : source.name}
+                  {' '}<span className="muted">({source.category})</span>
+                  {source.viewer?.blocked && <span className="muted"> — blocked</span>}
+                  {source.availability === 'disabled' && <span className="muted"> — temporarily disabled</span>}
+                  {source.availability === 'removed' && <span className="muted"> — no longer available</span>}
+                </span>
+                {subscribed ? (
+                  <button className="btn btn-sm btn-ghost" onClick={() => void handleSubscription(source.id, false)} disabled={pending}>
+                    {pending ? 'Saving…' : 'Unsubscribe'}
+                  </button>
+                ) : (
+                  <button className="btn btn-sm" onClick={() => void handleSubscription(source.id, true)}
+                    disabled={pending || unavailable || !!source.viewer?.blocked}>
+                    {pending ? 'Saving…' : 'Subscribe'}
+                  </button>
+                )}
+              </div>;
+            })}
+          </div>
+        </section>
+      )}
 
       {blockedSources.length > 0 && (
         <div className="blocked-sources-panel">
@@ -224,7 +316,7 @@ export default function WorldPage({ user }: { user?: any }) {
 
       {loading && feedLoaded && <p className="muted" role="status">Refreshing World items…</p>}
       {loading && !feedLoaded ? <p className="muted">Loading...</p> : !feedLoaded ? null : items.length === 0 ? (
-        <div className="empty-state"><p>No world feed items yet.</p><p className="muted">Admins can add RSS sources in the Admin panel.</p></div>
+        <div className="empty-state"><p>No external items are available yet.</p><p className="muted">Approved sources may not have published or refreshed any items yet.</p></div>
       ) : (
         <div className="world-feed-list">
           {items.map(item => {

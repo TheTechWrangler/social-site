@@ -1,15 +1,22 @@
-import { feedTimeSql } from './feedTime.js';
 import { downloadFeed, parseFeedXml, validateRssUrl, RssFetchError } from './rssNetwork.js';
 import { createRefreshCoordinator, RefreshBusyError } from './rssRefresh.js';
 import { getDb } from './database.js';
-import { notMutedByViewerSql, userVisibilitySql } from './visibility.js';
-import { boundedInteger } from './pagination.js';
+export {
+  blockSource,
+  getBlockedSourceIds,
+  getExternalFeed as getWorldFeed,
+  getExternalFeedPage as getWorldFeedPage,
+  unblockSource,
+} from './externalContentService.js';
 
 const refresh = createRefreshCoordinator();
 
 export interface RssSource {
   id: number; name: string; url: string; homepage_url: string;
-  category: string; is_active: number; last_fetched_at: string | null; last_fetch_attempt_at: string | null; last_fetch_error: string | null;
+  category: string; is_active: number; tombstoned_at: string | null;
+  last_fetched_at: string | null; last_fetch_attempt_at: string | null;
+  last_fetch_error: string | null; last_failure_code: string | null;
+  updated_at: string;
 }
 
 export interface FetchResult {
@@ -59,14 +66,23 @@ function firstSanitizedUrl(...urls: unknown[]): string {
 // ─── Source CRUD ───
 
 export function getSources(): RssSource[] {
-  return getDb().prepare('SELECT * FROM rss_sources ORDER BY name').all() as RssSource[];
+  return getDb().prepare(`
+    SELECT id, name, fetch_url AS url, homepage_url, category, is_active,
+      tombstoned_at, last_fetched_at, last_fetch_attempt_at,
+      last_failure_detail AS last_fetch_error, last_failure_code, updated_at
+    FROM external_sources
+    WHERE provider = 'rss' AND source_kind = 'rss'
+    ORDER BY name, id
+  `).all() as RssSource[];
 }
 
 export function addSource(name: string, url: string, homepageUrl: string, category: string): RssSource {
-  const r = getDb().prepare(
-    'INSERT INTO rss_sources (name, url, homepage_url, category) VALUES (?, ?, ?, ?)'
-  ).run(name, validateRssUrl(url).href, sanitizeUrl(homepageUrl), category || 'general');
-  return getDb().prepare('SELECT * FROM rss_sources WHERE id = ?').get(r.lastInsertRowid) as RssSource;
+  const r = getDb().prepare(`
+    INSERT INTO external_sources
+      (provider, source_kind, name, fetch_url, homepage_url, category)
+    VALUES ('rss', 'rss', ?, ?, ?, ?)
+  `).run(name, validateRssUrl(url).href, sanitizeUrl(homepageUrl), category || 'general');
+  return getSources().find(source => source.id === Number(r.lastInsertRowid))!;
 }
 
 export interface RssSourceUpdate {
@@ -84,22 +100,28 @@ export function updateSource(id: number, updates: RssSourceUpdate): RssSource | 
   // Every SQL identifier below is a server-owned literal. Request keys are
   // validated at the route and can never be interpolated into this statement.
   if (updates.name !== undefined) { fields.push('name = ?'); vals.push(updates.name); }
-  if (updates.url !== undefined) { fields.push('url = ?'); vals.push(validateRssUrl(updates.url).href); }
+  if (updates.url !== undefined) { fields.push('fetch_url = ?'); vals.push(validateRssUrl(updates.url).href); }
   if (updates.homepageUrl !== undefined) { fields.push('homepage_url = ?'); vals.push(sanitizeUrl(updates.homepageUrl)); }
   if (updates.category !== undefined) { fields.push('category = ?'); vals.push(updates.category); }
   if (updates.isActive !== undefined) { fields.push('is_active = ?'); vals.push(updates.isActive ? 1 : 0); }
   if (fields.length === 0) return null;
   fields.push("updated_at = datetime('now')");
   vals.push(id);
-  const result = getDb().prepare(`UPDATE rss_sources SET ${fields.join(', ')} WHERE id = ?`).run(...vals);
+  const result = getDb().prepare(`
+    UPDATE external_sources SET ${fields.join(', ')}
+    WHERE id = ? AND provider = 'rss' AND source_kind = 'rss' AND tombstoned_at IS NULL
+  `).run(...vals);
   if (result.changes !== 1) return null;
-  return getDb().prepare('SELECT * FROM rss_sources WHERE id = ?').get(id) as RssSource | null;
+  return getSources().find(source => source.id === id) ?? null;
 }
 
 // ─── Fetch & Store ───
 
 export async function fetchSource(sourceId: number): Promise<FetchResult> {
-  const source = getDb().prepare('SELECT url FROM rss_sources WHERE id = ?').get(sourceId) as { url: string } | undefined;
+  const source = getDb().prepare(`
+    SELECT fetch_url AS url FROM external_sources
+    WHERE id = ? AND provider = 'rss' AND source_kind = 'rss' AND tombstoned_at IS NULL
+  `).get(sourceId) as { url: string } | undefined;
   if (!source) return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
   // A corrected URL must not reuse a previous destination's cached outcome.
   try { return await refresh(`${sourceId}:${source.url}`, () => fetchSourceNow(sourceId)); }
@@ -113,18 +135,43 @@ export function persistFetchedFeed(db: ReturnType<typeof getDb>, source: RssSour
   return db.transaction(() => {
     let inserted = 0, dupes = 0, itemsFound = 0;
 
-    const current = db.prepare('SELECT url FROM rss_sources WHERE id = ?').get(source.id) as { url: string } | undefined;
-    if (current?.url !== source.url) throw new RssFetchError('Feed configuration changed during refresh; retry.');
+    const current = db.prepare(`
+      SELECT name, fetch_url AS url, homepage_url, category, is_active, tombstoned_at
+      FROM external_sources
+      WHERE id = ? AND provider = 'rss' AND source_kind = 'rss' AND tombstoned_at IS NULL
+    `).get(source.id) as Pick<RssSource, 'name' | 'url' | 'homepage_url' | 'category' | 'is_active' | 'tombstoned_at'> | undefined;
+    if (!current
+      || current.url !== source.url
+      || current.name !== source.name
+      || current.homepage_url !== source.homepage_url
+      || current.category !== source.category
+      || current.is_active !== source.is_active
+      || current.tombstoned_at !== source.tombstoned_at) {
+      throw new RssFetchError('Feed configuration changed during refresh; retry.');
+    }
     itemsFound = feed.items?.length || 0;
 
-    const insert = db.prepare(`
-      INSERT OR IGNORE INTO rss_items (source_id, external_guid, title, summary, content_snippet, link_url, author, image_url, published_at, item_type, enclosure_url, enclosure_type, duration_text, episode_image_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    const findMembership = db.prepare(`
+      SELECT item_id FROM external_source_items WHERE source_id = ? AND source_entry_id = ?
+    `);
+    const insertItem = db.prepare(`
+      INSERT INTO external_items (
+        provider, provider_item_id, item_kind, title, summary, content_snippet,
+        author_name, canonical_url, image_url, episode_image_url,
+        enclosure_url, enclosure_type, duration_text, published_at,
+        last_confirmed_at, updated_at
+      ) VALUES ('rss', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    `);
+    const insertMembership = db.prepare(`
+      INSERT INTO external_source_items(source_id, item_id, source_entry_id)
+      VALUES (?, ?, ?)
     `);
 
     for (const item of feed.items || []) {
       const guid = item.guid || item.link || '';
       if (!guid) continue;
+      if (guid.length > 2048) continue;
+      if (findMembership.get(source.id, guid)) { dupes++; continue; }
 
       const feedImageUrl = firstSanitizedUrl((feed as any).image?.url, (feed as any).image, (feed as any).itunes?.image);
       const title = sanitize(item.title || '', 500);
@@ -144,13 +191,19 @@ export function persistFetchedFeed(db: ReturnType<typeof getDb>, source: RssSour
       const itemType = isPodcast ? 'podcast' : 'article';
       const podcastImage = itunesImage || feedImageUrl;
 
-      const r = insert.run(source.id, guid, title, summary, contentSnippet, sanitizeUrl(item.link || ''), author, imageUrl, publishedAt,
-        itemType, encUrl, encType, itunesDuration, podcastImage);
-      if (r.changes > 0) inserted++; else dupes++;
+      const r = insertItem.run(itemType, title, summary, contentSnippet,
+        author, sanitizeUrl(item.link || ''), imageUrl, podcastImage,
+        encUrl, encType.slice(0, 200), String(itunesDuration).slice(0, 100), publishedAt);
+      insertMembership.run(source.id, Number(r.lastInsertRowid), guid);
+      inserted++;
     }
 
-    db.prepare("UPDATE rss_sources SET last_fetched_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(source.id);
-    db.prepare("UPDATE rss_sources SET last_fetch_attempt_at = datetime('now'), last_fetch_error = NULL WHERE id = ?").run(source.id);
+    db.prepare(`
+      UPDATE external_sources
+      SET last_fetched_at = datetime('now'), last_fetch_attempt_at = datetime('now'),
+        last_failure_code = NULL, last_failure_detail = NULL, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(source.id);
 
     return { inserted, dupes, itemsFound };
   }).immediate();
@@ -158,7 +211,13 @@ export function persistFetchedFeed(db: ReturnType<typeof getDb>, source: RssSour
 
 async function fetchSourceNow(sourceId: number): Promise<FetchResult> {
   const db = getDb();
-  const source = db.prepare('SELECT * FROM rss_sources WHERE id = ?').get(sourceId) as RssSource | undefined;
+  const source = db.prepare(`
+    SELECT id, name, fetch_url AS url, homepage_url, category, is_active,
+      tombstoned_at, last_fetched_at, last_fetch_attempt_at,
+      last_failure_detail AS last_fetch_error, last_failure_code, updated_at
+    FROM external_sources
+    WHERE id = ? AND provider = 'rss' AND source_kind = 'rss' AND tombstoned_at IS NULL
+  `).get(sourceId) as RssSource | undefined;
   if (!source) return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
 
   let inserted = 0;
@@ -174,7 +233,15 @@ async function fetchSourceNow(sourceId: number): Promise<FetchResult> {
     error = err instanceof RssFetchError ? err.message : 'Feed refresh failed.';
   }
 
-  if (error) db.prepare("UPDATE rss_sources SET last_fetch_attempt_at = datetime('now'), last_fetch_error = ? WHERE id = ? AND url = ?").run(error, sourceId, source.url);
+  if (error) db.prepare(`
+    UPDATE external_sources
+    SET last_fetch_attempt_at = datetime('now'), last_failure_code = 'RSS_FETCH_FAILED',
+      last_failure_detail = ?, updated_at = datetime('now')
+    WHERE id = ? AND fetch_url = ? AND name = ? AND homepage_url = ?
+      AND category = ? AND is_active = ? AND tombstoned_at IS ?
+      AND provider = 'rss' AND source_kind = 'rss'
+  `).run(error.slice(0, 500), sourceId, source.url, source.name, source.homepage_url,
+    source.category, source.is_active, source.tombstoned_at);
   return { sourceId, sourceName: source.name, category: source.category, itemsFound, itemsInserted: inserted, duplicatesSkipped: dupes, error };
 }
 
@@ -182,7 +249,12 @@ let allInFlight: Promise<FetchResult[]> | null = null;
 export function fetchAllSources(): Promise<FetchResult[]> {
   if (allInFlight) return allInFlight;
   allInFlight = (async () => {
-    const sources = getDb().prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetch_attempt_at ASC NULLS FIRST, id LIMIT 20").all() as { id: number }[];
+    const sources = getDb().prepare(`
+      SELECT id FROM external_sources
+      WHERE provider = 'rss' AND source_kind = 'rss'
+        AND is_active = 1 AND tombstoned_at IS NULL
+      ORDER BY last_fetch_attempt_at ASC NULLS FIRST, id LIMIT 20
+    `).all() as { id: number }[];
     const results: FetchResult[] = new Array(sources.length);
     let index = 0;
     await Promise.all(Array.from({ length: Math.min(4, sources.length) }, async () => {
@@ -194,120 +266,4 @@ export function fetchAllSources(): Promise<FetchResult[]> {
     return results;
   })().finally(() => { allInFlight = null; });
   return allInFlight;
-}
-
-// ─── World Feed Query ───
-
-export function getWorldFeed(params: { sourceId?: number; category?: string; itemType?: string; limit?: number; offset?: number; userId?: number }) {
-  const limit = boundedInteger(params.limit, 50, 1, 100);
-  const offset = boundedInteger(params.offset, 0, 0, 100000);
-  // Public discussion counts must use the same author policy as its comments.
-  const viewer = params.userId ? { id: params.userId, role: 'user' } : null;
-  const author = userVisibilitySql(viewer, 'cu', 'public-context');
-  const notMuted = notMutedByViewerSql(viewer, 'cu');
-  const commentCount = `(SELECT COUNT(*) FROM rss_item_comments c
-    JOIN users cu ON cu.id = c.user_id
-    WHERE c.rss_item_id = ri.id AND c.is_hidden = 0
-      AND ${author.sql} AND ${notMuted.sql})`;
-
-  // Per-source cap prevents one prolific source from dominating the feed.
-  // Only applied when not filtering to a specific source or category.
-  const applyPerSourceCap = !params.sourceId && !params.category;
-  const perSourceCap = 8;
-
-  let whereClause = 'WHERE rs.is_active = 1';
-  const vals: any[] = [];
-
-  if (params.sourceId) { whereClause += ' AND ri.source_id = ?'; vals.push(params.sourceId); }
-  if (params.category) { whereClause += ' AND rs.category = ?'; vals.push(params.category); }
-  if (params.itemType && (params.itemType === 'podcast' || params.itemType === 'article')) { whereClause += ' AND ri.item_type = ?'; vals.push(params.itemType); }
-  if (params.userId) {
-    whereClause += ' AND ri.source_id NOT IN (SELECT source_id FROM user_rss_source_blocks WHERE user_id = ?)';
-    vals.push(params.userId);
-  }
-
-  let sql: string;
-  if (applyPerSourceCap) {
-    sql = `
-      WITH ranked AS (
-        SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category,
-          ROW_NUMBER() OVER (PARTITION BY ri.source_id ORDER BY ${feedTimeSql('ri.published_at')} DESC, ri.id DESC) as rn
-        FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
-        ${whereClause}
-      )
-      , page AS (SELECT * FROM ranked WHERE rn <= ? ORDER BY ${feedTimeSql('published_at')} DESC, id DESC LIMIT ? OFFSET ?)
-      SELECT ri.*, ${commentCount} AS comment_count FROM page ri ORDER BY ${feedTimeSql('ri.published_at')} DESC, ri.id DESC
-    `;
-    vals.push(perSourceCap, limit, offset);
-  } else {
-    sql = `
-      WITH page AS (SELECT ri.*, rs.name as source_name, rs.homepage_url as source_url, rs.category as source_category
-      FROM rss_items ri JOIN rss_sources rs ON ri.source_id = rs.id
-      ${whereClause}
-      ORDER BY ${feedTimeSql('ri.published_at')} DESC, ri.id DESC LIMIT ? OFFSET ?)
-      SELECT ri.*, ${commentCount} AS comment_count FROM page ri
-      ORDER BY ${feedTimeSql('ri.published_at')} DESC, ri.id DESC
-    `;
-    vals.push(limit, offset);
-  }
-
-  vals.push(...author.params, ...notMuted.params);
-  const items = getDb().prepare(sql).all(...vals) as any[];
-  return items.map(i => ({
-    id: i.id,
-    type: 'world_item',
-    item_type: i.item_type || 'article',
-    source_id: i.source_id,
-    source_name: i.source_name,
-    category: i.source_category,
-    content_snippet: i.content_snippet,
-    link_url: i.link_url,
-    image_url: i.image_url,
-    enclosure_url: i.enclosure_url || '',
-    enclosure_type: i.enclosure_type || '',
-    duration_text: i.duration_text || '',
-    episode_image_url: i.episode_image_url || '',
-    published_at: i.published_at,
-    comment_count: i.comment_count || 0,
-    sourceId: i.source_id,
-    sourceName: i.source_name,
-    sourceUrl: i.source_url,
-    sourceCategory: i.source_category,
-    itemType: i.item_type || 'article',
-    enclosureUrl: i.enclosure_url || '',
-    enclosureType: i.enclosure_type || '',
-    durationText: i.duration_text || '',
-    episodeImageUrl: i.episode_image_url || '',
-    title: i.title,
-    summary: i.summary,
-    contentSnippet: i.content_snippet,
-    linkUrl: i.link_url,
-    author: i.author,
-    imageUrl: i.image_url,
-    publishedAt: i.published_at,
-  }));
-}
-
-// ─── User Source Blocks ───
-
-export function getWorldFeedPage(params: Parameters<typeof getWorldFeed>[0]) {
-  const limit = params.limit ?? 50;
-  const offset = params.offset ?? 0;
-  const items = getWorldFeed({ ...params, limit, offset });
-  const hasMore = items.length === limit && offset + limit <= 100000 &&
-    getWorldFeed({ ...params, limit: 1, offset: offset + limit }).length > 0;
-  return { items, pagination: { limit, offset, hasMore, nextOffset: hasMore ? offset + limit : null } };
-}
-
-export function getBlockedSourceIds(userId: number): number[] {
-  return (getDb().prepare('SELECT source_id FROM user_rss_source_blocks WHERE user_id = ?').all(userId) as any[])
-    .map(r => r.source_id);
-}
-
-export function blockSource(userId: number, sourceId: number): number {
-  return getDb().prepare('INSERT OR IGNORE INTO user_rss_source_blocks (user_id, source_id) VALUES (?, ?)').run(userId, sourceId).changes;
-}
-
-export function unblockSource(userId: number, sourceId: number): number {
-  return getDb().prepare('DELETE FROM user_rss_source_blocks WHERE user_id = ? AND source_id = ?').run(userId, sourceId).changes;
 }

@@ -824,17 +824,17 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
             );
           })()}
           <div className="admin-table-wrap"><table className="admin-table">
-            <thead><tr><th>Name</th><th>URL</th><th>Category</th><th>Active</th><th>Last Fetched</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Name</th><th>Homepage</th><th>Category</th><th>Active</th><th>Last Fetched</th><th>Actions</th></tr></thead>
             <tbody>{rssSources.filter(s => !rssCatFilter || s.category === rssCatFilter).map(s => (
               <tr key={s.id}>
                 <td><strong>{s.name}</strong></td>
-                <td className="muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.url}</td>
+                <td className="muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.homepageUrl || '—'}</td>
                 <td>{s.category}</td>
-                <td>{s.is_active ? '✅' : '❌'}</td>
-                <td className="muted">{s.last_fetched_at || 'never'}{s.last_fetch_error && <p className="error-msg">Last attempt: {s.last_fetch_error}</p>}</td>
+                <td>{s.isActive ? '✅' : '❌'}</td>
+                <td className="muted">{s.lastFetchedAt || 'never'}{s.lastFailureMessage && <p className="error-msg">{s.lastFailureMessage}</p>}</td>
                 <td>
                   <button className="btn btn-sm" onClick={() => fetchSource(s.id)}>Fetch</button>
-                  <button className="btn btn-sm" onClick={() => toggleSource(s.id, !!s.is_active)}>{s.is_active ? 'Deactivate' : 'Activate'}</button>
+                  <button className="btn btn-sm" onClick={() => toggleSource(s.id, !!s.isActive)}>{s.isActive ? 'Deactivate' : 'Activate'}</button>
                 </td>
               </tr>
             ))}</tbody>

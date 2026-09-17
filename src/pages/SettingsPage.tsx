@@ -207,7 +207,7 @@ export default function SettingsPage({
         <h3>World Feed on Home</h3>
         <div className="settings-card">
           <div className="settings-row">
-            <span>Mix approved RSS/podcast items into normal Home feeds</span>
+            <span>Mix items from your approved external-source subscriptions into normal Home feeds</span>
             <div className="feed-exposure">
               {WORLD_HOME_OPTIONS.map(opt => (
                 <button key={opt.key} disabled={preferencePending !== null} className={`btn btn-sm ${worldHomeInjection === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => updateWorldHomeInjection(opt.key)}>
@@ -216,7 +216,7 @@ export default function SettingsPage({
               ))}
             </div>
           </div>
-          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>External items stay labeled and RSS source blocking still applies.</p>
+          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>External items stay labeled and source blocking still applies.</p>
         </div>
       </div>
 

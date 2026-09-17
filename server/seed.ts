@@ -22,10 +22,12 @@ const db = getDb();
 // Reset first (before the skip-if-exists check, so --reset actually works)
 if (resetRequested) {
   console.log('[seed] Resetting database...');
-  db.exec('DELETE FROM rss_item_comments');
-  db.exec('DELETE FROM user_rss_source_blocks');
-  db.exec('DELETE FROM rss_items');
-  db.exec('DELETE FROM rss_sources');
+  db.exec('DELETE FROM external_item_comments');
+  db.exec('DELETE FROM user_external_source_subscriptions');
+  db.exec('DELETE FROM user_external_source_blocks');
+  db.exec('DELETE FROM external_source_items');
+  db.exec('DELETE FROM external_items');
+  db.exec('DELETE FROM external_sources');
   db.exec('DELETE FROM game_lfg_posts');
   db.exec('DELETE FROM user_game_preferences');
   db.exec('DELETE FROM user_relationship_blocks');
@@ -217,7 +219,11 @@ const rssSources = [
   { name: 'Darknet Diaries', url: 'https://feeds.megaphone.fm/darknetdiaries', homepage_url: 'https://darknetdiaries.com', category: 'Podcasts / Tech' },
 ];
 
-const insertRss = db.prepare('INSERT OR IGNORE INTO rss_sources (name, url, homepage_url, category) VALUES (?, ?, ?, ?)');
+const insertRss = db.prepare(`
+  INSERT OR IGNORE INTO external_sources
+    (provider, source_kind, name, fetch_url, homepage_url, category)
+  VALUES ('rss', 'rss', ?, ?, ?, ?)
+`);
 for (const s of rssSources) {
   try {
     insertRss.run(s.name, s.url, s.homepage_url, s.category);
@@ -308,7 +314,9 @@ for (const s of seedServers) {
 
 // ─── Seed RSS items — one source per category for variety ───
 const seedRssSources = db.prepare(
-  'SELECT MIN(id) as id, MIN(name) as name FROM rss_sources WHERE is_active = 1 GROUP BY category'
+  `SELECT MIN(id) AS id, MIN(name) AS name FROM external_sources
+   WHERE provider = 'rss' AND source_kind = 'rss' AND is_active = 1 AND tombstoned_at IS NULL
+   GROUP BY category`
 ).all() as any[];
 for (const src of seedRssSources) {
   try {

@@ -4,7 +4,8 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { optionalAuth, requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPosts } from './posts.js';
-import { getWorldFeed, getWorldFeedPage, fetchSource } from '../rssService.js';
+import { fetchSource } from '../rssService.js';
+import { getExternalFeed, getExternalFeedPage, getPersonalExternalFeedStatus } from '../externalContentService.js';
 import { logUsage } from '../usageEvents.js';
 import { notMutedByViewerSql, postAuthorVisibilitySql } from '../visibility.js';
 import { pageInteger } from '../pagination.js';
@@ -56,8 +57,12 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
 
     // ─── World Feed mode ───
     if (level === 'world') {
-      const { items, pagination } = getWorldFeedPage({ limit, offset, userId: req.user?.id });
-      res.json({ posts: [], worldItems: items, items, level, pagination });
+      const personalExternalFeedStatus = getPersonalExternalFeedStatus(req.user?.id);
+      const result = req.user
+        ? getExternalFeedPage({ scope: 'personal', limit, offset, userId: req.user.id })
+        : { items: [], pagination: { limit, offset, hasMore: false, nextOffset: null } };
+      res.json({ posts: [], worldItems: result.items, items: result.items, level,
+        pagination: result.pagination, personalExternalFeedStatus });
       return;
     }
 
@@ -102,18 +107,19 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
     const hasMore = rows.length > limit && offset + limit <= 100000;
     const posts = enrichPosts(rows.slice(0, limit), req.user as any).map(post => ({ ...post, type: 'post' }));
     let worldItems: any[] = [];
+    const personalExternalFeedStatus = getPersonalExternalFeedStatus(req.user?.id);
 
     if (req.user && offset === 0) {
       const prefRow = db.prepare('SELECT world_home_injection FROM users WHERE id = ?').get(req.user.id) as any;
       const preference = prefRow?.world_home_injection || 'world_home_few';
       const worldLimit = worldInjectionLimit(posts.length, preference);
-      if (worldLimit > 0) {
-        worldItems = getWorldFeed({ limit: worldLimit, offset: 0, userId: req.user.id });
+      if (worldLimit > 0 && personalExternalFeedStatus === 'ready') {
+        worldItems = getExternalFeed({ scope: 'personal', limit: worldLimit, offset: 0, userId: req.user.id });
       }
     }
 
     // World is a separate recommendation module, never part of native offsets.
-    res.json({ posts, worldItems, items: posts, level, worldPlacement: 'separate',
+    res.json({ posts, worldItems, items: posts, level, worldPlacement: 'separate', personalExternalFeedStatus,
       pagination: { limit, offset, hasMore, nextOffset: hasMore ? offset + posts.length : null } });
   } catch (err: any) {
     if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
@@ -131,7 +137,34 @@ router.post('/replenish', requireAuth, requireVerified, (req: AuthRequest, res) 
     const userId = req.user!.id;
     const isAdmin = req.user!.role === 'admin';
 
-    // Cooldown check (non-admin only)
+    // Determine sources before responding so we can report the count
+    const sources: any[] = isAdmin
+      ? db.prepare(`
+          SELECT id FROM external_sources
+          WHERE provider = 'rss' AND source_kind = 'rss'
+            AND is_active = 1 AND tombstoned_at IS NULL
+          ORDER BY last_fetch_attempt_at ASC NULLS FIRST, id LIMIT 20
+        `).all() as any[]
+      : db.prepare(`
+          SELECT s.id FROM external_sources s
+          JOIN user_external_source_subscriptions sub ON sub.source_id = s.id
+          WHERE sub.user_id = ? AND s.provider = 'rss' AND s.source_kind = 'rss'
+            AND s.is_active = 1 AND s.tombstoned_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM user_external_source_blocks block
+              WHERE block.user_id = ? AND block.source_id = s.id
+            )
+          ORDER BY s.last_fetch_attempt_at ASC NULLS FIRST, s.id LIMIT 5
+        `).all(userId, userId) as any[];
+
+    if (!isAdmin && sources.length === 0) {
+      res.json({ ok: true, started: false, sourcesChecked: 0,
+        personalExternalFeedStatus: getPersonalExternalFeedStatus(userId) });
+      return;
+    }
+
+    // A user with no eligible sources receives the source-state result above;
+    // cooldown applies only when a refresh could actually start.
     if (!isAdmin) {
       const row = db.prepare('SELECT last_feed_refresh_at FROM users WHERE id = ?').get(userId) as any;
       if (row?.last_feed_refresh_at) {
@@ -150,11 +183,6 @@ router.post('/replenish', requireAuth, requireVerified, (req: AuthRequest, res) 
       res.status(429).json({ error: 'A replenish is already running for your account.' });
       return;
     }
-
-    // Determine sources before responding so we can report the count
-    const sources: any[] = isAdmin
-      ? db.prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetch_attempt_at ASC NULLS FIRST, id LIMIT 20").all() as any[]
-      : db.prepare("SELECT id FROM rss_sources WHERE is_active = 1 ORDER BY last_fetch_attempt_at ASC NULLS FIRST LIMIT 5").all() as any[];
 
     // Mark cooldown and in-flight immediately — before the async work starts —
     // so a second request during the fetch window is correctly rejected.

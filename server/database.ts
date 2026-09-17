@@ -4,6 +4,7 @@ import { feedTimeSql } from './feedTime.js';
 import Database from 'better-sqlite3';
 import { ensureDatabaseDirectory, getStorageConfig } from './config.js';
 import { logSafeDiagnostic } from './safeDiagnostics.js';
+import { migrateExternalContentFoundation } from './externalContentMigration.js';
 
 const storageConfig = getStorageConfig();
 ensureDatabaseDirectory(storageConfig);
@@ -742,6 +743,7 @@ export function initializeDatabase(database: Database.Database = db): void {
   initializeOperationalAudit(db);
   if ((db.pragma('foreign_key_check') as unknown[]).length) throw new Error('Migration refused foreign-key violations.');
   applyMigration(db, '015-atomic-baseline', () => {});
+  migrateExternalContentFoundation(db);
   }).immediate();
 }
 
@@ -873,15 +875,15 @@ export function runRetentionCleanup(): void {
   try {
     const rssCutoff = `-${rssItemDays} days`;
     const result = db.prepare(`
-      DELETE FROM rss_items
+      DELETE FROM external_items
       WHERE published_at < datetime('now', ?)
         AND NOT EXISTS (
-          SELECT 1 FROM rss_item_comments c
-          WHERE c.rss_item_id = rss_items.id AND c.is_hidden = 0
+          SELECT 1 FROM external_item_comments c
+          WHERE c.external_item_id = external_items.id AND c.is_hidden = 0
         )
     `).run(rssCutoff);
     if (result.changes > 0) {
-      console.log(`[retention] rss_items: deleted ${result.changes} rows older than ${rssItemDays} days`);
+      console.log(`[retention] external_items: deleted ${result.changes} rows older than ${rssItemDays} days`);
     }
   } catch {
     logSafeDiagnostic({ subsystem: 'rss', severity: 'error', code: 'RSS_RETENTION_CLEANUP_FAILED' });

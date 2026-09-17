@@ -1,7 +1,13 @@
 import { validateRssUrl } from '../rssNetwork.js';
 import { Router } from 'express';
 import { requireAuth, requireAdmin, optionalAuth, requireVerified } from '../middleware.js';
-import { getWorldFeedPage, getSources, getBlockedSourceIds, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
+import { getWorldFeedPage, getSources, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
+import {
+  getBlockedSources,
+  getPublicSourceCatalog,
+  subscribeToSource,
+  unsubscribeFromSource,
+} from '../externalContentService.js';
 import { pageInteger } from '../pagination.js';
 import { logAuthEvent } from '../authEvents.js';
 import { logSafeDiagnostic } from '../safeDiagnostics.js';
@@ -115,6 +121,23 @@ function logRssError(_context: string, _err: unknown): void {
   logSafeDiagnostic({ subsystem: 'rss', severity: 'error', code: 'RSS_REFRESH_FAILED' });
 }
 
+function adminSourceDto(source: ReturnType<typeof getSources>[number]) {
+  const failureCode = source.last_failure_code;
+  return {
+    id: source.id,
+    name: source.name,
+    category: source.category,
+    homepageUrl: source.homepage_url,
+    sourceKind: 'rss',
+    isActive: !!source.is_active,
+    isTombstoned: !!source.tombstoned_at,
+    lastFetchedAt: source.last_fetched_at,
+    lastFetchAttemptAt: source.last_fetch_attempt_at,
+    lastFailureCode: failureCode,
+    lastFailureMessage: failureCode ? 'The most recent RSS refresh failed.' : null,
+  };
+}
+
 // ─── Public World Feed ───
 
 publicRouter.get('/', optionalAuth, (req, res) => {
@@ -142,15 +165,9 @@ publicRouter.get('/', optionalAuth, (req, res) => {
 
 publicRouter.get('/sources', optionalAuth, (req, res) => {
   try {
-    const sources = getSources().filter(s => s.is_active);
-    const categories = [...new Set(sources.map(s => s.category))];
     const userId = (req as any).user?.id;
-    const blockedIds = userId ? getBlockedSourceIds(userId) : [];
-    const sourcesWithBlock = sources.map(s => ({
-      ...s,
-      isBlocked: blockedIds.includes(s.id),
-    }));
-    res.json({ sources: sourcesWithBlock, categories });
+    if (userId) res.setHeader('Cache-Control', 'private, no-store');
+    res.json(getPublicSourceCatalog(userId));
   } catch (err: any) {
     logRssError('Load sources error', err);
     res.status(500).json({ error: 'Could not load RSS sources.' });
@@ -163,11 +180,8 @@ publicRouter.get('/sources', optionalAuth, (req, res) => {
 publicRouter.get('/blocked-sources', requireAuth, requireVerified, (req, res) => {
   try {
     const user = (req as any).user;
-    const blockedIds = getBlockedSourceIds(user.id);
-    const allSources = getSources();
-    const blocked = allSources.filter(s => blockedIds.includes(s.id)).map(s => ({
-      id: s.id, name: s.name, category: s.category, homepage_url: s.homepage_url,
-    }));
+    res.setHeader('Cache-Control', 'private, no-store');
+    const blocked = getBlockedSources(user.id);
     res.json({ blocked });
   } catch (err: any) {
     logRssError('Load blocked sources error', err);
@@ -180,7 +194,9 @@ publicRouter.post('/sources/:sourceId/block', requireAuth, requireVerified, (req
   try {
     const user = (req as any).user;
     const sourceId = positiveIntegerParam(req.params.sourceId, 'sourceId');
-    const source = getSources().find(item => item.id === sourceId);
+    const source = getPublicSourceCatalog(user.id).sources.find(
+      item => item.id === sourceId && item.availability !== 'removed',
+    );
     if (!source) { res.status(404).json({ error: 'Source not found.' }); return; }
     if (blockSource(user.id, sourceId) !== 1) {
       res.status(409).json({ error: 'Source is already blocked.' }); return;
@@ -191,6 +207,43 @@ publicRouter.post('/sources/:sourceId/block', requireAuth, requireVerified, (req
     if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }
     logRssError('Block source error', err);
     res.status(500).json({ error: 'Could not block source.' });
+  }
+});
+
+// PUT /api/world-feed/sources/:sourceId/subscription
+publicRouter.put('/sources/:sourceId/subscription', requireAuth, requireVerified, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const sourceId = positiveIntegerParam(req.params.sourceId, 'sourceId');
+    const result = subscribeToSource(user.id, sourceId);
+    res.setHeader('Cache-Control', 'private, no-store');
+    if (!result.ok) {
+      if (result.reason === 'blocked') {
+        res.status(409).json({ error: 'Unblock this source before subscribing.' }); return;
+      }
+      res.status(404).json({ error: 'Source is unavailable.' }); return;
+    }
+    res.json(result.value);
+  } catch (err: any) {
+    const validationMessage = validationErrorMessage(err);
+    if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }
+    logRssError('Subscribe source error', err);
+    res.status(500).json({ error: 'Could not update this source subscription.' });
+  }
+});
+
+// DELETE /api/world-feed/sources/:sourceId/subscription
+publicRouter.delete('/sources/:sourceId/subscription', requireAuth, requireVerified, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const sourceId = positiveIntegerParam(req.params.sourceId, 'sourceId');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json(unsubscribeFromSource(user.id, sourceId));
+  } catch (err: any) {
+    const validationMessage = validationErrorMessage(err);
+    if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }
+    logRssError('Unsubscribe source error', err);
+    res.status(500).json({ error: 'Could not update this source subscription.' });
   }
 });
 
@@ -215,7 +268,7 @@ publicRouter.delete('/sources/:sourceId/block', requireAuth, requireVerified, (r
 
 adminRouter.get('/sources', requireAuth, requireAdmin, (_req, res) => {
   try {
-    res.json({ sources: getSources() });
+    res.json({ sources: getSources().map(adminSourceDto) });
   } catch (err: any) {
     logRssError('Admin load sources error', err);
     res.status(500).json({ error: 'Could not load RSS sources.' });
@@ -228,7 +281,7 @@ adminRouter.post('/sources', requireAuth, requireAdmin, (req, res) => {
     const source = addSource(name, url, homepageUrl || '', category || 'general');
     const adminId = (req as any).user.id;
     logAuthEvent({ eventType: 'admin_rss_source_add', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id } });
-    res.status(201).json({ source });
+    res.status(201).json({ source: adminSourceDto(source) });
   } catch (err: any) {
     const validationMessage = validationErrorMessage(err);
     if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }
@@ -245,7 +298,7 @@ adminRouter.patch('/sources/:id', requireAuth, requireAdmin, (req, res) => {
     if (!source) { res.status(404).json({ error: 'Source not found.' }); return; }
     const adminId = (req as any).user.id;
     logAuthEvent({ eventType: 'admin_rss_source_update', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id } });
-    res.json({ source });
+    res.json({ source: adminSourceDto(source) });
   } catch (err: any) {
     const validationMessage = validationErrorMessage(err);
     if (validationMessage) { res.status(400).json({ error: validationMessage }); return; }

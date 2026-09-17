@@ -95,6 +95,24 @@ async function request(pathname: string, username?: string, options: RequestInit
   return { response, body };
 }
 
+function externalSource(name: string, fetchUrl: string): number {
+  return Number(db.prepare(`
+    INSERT INTO external_sources(provider, source_kind, name, fetch_url)
+    VALUES ('rss', 'rss', ?, ?)
+  `).run(name, fetchUrl).lastInsertRowid);
+}
+
+function externalItem(sourceId: number, entryId: string, publishedAt: string): number {
+  const itemId = Number(db.prepare(`
+    INSERT INTO external_items(provider, item_kind, title, canonical_url, published_at)
+    VALUES ('rss', 'article', 'item', 'https://feed.example/item', ?)
+  `).run(publishedAt).lastInsertRowid);
+  db.prepare(`
+    INSERT INTO external_source_items(source_id, item_id, source_entry_id) VALUES (?, ?, ?)
+  `).run(sourceId, itemId, entryId);
+  return itemId;
+}
+
 
 test('extended feed pages one chronological eligible union and keeps World outside native offsets', async () => {
   db.prepare('INSERT INTO follows (follower_id, following_id) VALUES (?, ?)').run(ids.author, ids.follower);
@@ -105,8 +123,9 @@ test('extended feed pages one chronological eligible union and keeps World outsi
     const id = Number(db.prepare('INSERT INTO posts (user_id, content, created_at) VALUES (?, ?, ?)').run(i % 3 ? ids.follower : ids.outsider, 'page-' + i, date).lastInsertRowid);
     posts.push({ id, time: Date.parse(date.includes('T') ? date : date + 'Z') });
   }
-  const source = Number(db.prepare("INSERT INTO rss_sources (name, url) VALUES ('fixture', 'https://feed.example/')").run().lastInsertRowid);
-  db.prepare("INSERT INTO rss_items (source_id, external_guid, title, link_url, published_at) VALUES (?, 'one', 'World', 'https://feed.example/one', '2026-09-11T12:00:00Z')").run(source);
+  const source = externalSource('fixture', 'https://feed.example/');
+  externalItem(source, 'one', '2026-09-11T12:00:00Z');
+  db.prepare('INSERT INTO user_external_source_subscriptions(user_id, source_id) VALUES (?, ?)').run(ids.author, source);
   const seen: number[] = [];
   for (let offset = 0; offset < 12; offset += 4) {
     const result = await request('/api/feed?level=extended&limit=4&offset=' + offset, 'author');
@@ -203,25 +222,26 @@ test('notification pages and exact unread SQL preserve hidden ancestor and block
 });
 
 test('legacy unsafe URL fails at fetch time, records safe failure and preserves source configuration', async () => {
-  const source = Number(db.prepare("INSERT INTO rss_sources (name, url) VALUES ('legacy', 'http://127.0.0.1/?secret=do-not-log')").run().lastInsertRowid);
+  const source = externalSource('legacy', 'http://127.0.0.1/?secret=do-not-log');
   const result = await request('/api/admin/rss/sources/' + source + '/fetch', 'siteAdmin', { method: 'POST' });
   assert.equal(result.response.status, 502);
   assert.match(result.body.error, /public/);
-  const row = db.prepare('SELECT * FROM rss_sources WHERE id = ?').get(source) as any;
-  assert.equal(row.url, 'http://127.0.0.1/?secret=do-not-log');
+  const row = db.prepare('SELECT * FROM external_sources WHERE id = ?').get(source) as any;
+  assert.equal(row.fetch_url, 'http://127.0.0.1/?secret=do-not-log');
   assert.ok(row.last_fetch_attempt_at);
-  assert.match(row.last_fetch_error, /public/);
+  assert.match(row.last_failure_detail, /public/);
   assert.ok(!serverLog.includes('do-not-log'));
   const invalid = await request('/api/admin/rss/sources', 'siteAdmin', { method: 'POST', body: JSON.stringify({ name: 'bad', url: 'https://user:secret@feed.example/' }) });
   assert.equal(invalid.response.status, 400);
 });
 
 test('World pages normalize timestamps, end exactly and paginate discussion without leaking hidden parents', async () => {
-  const source = Number(db.prepare("INSERT INTO rss_sources (name, url) VALUES ('fixture', 'https://feed.example/')").run().lastInsertRowid);
+  const source = externalSource('fixture', 'https://feed.example/');
   const itemIds: number[] = [];
   for (const date of ['2026-09-11 12:00:00', '2026-09-11T12:00:00.000Z', 'invalid']) {
-    itemIds.push(Number(db.prepare("INSERT INTO rss_items (source_id, external_guid, title, link_url, published_at) VALUES (?, ?, 'item', 'https://feed.example/', ?)").run(source, date, date).lastInsertRowid));
+    itemIds.push(externalItem(source, date, date));
   }
+  db.prepare('INSERT INTO user_external_source_subscriptions(user_id, source_id) VALUES (?, ?)').run(ids.author, source);
   const first = await request('/api/world-feed?sourceId=' + source + '&limit=2', 'author');
   assert.deepEqual(first.body.items.map(i => i.id), [itemIds[1], itemIds[0]]);
   assert.equal(first.body.pagination.nextOffset, 2);
@@ -230,14 +250,14 @@ test('World pages normalize timestamps, end exactly and paginate discussion with
   assert.equal(second.body.pagination.hasMore, false);
   const worldMode = await request('/api/feed?level=world&limit=3', 'author');
   assert.equal(worldMode.body.pagination.hasMore, false);
-  const parent = Number(db.prepare("INSERT INTO rss_item_comments (rss_item_id, user_id, body) VALUES (?, ?, 'parent')").run(itemIds[0], ids.author).lastInsertRowid);
-  db.prepare("INSERT INTO rss_item_comments (rss_item_id, user_id, body, parent_id) VALUES (?, ?, 'reply', ?)").run(itemIds[0], ids.outsider, parent);
+  const parent = Number(db.prepare("INSERT INTO external_item_comments (external_item_id, user_id, body) VALUES (?, ?, 'parent')").run(itemIds[0], ids.author).lastInsertRowid);
+  db.prepare("INSERT INTO external_item_comments (external_item_id, user_id, body, parent_id) VALUES (?, ?, 'reply', ?)").run(itemIds[0], ids.outsider, parent);
   const url = '/api/world-feed/' + itemIds[0] + '/comments?limit=1&after=' + parent;
   const reply = await request(url, 'author');
   assert.equal(reply.body.comments.length, 1);
   assert.equal(reply.body.comments[0].parentId, parent);
   assert.equal(reply.body.count, 2); assert.equal(reply.body.hasMore, false);
-  db.prepare('UPDATE rss_item_comments SET is_hidden = 1 WHERE id = ?').run(parent);
+  db.prepare('UPDATE external_item_comments SET is_hidden = 1 WHERE id = ?').run(parent);
   assert.equal((await request(url, 'author')).body.comments[0].parentId, null);
   assert.equal((await request('/api/world-feed/' + itemIds[0] + '/comments?limit=101', 'author')).response.status, 400);
 });
@@ -286,7 +306,11 @@ after(async () => {
 beforeEach(() => {
   db.exec(`
     DELETE FROM dm_messages; DELETE FROM dm_conversation_members; DELETE FROM dm_conversations;
-    DELETE FROM rss_items; DELETE FROM rss_sources;
+    DELETE FROM external_item_comments;
+    DELETE FROM external_source_items;
+    DELETE FROM user_external_source_blocks;
+    DELETE FROM user_external_source_subscriptions;
+    DELETE FROM external_items; DELETE FROM external_sources;
     DELETE FROM reports;
     DELETE FROM notifications;
     DELETE FROM post_media;

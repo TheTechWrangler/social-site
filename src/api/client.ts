@@ -1,4 +1,5 @@
 import type { CanonicalProfileDto } from '../../shared/profile';
+import type { PersonalExternalFeedStatus } from '../../shared/externalContent';
 
 const BASE = '/api';
 
@@ -139,10 +140,10 @@ export const api = {
   // Feed
   feed: (params?: { mode?: string; limit?: number; offset?: number; level?: string; exposure?: string }) => {
     const qs = new URLSearchParams(params as any).toString();
-    return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string; pagination?: { hasMore: boolean; nextOffset: number | null } }>(`/feed?${qs}`);
+    return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string; personalExternalFeedStatus?: PersonalExternalFeedStatus; pagination?: { hasMore: boolean; nextOffset: number | null } }>(`/feed?${qs}`);
   },
   replenishFeed: () =>
-    request<{ ok: boolean; started?: boolean; sourcesChecked: number; newItems?: number; nextAvailableAt?: string }>('/feed/replenish', { method: 'POST' }),
+    request<{ ok: boolean; started?: boolean; sourcesChecked: number; newItems?: number; nextAvailableAt?: string; personalExternalFeedStatus?: PersonalExternalFeedStatus }>('/feed/replenish', { method: 'POST' }),
 
   // Posts
   createPost: (content: string, groupId?: number, clientSubmissionKey?: string) =>

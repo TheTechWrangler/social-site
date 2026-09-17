@@ -71,13 +71,15 @@ test('migration refuses ambiguous authored duplicate reposts without deleting ev
 
 test('RSS item and success metadata writes roll back together, then idempotently retry',async()=>{
   const {persistFetchedFeed}=await import('../../server/rssService.js');
-  const f=fixture();f.db.exec("INSERT INTO rss_sources(id,name,url) VALUES (1,'Fixture','https://feed.example.test/rss')");
-  const source=f.db.prepare('SELECT * FROM rss_sources WHERE id=1').get() as any;
+  const f=fixture();f.db.exec("INSERT INTO external_sources(id,provider,source_kind,name,fetch_url) VALUES (1,'rss','rss','Fixture','https://feed.example.test/rss')");
+  const source=f.db.prepare(`SELECT id,name,fetch_url AS url,homepage_url,category,is_active,tombstoned_at,
+    last_fetched_at,last_fetch_attempt_at,last_failure_detail AS last_fetch_error,last_failure_code,updated_at
+    FROM external_sources WHERE id=1`).get() as any;
   const feed={items:[{guid:'one',title:'good',link:'https://feed.example.test/1'},{guid:'two',title:'bad',link:'https://feed.example.test/2'}]};
-  f.db.exec("CREATE TRIGGER fail_rss BEFORE INSERT ON rss_items WHEN NEW.title='bad' BEGIN SELECT RAISE(ABORT,'injected'); END");
+  f.db.exec("CREATE TRIGGER fail_rss BEFORE INSERT ON external_items WHEN NEW.title='bad' BEGIN SELECT RAISE(ABORT,'injected'); END");
   assert.throws(()=>persistFetchedFeed(f.db,source,feed),/injected/);
-  assert.equal((f.db.prepare('SELECT COUNT(*) n FROM rss_items').get() as any).n,0);
-  assert.equal((f.db.prepare('SELECT last_fetched_at FROM rss_sources').get() as any).last_fetched_at,null);
+  assert.equal((f.db.prepare('SELECT COUNT(*) n FROM external_items').get() as any).n,0);
+  assert.equal((f.db.prepare('SELECT last_fetched_at FROM external_sources').get() as any).last_fetched_at,null);
   f.db.exec('DROP TRIGGER fail_rss');assert.equal(persistFetchedFeed(f.db,source,feed).inserted,2);assert.equal(persistFetchedFeed(f.db,source,feed).dupes,2);f.db.close();
 });
 

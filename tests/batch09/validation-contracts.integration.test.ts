@@ -137,15 +137,17 @@ before(async () => {
 
   gameId = Number(db.prepare("INSERT INTO games (name, slug) VALUES ('Batch 09 Game', 'batch09-game')").run().lastInsertRowid);
   rssSourceId = Number(db.prepare(`
-    INSERT INTO rss_sources (name, url, homepage_url, category, is_active)
-    VALUES ('Original Source', 'https://feed.example.test/rss', 'https://example.test/', 'tech', 1)
+    INSERT INTO external_sources (provider, source_kind, name, fetch_url, homepage_url, category, is_active)
+    VALUES ('rss', 'rss', 'Original Source', 'https://feed.example.test/rss', 'https://example.test/', 'tech', 1)
   `).run().lastInsertRowid);
   const insertItem = db.prepare(`
-    INSERT INTO rss_items (source_id, external_guid, title, link_url, item_type, published_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO external_items (provider, item_kind, title, canonical_url, published_at)
+    VALUES ('rss', ?, ?, ?, datetime('now'))
   `);
-  insertItem.run(rssSourceId, 'article-guid', 'Article item', 'https://example.test/article', 'article');
-  insertItem.run(rssSourceId, 'podcast-guid', 'Podcast item', 'https://example.test/podcast', 'podcast');
+  const articleId = Number(insertItem.run('article', 'Article item', 'https://example.test/article').lastInsertRowid);
+  const podcastId = Number(insertItem.run('podcast', 'Podcast item', 'https://example.test/podcast').lastInsertRowid);
+  db.prepare('INSERT INTO external_source_items(source_id,item_id,source_entry_id) VALUES (?,?,?)').run(rssSourceId, articleId, 'article-guid');
+  db.prepare('INSERT INTO external_source_items(source_id,item_id,source_entry_id) VALUES (?,?,?)').run(rssSourceId, podcastId, 'podcast-guid');
 
   const insertLfg = db.prepare(`
     INSERT INTO game_lfg_posts
@@ -180,11 +182,11 @@ test('RSS PATCH allowlists fields and never treats request keys as SQL identifie
     isActive: true,
   }));
   assert.equal(valid.response.status, 200, JSON.stringify(valid.body));
-  const updated = db.prepare('SELECT * FROM rss_sources WHERE id = ?').get(rssSourceId) as any;
+  const updated = db.prepare('SELECT * FROM external_sources WHERE id = ?').get(rssSourceId) as any;
   assert.equal(updated.name, 'Updated Source');
   assert.equal(updated.homepage_url, '');
   assert.equal(updated.is_active, 1);
-  assert.equal(updated.url, 'https://feed.example.test/rss');
+  assert.equal(updated.fetch_url, 'https://feed.example.test/rss');
   assert.equal(updated.category, 'tech');
 
   const rejectedBodies = [
@@ -201,14 +203,14 @@ test('RSS PATCH allowlists fields and never treats request keys as SQL identifie
     const result = await request(`/api/admin/rss/sources/${rssSourceId}`, 'admin', json('PATCH', body));
     assert.equal(result.response.status, 400, JSON.stringify({ body, response: result.body }));
   }
-  const unchanged = db.prepare('SELECT name, url, category, is_active FROM rss_sources WHERE id = ?').get(rssSourceId) as any;
+  const unchanged = db.prepare('SELECT name, fetch_url, category, is_active FROM external_sources WHERE id = ?').get(rssSourceId) as any;
   assert.deepEqual(unchanged, {
     name: 'Updated Source',
-    url: 'https://feed.example.test/rss',
+    fetch_url: 'https://feed.example.test/rss',
     category: 'tech',
     is_active: 1,
   });
-  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'rss_sources'").get());
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'external_sources'").get());
 
   const unauthorized = await request(`/api/admin/rss/sources/${rssSourceId}`, 'owner', json('PATCH', { name: 'Nope' }));
   assert.equal(unauthorized.response.status, 403);

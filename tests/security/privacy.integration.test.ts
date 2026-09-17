@@ -252,15 +252,20 @@ before(async () => {
     ids.banned, gameId, 'BANNED LFG SECRET', 'banned lfg body',
   ).lastInsertRowid);
 
-  const sourceId = Number(db.prepare(
-    "INSERT INTO rss_sources (name, url, is_active) VALUES ('Test Source', 'https://example.invalid/rss', 1)",
-  ).run().lastInsertRowid);
+  const sourceId = Number(db.prepare(`
+    INSERT INTO external_sources(provider, source_kind, name, fetch_url, is_active)
+    VALUES ('rss', 'rss', 'Test Source', 'https://example.invalid/rss', 1)
+  `).run().lastInsertRowid);
   rssItemId = Number(db.prepare(`
-    INSERT INTO rss_items (source_id, external_guid, title, link_url)
-    VALUES (?, 'privacy-item', 'Privacy Item', 'https://example.invalid/item')
-  `).run(sourceId).lastInsertRowid);
+    INSERT INTO external_items(provider, item_kind, title, canonical_url)
+    VALUES ('rss', 'article', 'Privacy Item', 'https://example.invalid/item')
+  `).run().lastInsertRowid);
+  db.prepare(`INSERT INTO external_source_items(source_id, item_id, source_entry_id)
+    VALUES (?, ?, 'privacy-item')`).run(sourceId, rssItemId);
+  const addSubscription = db.prepare('INSERT INTO user_external_source_subscriptions(user_id, source_id) VALUES (?, ?)');
+  for (const userId of Object.values(ids)) addSubscription.run(userId, sourceId);
   const addWorldComment = db.prepare(
-    'INSERT INTO rss_item_comments (rss_item_id, user_id, body) VALUES (?, ?, ?)',
+    'INSERT INTO external_item_comments (external_item_id, user_id, body) VALUES (?, ?, ?)',
   );
   worldCommentIds.private = Number(addWorldComment.run(
     rssItemId, ids.private, 'PRIVATE AUTHOR PUBLIC WORLD COMMENT',
@@ -269,7 +274,7 @@ before(async () => {
     rssItemId, ids.banned, 'BANNED WORLD COMMENT SECRET',
   ).lastInsertRowid);
   worldCommentIds.replyToBanned = Number(db.prepare(`
-    INSERT INTO rss_item_comments (rss_item_id, user_id, body, parent_id)
+    INSERT INTO external_item_comments (external_item_id, user_id, body, parent_id)
     VALUES (?, ?, ?, ?)
   `).run(
     rssItemId,
@@ -750,10 +755,12 @@ test('owner/admin mutations do not disclose unauthorized hidden object existence
 });
 
 test('World Feed counts match visible comments in ranked and source-filtered feeds', async () => {
-  const source = db.prepare('SELECT source_id FROM rss_items WHERE id = ?').get(rssItemId) as any;
+  const source = db.prepare('SELECT source_id FROM external_source_items WHERE item_id = ?').get(rssItemId) as any;
   for (const viewer of [undefined, 'stranger', 'blocker', 'private', 'admin']) {
     const comments = await request(`/api/world-feed/${rssItemId}/comments`, viewer);
-    for (const route of ['/api/world-feed', `/api/world-feed?sourceId=${source.source_id}`, '/api/feed?level=world']) {
+    const routes = ['/api/world-feed', `/api/world-feed?sourceId=${source.source_id}`];
+    if (viewer) routes.push('/api/feed?level=world');
+    for (const route of routes) {
       const result = await request(route, viewer);
       assert.equal(result.response.status, 200);
       const item = result.body.items.find((row: any) => row.id === rssItemId);

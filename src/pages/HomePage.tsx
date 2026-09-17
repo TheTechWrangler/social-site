@@ -7,12 +7,14 @@ import { attachComposerMedia, createClientOperationKey, SubmissionLock, submitCo
 import { applyPostEntityMutation, type PostEntityMutation } from '../postEntityState';
 import { useMediaCapabilities } from '../hooks/useMediaCapabilities';
 import { RouteRequestGate } from '../routeLoadState';
+import { Link } from 'react-router-dom';
+import type { PersonalExternalFeedStatus } from '../../shared/externalContent';
 
 const LEVELS = [
   { key: 'everyone', label: 'Community', help: 'All public posts from verified members. Mute, block, or follow to shape what you see.' },
   { key: 'extended', label: 'Friends of Friends', help: 'Your circle plus your extended circle. No random public posts.' },
   { key: 'friends', label: 'Just Friends', help: 'Only your posts and people you follow.' },
-  { key: 'world', label: 'Approved World Feeds', help: 'Approved RSS and podcast sources. External content stays clearly labeled.' },
+  { key: 'world', label: 'My External Sources', help: 'Articles and podcasts from approved sources you choose. External content stays clearly labeled.' },
 ];
 const WORLD_HOME_OPTIONS = [
   { key: 'world_home_off', label: 'Off', help: 'Only native posts appear in this feed.' },
@@ -37,6 +39,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   const [replenishMsg, setReplenishMsg] = useState('');
   const [feedError, setFeedError] = useState('');
   const [feedLoaded, setFeedLoaded] = useState(false);
+  const [personalExternalFeedStatus, setPersonalExternalFeedStatus] = useState<PersonalExternalFeedStatus>('ready');
   const { capabilities, state: capabilityState, retry: retryCapabilities } = useMediaCapabilities();
   const [replenishCooldown, setReplenishCooldown] = useState<string | null>(null);
   // Default to 'everyone' (Community) so new users see the full public feed immediately.
@@ -96,6 +99,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       setNextOffset(response.pagination?.nextOffset ?? null);
       setPosts(nativePosts);
       setWorldItems(Array.isArray(response.worldItems) ? response.worldItems : []);
+      setPersonalExternalFeedStatus(response.personalExternalFeedStatus ?? 'ready');
       setFeedItems(normalizedItems);
       setFeedLoaded(true);
       return true;
@@ -330,7 +334,14 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
         setTimeout(async () => { await loadFeed(); setReplenishing(false); }, 4000);
         return;
       }
-      setReplenishMsg(r.newItems != null ? `Done — ${r.newItems} new items added.` : 'Replenish complete.');
+      if (r.sourcesChecked === 0) {
+        setPersonalExternalFeedStatus(r.personalExternalFeedStatus ?? 'no_active_subscriptions');
+        setReplenishMsg(r.personalExternalFeedStatus === 'no_subscriptions'
+          ? 'Subscribe to an approved source before replenishing.'
+          : 'None of your subscribed sources are currently available to refresh.');
+      } else {
+        setReplenishMsg(r.newItems != null ? `Done — ${r.newItems} new items added.` : 'Replenish complete.');
+      }
       await loadFeed();
     } catch (e: any) {
       if (e.status === 429 || (e.message && e.message.includes('429'))) {
@@ -445,10 +456,19 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
             </div>
             {worldItems.length === 0
               ? <div className="empty-state">
-                  <p>No world feed items have been fetched yet.</p>
-                  {user?.role === 'admin'
-                    ? <p className="muted">Click "Refresh next 20 sources" above, or go to Admin → RSS Sources.</p>
-                    : <p className="muted">An admin needs to fetch RSS sources before content appears here.</p>}
+                  {personalExternalFeedStatus === 'no_subscriptions' ? <>
+                    <p>You have not subscribed to any approved external sources.</p>
+                    <p className="muted"><Link to="/world">Browse approved sources</Link> to build your personal feed.</p>
+                  </> : personalExternalFeedStatus === 'no_active_subscriptions' ? <>
+                    <p>Your subscribed sources are currently disabled, removed, or blocked.</p>
+                    <p className="muted"><Link to="/world">Review your approved source choices</Link>.</p>
+                  </> : user?.role === 'admin' ? <>
+                    <p>No subscribed external items have been fetched yet.</p>
+                    <p className="muted">Refresh approved RSS sources from the admin panel, or review your subscriptions.</p>
+                  </> : <>
+                    <p>No items from your subscribed external sources are available yet.</p>
+                    <p className="muted">Try again later or <Link to="/world">review your approved source choices</Link>.</p>
+                  </>}
                 </div>
               : <div className="world-feed-list">{worldItems.map(item => <WorldCard key={item.id} item={item} />)}</div>
             }
@@ -473,8 +493,8 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       }
       {!loading && nextOffset !== null && <button className="btn btn-ghost" disabled={loadingMore} onClick={() => void loadMoreFeed()}>{level === 'world' ? 'Load more World items' : 'Load more posts'}</button>}
       {!loading && level !== 'world' && worldItems.length > 0 && (
-        <section aria-label="World suggestions"><h3>World suggestions</h3>
-          <p className="muted">Separate from your paginated posts.</p>
+        <section aria-label="External source items"><h3>From your external sources</h3>
+          <p className="muted">Subscribed source items are kept separate from your paginated posts.</p>
           {worldItems.map(item => <WorldCard key={item.id} item={item} />)}
         </section>
       )}

@@ -8,12 +8,22 @@ import { logSafeDiagnostic } from '../safeDiagnostics.js';
 
 const router = Router();
 
+function externalItemExists(itemId: number): boolean {
+  return !!getDb().prepare(`
+    SELECT 1 FROM external_items item
+    WHERE item.id = ? AND EXISTS (
+      SELECT 1 FROM external_source_items membership
+      JOIN external_sources source ON source.id = membership.source_id
+      WHERE membership.item_id = item.id AND source.tombstoned_at IS NULL
+    )
+  `).get(itemId);
+}
+
 // GET /api/world-feed/:itemId/comments
 router.get('/:itemId/comments', optionalAuth, (req, res) => {
   try {
     const itemId = Number(req.params.itemId);
-    const item = getDb().prepare('SELECT id FROM rss_items WHERE id = ?').get(itemId);
-    if (!item) { res.status(404).json({ error: 'RSS item not found.' }); return; }
+    if (!externalItemExists(itemId)) { res.status(404).json({ error: 'External item not found.' }); return; }
 
     const limit = pageInteger(req.query.limit, 50, 1, 100, 'limit');
     const after = pageInteger(req.query.after, 0, 1, Number.MAX_SAFE_INTEGER, 'after');
@@ -21,8 +31,8 @@ router.get('/:itemId/comments', optionalAuth, (req, res) => {
     const notMuted = notMutedByViewerSql((req as any).user, 'u');
     const rows = getDb().prepare(`
       SELECT c.*, u.username, u.display_name, u.avatar_url
-      FROM rss_item_comments c JOIN users u ON c.user_id = u.id
-      WHERE c.rss_item_id = ? AND c.id > ? AND c.is_hidden = 0
+      FROM external_item_comments c JOIN users u ON c.user_id = u.id
+      WHERE c.external_item_id = ? AND c.id > ? AND c.is_hidden = 0
         AND ${authorVisibility.sql}
         AND ${notMuted.sql}
       ORDER BY c.id ASC LIMIT ?
@@ -31,8 +41,8 @@ router.get('/:itemId/comments', optionalAuth, (req, res) => {
     const page = rows.slice(0, limit);
     const parentIds = [...new Set(page.map(row => row.parent_id).filter(Boolean))];
     const visibleCommentIds = new Set(parentIds.length ? (getDb().prepare(`
-      SELECT c.id FROM rss_item_comments c JOIN users u ON u.id = c.user_id
-      WHERE c.rss_item_id = ? AND c.id IN (${parentIds.map(() => '?').join(',')})
+      SELECT c.id FROM external_item_comments c JOIN users u ON u.id = c.user_id
+      WHERE c.external_item_id = ? AND c.id IN (${parentIds.map(() => '?').join(',')})
         AND c.is_hidden = 0 AND ${authorVisibility.sql} AND ${notMuted.sql}
     `).all(itemId, ...parentIds, ...authorVisibility.params, ...notMuted.params) as any[]).map(row => row.id) : []);
     const comments = page.map(r => ({
@@ -46,8 +56,8 @@ router.get('/:itemId/comments', optionalAuth, (req, res) => {
       createdAt: r.created_at,
     }));
 
-    const count = (getDb().prepare(`SELECT COUNT(*) AS count FROM rss_item_comments c JOIN users u ON u.id = c.user_id
-      WHERE c.rss_item_id = ? AND c.is_hidden = 0 AND ${authorVisibility.sql} AND ${notMuted.sql}`)
+    const count = (getDb().prepare(`SELECT COUNT(*) AS count FROM external_item_comments c JOIN users u ON u.id = c.user_id
+      WHERE c.external_item_id = ? AND c.is_hidden = 0 AND ${authorVisibility.sql} AND ${notMuted.sql}`)
       .get(itemId, ...authorVisibility.params, ...notMuted.params) as any).count;
     res.json({ comments, count, hasMore: rows.length > limit, nextCursor: rows.length > limit ? page.at(-1)!.id : null });
   } catch (err: any) {
@@ -64,8 +74,7 @@ router.post('/:itemId/comments', requireAuth, requireVerified, (req, res) => {
     const { body } = req.body;
     if (!body?.trim()) { res.status(400).json({ error: 'Comment body required.' }); return; }
 
-    const item = getDb().prepare('SELECT id FROM rss_items WHERE id = ?').get(itemId);
-    if (!item) { res.status(404).json({ error: 'RSS item not found.' }); return; }
+    if (!externalItemExists(itemId)) { res.status(404).json({ error: 'External item not found.' }); return; }
 
     // Sanitize: strip HTML tags, trim
     const cleanBody = body.replace(/<[^>]*>/g, '').trim().slice(0, 2000);
@@ -73,12 +82,12 @@ router.post('/:itemId/comments', requireAuth, requireVerified, (req, res) => {
 
     const user = (req as any).user;
     const result = getDb().prepare(
-      'INSERT INTO rss_item_comments (rss_item_id, user_id, body) VALUES (?, ?, ?)'
+      'INSERT INTO external_item_comments (external_item_id, user_id, body) VALUES (?, ?, ?)'
     ).run(itemId, user.id, cleanBody);
 
     const row = getDb().prepare(`
       SELECT c.*, u.username, u.display_name, u.avatar_url
-      FROM rss_item_comments c JOIN users u ON c.user_id = u.id WHERE c.id = ?
+      FROM external_item_comments c JOIN users u ON c.user_id = u.id WHERE c.id = ?
     `).get(result.lastInsertRowid) as any;
 
     const comment = {
@@ -101,12 +110,12 @@ router.delete('/comments/:commentId', requireAuth, requireVerified, (req, res) =
     const commentId = Number(req.params.commentId);
     const user = (req as any).user;
     const comment = getDb().prepare(`
-      SELECT id FROM rss_item_comments
+      SELECT id FROM external_item_comments
       WHERE id = ? AND (user_id = ? OR ? = 'admin')
     `).get(commentId, user.id, user.role) as any;
     if (!comment) { res.status(404).json({ error: 'Comment not found.' }); return; }
 
-    getDb().prepare('DELETE FROM rss_item_comments WHERE id = ?').run(commentId);
+    getDb().prepare('DELETE FROM external_item_comments WHERE id = ?').run(commentId);
     res.json({ ok: true });
   } catch (err: any) {
     logSafeDiagnostic({ subsystem: 'world-comments', severity: 'error', code: 'WORLD_COMMENTS_DELETE_FAILED' });
