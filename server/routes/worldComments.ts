@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified } from '../middleware.js';
 import { notMutedByViewerSql, userVisibilitySql } from '../visibility.js';
+import { logSafeDiagnostic } from '../safeDiagnostics.js';
 
 const router = Router();
 
@@ -51,7 +52,7 @@ router.get('/:itemId/comments', optionalAuth, (req, res) => {
     res.json({ comments, count, hasMore: rows.length > limit, nextCursor: rows.length > limit ? page.at(-1)!.id : null });
   } catch (err: any) {
     if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
-    console.error('[world-comments] Load comments error:', err.message);
+    logSafeDiagnostic({ subsystem: 'world-comments', severity: 'error', code: 'WORLD_COMMENTS_LOAD_FAILED' });
     res.status(500).json({ error: 'Could not load comments.' });
   }
 });
@@ -89,7 +90,7 @@ router.post('/:itemId/comments', requireAuth, requireVerified, (req, res) => {
 
     res.status(201).json({ comment });
   } catch (err: any) {
-    console.error('[world-comments] Create comment error:', err.message);
+    logSafeDiagnostic({ subsystem: 'world-comments', severity: 'error', code: 'WORLD_COMMENTS_CREATE_FAILED' });
     res.status(500).json({ error: 'Could not create comment.' });
   }
 });
@@ -108,7 +109,7 @@ router.delete('/comments/:commentId', requireAuth, requireVerified, (req, res) =
     getDb().prepare('DELETE FROM rss_item_comments WHERE id = ?').run(commentId);
     res.json({ ok: true });
   } catch (err: any) {
-    console.error('[world-comments] Delete comment error:', err.message);
+    logSafeDiagnostic({ subsystem: 'world-comments', severity: 'error', code: 'WORLD_COMMENTS_DELETE_FAILED' });
     res.status(500).json({ error: 'Could not delete comment.' });
   }
 });

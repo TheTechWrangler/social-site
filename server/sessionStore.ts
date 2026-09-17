@@ -14,6 +14,7 @@
  *   - No session content is logged.
  */
 
+import { logSafeDiagnostic } from './safeDiagnostics.js';
 import { Store } from 'express-session';
 import { getDb } from './database.js';
 import { isStoredSessionUnexpired, sessionExpiryEpochMs } from './sessionExpiry.js';
@@ -54,7 +55,7 @@ export class SQLiteSessionStore extends Store {
       db.prepare('DELETE FROM application_auth_sessions WHERE expires_at_ms <= ?').run(nowMs);
     } catch (e) {
       // Non-fatal — log and continue. Missing sessions cause re-login, not data loss.
-      console.error('[session] Cleanup error:', (e as Error).message);
+      logSafeDiagnostic({ subsystem: 'session', severity: 'error', code: 'SESSION_CLEANUP_FAILED' });
     }
   }
 

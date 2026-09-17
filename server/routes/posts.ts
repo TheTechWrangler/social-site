@@ -9,6 +9,7 @@ import { canViewGroup, canViewPost, userVisibilitySql, type Viewer } from '../vi
 import { logUsage } from '../usageEvents.js';
 import { validatePostContent, validatePostEdit, type PostEditInput } from '../postValidation.js';
 import { positiveIntegerParam, validationErrorMessage } from '../requestValidation.js';
+import { logSafeDiagnostic } from '../safeDiagnostics.js';
 
 const router = Router();
 
@@ -244,7 +245,7 @@ router.post('/', requireAuth, requireVerified, (req: AuthRequest, res) => {
   } catch (err: any) {
     const validationError = validationErrorMessage(err);
     if (validationError) { res.status(400).json({ error: validationError }); return; }
-    console.error('[posts] Create post error:', err.message);
+    logSafeDiagnostic({ subsystem: 'posts', severity: 'error', code: 'POST_CREATE_FAILED' });
     res.status(500).json({ error: 'Could not create post.' });
   }
 });

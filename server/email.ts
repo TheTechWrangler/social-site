@@ -8,6 +8,7 @@
  *   - All send attempts return { ok: false } instead of throwing.
  *   - The rest of the app continues normally; verification just won't arrive.
  */
+import { logSafeDiagnostic } from './safeDiagnostics.js';
 
 export interface SendEmailOptions {
   to: string;
@@ -58,17 +59,17 @@ export async function sendEmail(opts: SendEmailOptions): Promise<SendEmailResult
     });
 
     if (!res.ok) {
-      const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-      // Log the status and message — never log the API key or auth header.
-      const msg = String(body?.message || body?.error || `HTTP ${res.status}`);
-      console.error(`[email] Resend API error: ${res.status} — ${msg}`);
-      return { ok: false, error: msg };
+      logSafeDiagnostic({
+        subsystem: 'email', severity: 'error', code: 'EMAIL_PROVIDER_REJECTED',
+        httpStatus: res.status,
+      });
+      return { ok: false, error: 'Email provider rejected the request.' };
     }
 
     return { ok: true };
-  } catch (err: any) {
-    console.error('[email] Send failed:', err.message);
-    return { ok: false, error: err.message };
+  } catch {
+    logSafeDiagnostic({ subsystem: 'email', severity: 'error', code: 'EMAIL_SEND_FAILED' });
+    return { ok: false, error: 'Email delivery failed.' };
   }
 }
 

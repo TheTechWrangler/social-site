@@ -11,6 +11,7 @@ import { canViewPost } from '../visibility.js';
 import { logUsage } from '../usageEvents.js';
 import { PENDING_ASSET_TTL_MS } from '../assetLifecycle.js';
 import { validatedObjectBody, integerField, stringField, positiveIntegerParam, validationErrorMessage } from '../requestValidation.js';
+import { logSafeDiagnostic } from '../safeDiagnostics.js';
 import type { Request, Response, NextFunction } from 'express';
 
 const storageConfig = getStorageConfig();
@@ -177,7 +178,7 @@ function validateUploadedImageBytes(req: Request, res: Response, next: NextFunct
       return;
     }
   } catch (err: any) {
-    console.warn('[uploads] Image byte validation failed:', err.message);
+    logSafeDiagnostic({ subsystem: 'uploads', severity: 'warn', code: 'UPLOAD_VALIDATION_FAILED' });
   }
   deleteRejectedUpload(req.file);
   res.status(400).json({ error: IMAGE_UPLOAD_ERROR });
@@ -240,7 +241,7 @@ router.post('/avatar', requireAuth, requireImageUploadsEnabled, handleAvatarUplo
   } catch (err: any) {
     deleteRejectedUpload(req.file);
     logUsage({ eventType: 'upload_failed', userId: user.id, featureArea: 'profile', errorCode: 'SERVER_ERROR' });
-    console.error('[uploads] Avatar upload error:', err.message);
+    logSafeDiagnostic({ subsystem: 'uploads', severity: 'error', code: 'UPLOAD_AVATAR_FAILED' });
     res.status(500).json({ error: 'Avatar upload failed.' });
   }
 });
@@ -311,7 +312,7 @@ router.post('/image', requireAuth, requireVerified, requireImageUploadsEnabled, 
   } catch (err: any) {
     deleteRejectedUpload(req.file);
     logUsage({ eventType: 'upload_failed', userId: (req as any).user?.id ?? null, featureArea: 'feed', errorCode: 'SERVER_ERROR' });
-    console.error('[uploads] Image upload error:', err.message);
+    logSafeDiagnostic({ subsystem: 'uploads', severity: 'error', code: 'UPLOAD_IMAGE_FAILED' });
     res.status(500).json({ error: 'Image upload failed.' });
   }
 });
@@ -391,7 +392,7 @@ router.post('/assets/:assetId/attach', requireAuth, requireVerified, requireImag
     }
     res.status(result.status).json({ media: result.media, replayed: result.replayed });
   } catch (err: any) {
-    console.error('[uploads] Image attach error:', err.message);
+    logSafeDiagnostic({ subsystem: 'uploads', severity: 'error', code: 'UPLOAD_ATTACH_FAILED' });
     res.status(500).json({ error: 'Could not attach image.' });
   }
 });
@@ -460,7 +461,7 @@ router.post('/external-video', requireAuth, requireVerified, (req, res) => {
     }
     res.status(result.status).json({ media: result.media, replayed: result.replayed });
   } catch (err: any) {
-    console.error('[uploads] External video attach error:', err.message);
+    logSafeDiagnostic({ subsystem: 'uploads', severity: 'error', code: 'UPLOAD_VIDEO_ATTACH_FAILED' });
     res.status(500).json({ error: 'Could not attach video.' });
   }
 });

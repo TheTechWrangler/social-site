@@ -5,6 +5,7 @@ import { getDb } from '../database.js';
 import { requireAuth, optionalAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPosts } from './posts.js';
 import { logUsage } from '../usageEvents.js';
+import { logSafeDiagnostic } from '../safeDiagnostics.js';
 import {
   notMutedByViewerSql,
   userVisibilitySql,
@@ -223,7 +224,7 @@ router.put('/:id/owner', requireAuth, (req: AuthRequest, res) => {
       replayed: result.replayed,
     });
   } catch (err: any) {
-    console.error('[groups] Ownership transfer error:', err.message);
+    logSafeDiagnostic({ subsystem: 'groups', severity: 'error', code: 'GROUP_OWNERSHIP_TRANSFER_FAILED' });
     res.status(500).json({ error: 'Could not transfer group ownership.' });
   }
 });
@@ -271,7 +272,7 @@ router.delete('/:id', requireAuth, (req: AuthRequest, res) => {
       },
     });
   } catch (err: any) {
-    console.error('[groups] Delete group error:', err.message);
+    logSafeDiagnostic({ subsystem: 'groups', severity: 'error', code: 'GROUP_DELETE_FAILED' });
     res.status(500).json({ error: 'Could not delete group.' });
   }
 });

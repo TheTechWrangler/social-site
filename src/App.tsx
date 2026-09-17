@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { api } from './api/client';
 import { usePageTracking } from './hooks/usePageTracking';
 import { RouteRequestGate } from './routeLoadState';
+import { canonicalTelemetryRoute } from '../shared/telemetry';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -53,7 +54,7 @@ export default function App() {
     // Global unhandled error reporter — sends a generic signal only (no stack traces or PII).
     // sessionStorage dedup: at most one report per route per browser session.
     const handler = (_event: ErrorEvent) => {
-      const safeRoute = window.location.pathname.replace(/\/\d+/g, '/:id');
+      const safeRoute = canonicalTelemetryRoute(window.location.pathname);
       const dedupKey = `err_reported_${safeRoute}`;
       if (sessionStorage.getItem(dedupKey)) return;
       sessionStorage.setItem(dedupKey, '1');

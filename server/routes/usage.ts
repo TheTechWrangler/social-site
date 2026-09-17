@@ -3,13 +3,14 @@
  *
  * Privacy rules:
  * - Only page_view and client_error event types accepted from clients.
- * - Route is anonymized (IDs stripped) before storage.
+ * - Route is mapped to a finite, non-identifying template before storage.
  * - No message content, passwords, tokens, or form data ever stored.
  * - userId set from JWT only if token is present and valid.
  */
 import { Router } from 'express';
 import { optionalAuth, type AuthRequest } from '../middleware.js';
 import { logUsage } from '../usageEvents.js';
+import { canonicalTelemetryRoute } from '../../shared/telemetry.js';
 
 const router = Router();
 
@@ -24,22 +25,14 @@ router.post('/event', optionalAuth, (req: AuthRequest, res) => {
     return;
   }
 
-  // Sanitize route: strip query strings and fragment, anonymize numeric IDs
-  let safeRoute: string | undefined;
-  if (typeof route === 'string') {
-    safeRoute = route
-      .split('?')[0]
-      .split('#')[0]
-      .replace(/\/\d+/g, '/:id')
-      .slice(0, 200);
-  }
+  const safeRoute = canonicalTelemetryRoute(route);
 
   // Whitelist feature areas
   const ALLOWED_AREAS = new Set(['feed', 'world', 'games', 'groups', 'social', 'messages', 'account', 'admin', 'profile', 'other']);
   const safeArea = typeof featureArea === 'string' && ALLOWED_AREAS.has(featureArea) ? featureArea : undefined;
 
   // Only store a safe generic error code
-  const safeErrorCode = typeof errorCode === 'string' ? errorCode.slice(0, 50).replace(/[^A-Z0-9_]/gi, '_') : undefined;
+  const safeErrorCode = errorCode === 'UNHANDLED_ERROR' ? errorCode : undefined;
 
   logUsage({
     eventType: eventType as 'page_view' | 'client_error',

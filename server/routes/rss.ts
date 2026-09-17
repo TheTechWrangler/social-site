@@ -4,6 +4,7 @@ import { requireAuth, requireAdmin, optionalAuth, requireVerified } from '../mid
 import { getWorldFeedPage, getSources, getBlockedSourceIds, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
 import { pageInteger } from '../pagination.js';
 import { logAuthEvent } from '../authEvents.js';
+import { logSafeDiagnostic } from '../safeDiagnostics.js';
 import {
   RequestValidationError,
   booleanField,
@@ -16,6 +17,10 @@ import type { RssSourceUpdate } from '../rssService.js';
 
 const publicRouter = Router();
 const adminRouter = Router();
+adminRouter.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'private, no-store');
+  next();
+});
 const RSS_NAME_MAX = 120;
 const RSS_URL_MAX = 2048;
 const RSS_CATEGORY_MAX = 80;
@@ -91,21 +96,23 @@ async function runFetchAllInBackground(): Promise<void> {
     fetchAllState.lastResultSummary = { sourcesChecked: results.length, totalNew, errors };
     fetchAllState.failures = results.filter(r => r.error).map(r => ({ sourceId: r.sourceId, error: r.error }));
     if (errors) {
-      const errList = results.filter(r => r.error).map(r => `Source ${r.sourceId}: ${r.error}`).join('; ');
-      console.warn('[rss] fetch-all errors:', errList);
+      logSafeDiagnostic({
+        subsystem: 'rss', severity: 'warn', code: 'RSS_BATCH_COMPLETED_WITH_ERRORS',
+        context: { errorCount: errors, itemsInserted: totalNew, sourcesChecked: results.length },
+      });
     }
     console.log(`[rss] fetch-all complete: ${results.length} sources, ${totalNew} new items, ${errors} errors`);
-  } catch (err: any) {
-    fetchAllState.lastError = err.message || 'Unknown error';
-    console.error('[rss] fetch-all background error:', err.message);
+  } catch {
+    fetchAllState.lastError = 'RSS_REFRESH_FAILED';
+    logSafeDiagnostic({ subsystem: 'rss', severity: 'error', code: 'RSS_REFRESH_FAILED' });
   } finally {
     fetchAllState.running = false;
     fetchAllState.finishedAt = new Date().toISOString();
   }
 }
 
-function logRssError(context: string, err: unknown): void {
-  console.error(`[rss] ${context}:`, err instanceof Error ? err.message : String(err));
+function logRssError(_context: string, _err: unknown): void {
+  logSafeDiagnostic({ subsystem: 'rss', severity: 'error', code: 'RSS_REFRESH_FAILED' });
 }
 
 // ─── Public World Feed ───
@@ -220,7 +227,7 @@ adminRouter.post('/sources', requireAuth, requireAdmin, (req, res) => {
     const { name, url, homepageUrl, category } = validateRssSourceCreate(req.body);
     const source = addSource(name, url, homepageUrl || '', category || 'general');
     const adminId = (req as any).user.id;
-    logAuthEvent({ eventType: 'admin_rss_source_add', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id, name } });
+    logAuthEvent({ eventType: 'admin_rss_source_add', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id } });
     res.status(201).json({ source });
   } catch (err: any) {
     const validationMessage = validationErrorMessage(err);

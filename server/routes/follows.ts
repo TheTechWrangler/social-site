@@ -3,6 +3,7 @@ import { getDb } from '../database.js';
 import { requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { canViewUserIdentity, isBlockedBetween, userVisibilitySql } from '../visibility.js';
 import { createFollowNotification, removeFollowNotification } from '../notificationService.js';
+import { logSafeDiagnostic } from '../safeDiagnostics.js';
 
 const router = Router();
 
@@ -145,7 +146,7 @@ router.post('/:userId', requireAuth, requireVerified, (req: AuthRequest, res) =>
     const result = follow();
     res.json(followResponse(result.status, result.replayed));
   } catch (err: any) {
-    console.error('[follows] Failed to follow user:', err.message);
+    logSafeDiagnostic({ subsystem: 'follows', severity: 'error', code: 'FOLLOW_CREATE_FAILED' });
     res.status(500).json({ error: 'Could not follow user.' });
   }
 });

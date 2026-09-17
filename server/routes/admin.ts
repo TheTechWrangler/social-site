@@ -25,6 +25,10 @@ try {
 } catch { /* non-fatal — version stays 'unknown' */ }
 
 const router = Router();
+router.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'private, no-store');
+  next();
+});
 
 function activeAdminCount(): number {
   return (getDb().prepare("SELECT COUNT(*) as c FROM users WHERE role = 'admin' AND banned = 0").get() as any).c;
@@ -378,7 +382,7 @@ router.post('/game-servers', requireAuth, requireAdmin, (req, res) => {
         input.maxPlayers, input.currentPlayers, input.isFeatured ? 1 : 0, input.isActive ? 1 : 0,
         input.joinInstructions, input.rulesSummary, input.discordUrl, input.websiteUrl, input.serverType, input.playStyle, input.regionOrTimezone);
     const server = getDb().prepare('SELECT * FROM game_servers WHERE id = ?').get(r.lastInsertRowid);
-    logAuthEvent({ eventType: 'admin_game_server_create', userId: adminId, adminActorId: adminId, meta: { serverId: Number(r.lastInsertRowid), name: input.name } });
+    logAuthEvent({ eventType: 'admin_game_server_create', userId: adminId, adminActorId: adminId, meta: { serverId: Number(r.lastInsertRowid) } });
     res.status(201).json({ server });
   } catch (error) {
     const message = validationErrorMessage(error);
@@ -461,8 +465,9 @@ router.get('/auth-events', requireAuth, requireAdmin, (req, res) => {
   if (userId) { where += ' AND (ae.user_id = ? OR ae.target_user_id = ?)'; params.push(userId, userId); }
   const total = (getDb().prepare(`SELECT COUNT(*) as c FROM auth_events ae ${where}`).get(...params) as any).c as number;
   const events = getDb().prepare(`
-    SELECT ae.*, u.username, u.email,
-      aa.username as admin_actor_username,
+    SELECT ae.id, ae.event_type, ae.success, ae.reason, ae.ip_address,
+      ae.user_agent, ae.user_id, ae.admin_actor_id, ae.target_user_id, ae.created_at,
+      u.username, aa.username as admin_actor_username,
       tu.username as target_user_username
     FROM auth_events ae
     LEFT JOIN users u ON ae.user_id = u.id
@@ -490,14 +495,14 @@ router.get('/users/:id/activity', requireAuth, requireAdmin, (req, res) => {
   ).get(userId, userId) as any).c as number;
 
   const events = db.prepare(`
-    SELECT id, event_type, success, reason, ip_address, user_agent, admin_actor_id, created_at
+    SELECT id, event_type, success, reason, ip_address, created_at
     FROM auth_events WHERE user_id = ? OR target_user_id = ?
     ORDER BY created_at DESC LIMIT ? OFFSET ?
   `).all(userId, userId, limit, offset) as any[];
 
   const postCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NULL').get(userId) as any).c;
   const commentCount = (db.prepare('SELECT COUNT(*) as c FROM posts WHERE user_id = ? AND parent_id IS NOT NULL').get(userId) as any).c;
-  const providers = db.prepare('SELECT provider, provider_email, created_at FROM user_auth_providers WHERE user_id = ?').all(userId);
+  const providers = db.prepare('SELECT provider FROM user_auth_providers WHERE user_id = ?').all(userId);
 
   res.json({
     user, events, postCount, commentCount, providers,
@@ -530,7 +535,7 @@ router.post('/users/:id/password-reset-token', requireAuth, requireAdmin, (req, 
     auditOperation(db, 'user.reset_issued', adminId, 'user', targetId);
   }).immediate();
 
-  logAuthEvent({ eventType: 'admin_password_reset_token', userId: targetId, adminActorId: adminId, targetUserId: targetId, meta: { username: target.username } });
+  logAuthEvent({ eventType: 'admin_password_reset_token', userId: targetId, adminActorId: adminId, targetUserId: targetId });
 
   // Use WEB_BASE_URL so the link points to the frontend, not the API server.
   const baseUrl = (process.env.WEB_BASE_URL || process.env.APP_BASE_URL || 'https://refugecloud.com').replace(/\/$/, '');
@@ -551,21 +556,12 @@ router.get('/system-health', requireAuth, requireAdmin, (_req, res) => {
   const googleConfigured = isGoogleConfigured();
   const steamConfigured = isSteamConfigured();
 
-  // Safe: these are not secrets — they're expected public redirect URIs.
-  const appBase = (process.env.APP_BASE_URL || 'http://localhost:3003').replace(/\/$/, '');
-  const googleCallbackUrl = process.env.GOOGLE_CALLBACK_URL || `${appBase}/api/auth/google/callback`;
-  const steamReturnUrl = process.env.STEAM_RETURN_URL || `${appBase}/api/auth/steam/callback`;
-  const steamRealm = process.env.STEAM_REALM || appBase;
-
   res.json({
     status: 'ok',
     nodeEnv: process.env.NODE_ENV || 'development',
     appVersion,
     googleOAuth: googleConfigured ? 'Configured' : 'Not configured',
-    googleCallbackUrl,
     steamOAuth: steamConfigured ? 'Configured' : 'Not configured',
-    steamReturnUrl,
-    steamRealm,
     dbReachable,
     uploadsPathOk: uploadsStats.exists,
     uploadsFileCount: uploadsStats.fileCount,

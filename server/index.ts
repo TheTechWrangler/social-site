@@ -9,7 +9,7 @@ import session from 'express-session';
 import passport from 'passport';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initializeDatabase, runRetentionCleanup, getDb } from './database.js';
+import { initializeDatabase, runRetentionCleanup, startTelemetryRetentionScheduler, getDb } from './database.js';
 import { configurePassport } from './authProviders.js';
 import authRoutes from './routes/auth.js';
 import oauthRoutes from './routes/oauth.js';
@@ -33,6 +33,7 @@ import reportsRoutes from './routes/reports.js';
 import { SQLiteSessionStore } from './sessionStore.js';
 import { PASSPORT_SESSION_COOKIE_NAME } from './browserSession.js';
 import { isEmailConfigured } from './email.js';
+import { logSafeDiagnostic } from './safeDiagnostics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3003;
@@ -42,18 +43,18 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 // Register before any async work so every unhandled failure is captured.
 //
 // uncaughtException: a synchronous throw escaped every try/catch. Process state is
-// indeterminate — log the full error and exit so systemd restarts cleanly.
+// indeterminate — log a stable category and exit so systemd restarts cleanly.
 //
 // unhandledRejection: an async/await or Promise chain resolved without a rejection
 // handler. Node 18+ terminates on these by default. We log clearly without exiting
 // because the global Express error handler below may still catch the same error via
 // next(err); exiting here would race with that handler and abort in-flight requests.
-process.on('uncaughtException', (err: Error) => {
-  console.error('[fatal] uncaughtException — exiting for systemd restart:', err);
+process.on('uncaughtException', () => {
+  logSafeDiagnostic({ subsystem: 'server', severity: 'fatal', code: 'SERVER_UNCAUGHT_EXCEPTION' });
   process.exit(1);
 });
-process.on('unhandledRejection', (reason: unknown) => {
-  console.error('[fatal] unhandledRejection — unhandled Promise rejection:', reason);
+process.on('unhandledRejection', () => {
+  logSafeDiagnostic({ subsystem: 'server', severity: 'fatal', code: 'SERVER_UNHANDLED_REJECTION' });
 });
 
 // ─── Environment startup log ───
@@ -95,6 +96,7 @@ const app = express();
 // Session/auth stores must exist before middleware constructors perform cleanup.
 initializeDatabase();
 runRetentionCleanup();
+startTelemetryRetentionScheduler();
 
 // ─── Trust proxy (required for correct rate-limit IPs behind Nginx Proxy Manager) ───
 // Set TRUST_PROXY=1 in production when behind a single reverse proxy.
@@ -170,11 +172,11 @@ const corsOrigin = process.env.WEB_BASE_URL || 'http://localhost:5174';
 if (!process.env.WEB_BASE_URL) {
   console.warn('[cors] WEB_BASE_URL is not set — falling back to http://localhost:5174 (dev only)');
 } else if (corsOrigin.endsWith('/')) {
-  console.warn(`[cors] WEB_BASE_URL has a trailing slash ("${corsOrigin}") — CORS may fail; remove the trailing slash`);
+  logSafeDiagnostic({ subsystem: 'server', severity: 'warn', code: 'SERVER_CORS_CONFIG_INVALID' });
 } else if (!/^https?:\/\//i.test(corsOrigin)) {
-  console.warn(`[cors] WEB_BASE_URL does not start with http:// or https:// ("${corsOrigin}") — CORS may fail`);
+  logSafeDiagnostic({ subsystem: 'server', severity: 'warn', code: 'SERVER_CORS_CONFIG_INVALID' });
 } else {
-  console.log(`[cors] Origin: ${corsOrigin}`);
+  console.log('[cors] Origin configured.');
 }
 app.use(cors({
   origin: corsOrigin,
@@ -433,7 +435,10 @@ app.use((err: Error & { status?: number; type?: string }, _req: express.Request,
     res.status(413).json({ error: 'Request body is too large.' });
     return;
   }
-  console.error('[server] Unhandled error:', err.message);
+  logSafeDiagnostic({
+    subsystem: 'server', severity: 'error', code: 'SERVER_REQUEST_FAILED',
+    httpStatus: Number.isInteger(err.status) ? err.status : 500,
+  });
   res.status(500).json({ error: 'Internal server error.' });
 });
 

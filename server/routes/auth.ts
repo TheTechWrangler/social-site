@@ -16,6 +16,7 @@ import {
 } from '../auth.js';
 import { requireAuth, getAuthCookieValue, AUTH_COOKIE_NAME, type AuthRequest } from '../middleware.js';
 import { clearPassportSessionCookie, destroyBrowserSession } from '../browserSession.js';
+import { logSafeDiagnostic } from '../safeDiagnostics.js';
 import { logAuthEvent, getClientIp } from '../authEvents.js';
 import { logUsage } from '../usageEvents.js';
 import { sendEmail, buildVerificationEmail, buildPasswordResetEmail, isEmailConfigured } from '../email.js';
@@ -120,7 +121,7 @@ router.post('/register', async (req, res) => {
     const user = registerUser(username.trim(), displayName.trim(), email.trim().toLowerCase(), password);
     const token = generateToken(user);
     setAuthCookie(res, token);
-    logAuthEvent({ eventType: 'register_success', userId: user.id, ip: getClientIp(req), userAgent: req.headers['user-agent'], meta: { username: user.username } });
+    logAuthEvent({ eventType: 'register_success', userId: user.id, ip: getClientIp(req), userAgent: req.headers['user-agent'] });
     logUsage({ eventType: 'register_success', userId: user.id, featureArea: 'account' });
 
     // Generate verification token and send email — fire-and-forget.
@@ -137,7 +138,7 @@ router.post('/register', async (req, res) => {
           meta: { triggered_by: 'register', email_configured: isEmailConfigured() },
         });
       })
-      .catch(err => console.error('[auth] Verification email error on register:', err.message));
+      .catch(() => logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_EMAIL_VERIFICATION_FAILED' }));
 
     // Token is set as HttpOnly cookie — not returned in JSON body.
     // needsEmailVerification signals the frontend to show the "check your email" state.
@@ -146,7 +147,7 @@ router.post('/register', async (req, res) => {
     const message = err.message === 'Username or email already taken.'
       ? err.message
       : 'Could not create account.';
-    if (message !== err.message) console.error('[auth] Register error:', err.message);
+    if (message !== err.message) logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_REGISTER_FAILED' });
     res.status(400).json({ error: message });
   }
 });
@@ -163,11 +164,11 @@ router.post('/login', async (req, res) => {
     const user = getUserByUsername(username.trim());
     if (!user || !verifyPassword(password, user.password_hash)) {
       // Safe: same response for unknown user vs wrong password — no enumeration
-      logAuthEvent({ eventType: 'login_failure', success: false, reason: 'INVALID_CREDENTIALS', ip, userAgent: ua, meta: { attemptedUsername: username.trim().slice(0, 60) } });
+      logAuthEvent({ eventType: 'login_failure', success: false, reason: 'INVALID_CREDENTIALS', ip, userAgent: ua });
       res.status(401).json({ error: 'Invalid credentials.' }); return;
     }
     if (user.banned) {
-      logAuthEvent({ eventType: 'login_failure', userId: user.id, success: false, reason: 'ACCOUNT_BANNED', ip, userAgent: ua, meta: { username: user.username } });
+      logAuthEvent({ eventType: 'login_failure', userId: user.id, success: false, reason: 'ACCOUNT_BANNED', ip, userAgent: ua });
       res.status(403).json({ error: 'Account is banned.' }); return;
     }
     // A password login is an explicit application-account switch. Discard any
@@ -175,7 +176,7 @@ router.post('/login', async (req, res) => {
     await destroyBrowserSession(req);
     clearPassportSessionCookie(res);
     getDb().prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(user.id);
-    logAuthEvent({ eventType: 'login_success', userId: user.id, ip, userAgent: ua, meta: { username: user.username } });
+    logAuthEvent({ eventType: 'login_success', userId: user.id, ip, userAgent: ua });
     logUsage({ eventType: 'login_success', userId: user.id, featureArea: 'account' });
     const token = generateToken(user);
     setAuthCookie(res, token);
@@ -183,7 +184,7 @@ router.post('/login', async (req, res) => {
     // Token is set as HttpOnly cookie — not returned in JSON body.
     res.json({ user: safe });
   } catch (err: any) {
-    console.error('[auth] Login error:', err.message);
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_LOGIN_FAILED' });
     res.status(500).json({ error: 'Login failed.' });
   }
 });
@@ -217,7 +218,7 @@ router.post('/change-password', requireAuth, async (req: AuthRequest, res) => {
     clearPassportSessionCookie(res);
     res.json({ ok: true, message: 'Password updated. Please log in again.' });
   } catch (err: any) {
-    console.error('[auth] Password change error:', err.message);
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_PASSWORD_CHANGE_FAILED' });
     res.status(500).json({ error: 'Could not change password.' });
   }
 });
@@ -287,7 +288,7 @@ router.post('/forgot-password', async (req, res) => {
     });
   } catch (err: any) {
     // Log the error internally but still return the generic message.
-    console.error('[auth] Forgot password error:', err.message);
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_PASSWORD_RESET_FAILED' });
   }
 
   res.json({ ok: true, message: GENERIC_MSG });
@@ -349,10 +350,10 @@ router.post('/reset-password', (req, res) => {
       res.status(400).json({ error: 'This reset link is invalid or has expired.' }); return;
     }
 
-    logAuthEvent({ eventType: 'password_reset_completed', userId: result.user.id, ip: getClientIp(req), userAgent: req.headers['user-agent'], meta: { username: result.user.username } });
+    logAuthEvent({ eventType: 'password_reset_completed', userId: result.user.id, ip: getClientIp(req), userAgent: req.headers['user-agent'] });
     res.json({ ok: true, message: 'Password updated. You can now log in with your new password.' });
   } catch (err: any) {
-    console.error('[auth] Password reset error:', err.message);
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_PASSWORD_RESET_FAILED' });
     res.status(500).json({ error: 'Could not reset password.' });
   }
 });
@@ -425,7 +426,7 @@ router.get('/verify-email', (req, res) => {
       res.json({ ok: true });
     }
   } catch (err: any) {
-    console.error('[auth] Verify email error:', err.message);
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_EMAIL_VERIFICATION_FAILED' });
     res.status(500).json({ error: 'Could not verify email.' });
   }
 });
@@ -460,7 +461,7 @@ router.post('/resend-verification', requireAuth, async (req: AuthRequest, res) =
 
     res.json({ ok: true, message: 'If verification is needed, a new email has been sent.' });
   } catch (err: any) {
-    console.error('[auth] Resend verification error:', err.message);
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_EMAIL_VERIFICATION_FAILED' });
     // Return generic success even on error to prevent enumeration.
     res.json({ ok: true, message: 'If verification is needed, a new email has been sent.' });
   }
@@ -495,7 +496,7 @@ router.get('/oauth-token', async (req, res) => {
   try {
     await destroyBrowserSession(req);
   } catch (err: any) {
-    console.error('[auth] Failed to consume OAuth handoff session:', err.message);
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_OAUTH_HANDOFF_FAILED' });
     res.status(500).json({ error: 'Could not complete OAuth login. Please try again.' });
     return;
   }
@@ -523,7 +524,6 @@ router.post('/logout', async (req, res) => {
             userId: user.id,
             ip: getClientIp(req),
             userAgent: req.headers['user-agent'],
-            meta: { username: user.username },
           });
         }
       }
@@ -538,7 +538,7 @@ router.post('/logout', async (req, res) => {
     clearPassportSessionCookie(res);
     res.json({ ok: true });
   } catch (err: any) {
-    console.error('[auth] Logout failed:', err.message);
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_LOGOUT_FAILED' });
     res.status(500).json({ error: 'Logout failed. Please try again.' });
   }
 });

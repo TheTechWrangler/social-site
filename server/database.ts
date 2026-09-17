@@ -3,6 +3,7 @@ import { initializeOperationalAudit } from './operationalAudit.js';
 import { feedTimeSql } from './feedTime.js';
 import Database from 'better-sqlite3';
 import { ensureDatabaseDirectory, getStorageConfig } from './config.js';
+import { logSafeDiagnostic } from './safeDiagnostics.js';
 
 const storageConfig = getStorageConfig();
 ensureDatabaseDirectory(storageConfig);
@@ -745,42 +746,128 @@ export function initializeDatabase(database: Database.Database = db): void {
 }
 
 // ─── Retention Cleanup ───
-// Deletes old rows from append-only log tables and stale RSS/token rows.
-// Safe to call at startup. Each table is wrapped independently so one failure
-// never blocks the others.
-// Defaults: usage_events=90d, auth_events=180d, client_errors=30d,
-//           rss_items=180d, password_reset_tokens=30d.
-// Override via env vars (integer days).
-export function runRetentionCleanup(): void {
-  const db = getDb();
+export const TELEMETRY_RETENTION_DEFAULT_DAYS = {
+  usageEvents: 90,
+  authEvents: 180,
+  clientErrors: 30,
+} as const;
+export const TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE = 500;
+export const TELEMETRY_CLEANUP_DEFAULT_INTERVAL_MINUTES = 60;
 
-  const usageDays   = Math.max(1, parseInt(process.env.USAGE_EVENTS_RETENTION_DAYS           || '90',  10));
-  const authDays    = Math.max(1, parseInt(process.env.AUTH_EVENTS_RETENTION_DAYS             || '180', 10));
-  const clientDays  = Math.max(1, parseInt(process.env.CLIENT_ERRORS_RETENTION_DAYS           || '30',  10));
-  const rssItemDays = Math.max(1, parseInt(process.env.RSS_ITEMS_RETENTION_DAYS               || '180', 10));
-  const tokenDays   = Math.max(1, parseInt(process.env.PASSWORD_RESET_TOKENS_RETENTION_DAYS   || '30', 10));
-  const evtDays     = Math.max(1, parseInt(process.env.EMAIL_VERIFICATION_TOKENS_RETENTION_DAYS || '7', 10));
+function finitePositiveInteger(value: string | undefined, fallback: number, maximum: number): number {
+  if (value === undefined || !/^[1-9]\d*$/.test(value.trim())) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : fallback;
+}
 
-  const targets: Array<{ table: string; days: number }> = [
-    { table: 'usage_events',  days: usageDays  },
-    { table: 'auth_events',   days: authDays   },
-    { table: 'client_errors', days: clientDays },
+export function getTelemetryRetentionConfig(env: NodeJS.ProcessEnv = process.env): {
+  usageDays: number;
+  authDays: number;
+  clientDays: number;
+  batchSize: number;
+  intervalMinutes: number;
+} {
+  return {
+    usageDays: finitePositiveInteger(env.USAGE_EVENTS_RETENTION_DAYS, TELEMETRY_RETENTION_DEFAULT_DAYS.usageEvents, 36_500),
+    authDays: finitePositiveInteger(env.AUTH_EVENTS_RETENTION_DAYS, TELEMETRY_RETENTION_DEFAULT_DAYS.authEvents, 36_500),
+    clientDays: finitePositiveInteger(env.CLIENT_ERRORS_RETENTION_DAYS, TELEMETRY_RETENTION_DEFAULT_DAYS.clientErrors, 36_500),
+    batchSize: finitePositiveInteger(env.TELEMETRY_CLEANUP_BATCH_SIZE, TELEMETRY_CLEANUP_DEFAULT_BATCH_SIZE, 10_000),
+    intervalMinutes: finitePositiveInteger(
+      env.TELEMETRY_CLEANUP_INTERVAL_MINUTES,
+      TELEMETRY_CLEANUP_DEFAULT_INTERVAL_MINUTES,
+      10_080,
+    ),
+  };
+}
+
+export interface TelemetryCleanupResult {
+  deleted: Record<'usage_events' | 'auth_events' | 'client_errors', number>;
+  failures: number;
+}
+
+/**
+ * Deletes at most one bounded batch per telemetry table. This is deliberately
+ * forward-only: existing rows are not rewritten, and operational_audit is excluded.
+ */
+export function runTelemetryRetentionCleanup(
+  database: Database.Database = getDb(),
+  env: NodeJS.ProcessEnv = process.env,
+): TelemetryCleanupResult {
+  const config = getTelemetryRetentionConfig(env);
+  const deleted: TelemetryCleanupResult['deleted'] = {
+    usage_events: 0,
+    auth_events: 0,
+    client_errors: 0,
+  };
+  let failures = 0;
+  const targets = [
+    { table: 'usage_events' as const, days: config.usageDays },
+    { table: 'auth_events' as const, days: config.authDays },
+    { table: 'client_errors' as const, days: config.clientDays },
   ];
 
   for (const { table, days } of targets) {
     try {
-      const cutoff = `-${days} days`;
-      const result = db
-        .prepare(`DELETE FROM ${table} WHERE created_at < datetime('now', ?)`)
-        .run(cutoff);
+      const result = database.prepare(`
+        DELETE FROM ${table}
+        WHERE id IN (
+          SELECT id FROM ${table}
+          WHERE created_at < datetime('now', ?)
+          ORDER BY id
+          LIMIT ?
+        )
+      `).run(`-${days} days`, config.batchSize);
+      deleted[table] = result.changes;
       if (result.changes > 0) {
-        console.log(`[retention] ${table}: deleted ${result.changes} rows older than ${days} days`);
+        console.log(`[retention] ${table}: deleted ${result.changes} expired rows`);
       }
-    } catch (err: any) {
-      // Log but never throw — a cleanup failure must not crash startup.
-      console.error(`[retention] ${table} cleanup failed:`, err.message);
+    } catch {
+      failures += 1;
+      logSafeDiagnostic({ subsystem: 'telemetry', severity: 'error', code: 'TELEMETRY_CLEANUP_FAILED' });
     }
   }
+
+  return { deleted, failures };
+}
+
+export function startTelemetryRetentionScheduler(options: {
+  database?: Database.Database;
+  env?: NodeJS.ProcessEnv;
+  intervalMs?: number;
+} = {}): () => void {
+  const env = options.env ?? process.env;
+  const config = getTelemetryRetentionConfig(env);
+  const configuredIntervalMs = config.intervalMinutes * 60 * 1000;
+  const intervalMs = Number.isFinite(options.intervalMs) && Number(options.intervalMs) >= 1
+    ? Math.floor(Number(options.intervalMs))
+    : configuredIntervalMs;
+  let running = false;
+
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    try {
+      runTelemetryRetentionCleanup(options.database ?? getDb(), env);
+    } catch {
+      logSafeDiagnostic({ subsystem: 'telemetry', severity: 'error', code: 'TELEMETRY_CLEANUP_FAILED' });
+    } finally {
+      running = false;
+    }
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+// Deletes old rows from append-only logs and stale RSS/token rows.
+// Telemetry cleanup is bounded and also runs periodically during continuous uptime.
+// RSS/token cleanup retains its established startup-only behavior.
+export function runRetentionCleanup(): void {
+  const db = getDb();
+  runTelemetryRetentionCleanup(db);
+
+  const rssItemDays = Math.max(1, parseInt(process.env.RSS_ITEMS_RETENTION_DAYS || '180', 10));
+  const tokenDays = Math.max(1, parseInt(process.env.PASSWORD_RESET_TOKENS_RETENTION_DAYS || '30', 10));
+  const evtDays = Math.max(1, parseInt(process.env.EMAIL_VERIFICATION_TOKENS_RETENTION_DAYS || '7', 10));
 
   // RSS items: purge old articles, but spare any that have visible comments.
   try {
@@ -796,8 +883,8 @@ export function runRetentionCleanup(): void {
     if (result.changes > 0) {
       console.log(`[retention] rss_items: deleted ${result.changes} rows older than ${rssItemDays} days`);
     }
-  } catch (err: any) {
-    console.error('[retention] rss_items cleanup failed:', err.message);
+  } catch {
+    logSafeDiagnostic({ subsystem: 'rss', severity: 'error', code: 'RSS_RETENTION_CLEANUP_FAILED' });
   }
 
   // Password reset tokens: purge expired tokens.
@@ -810,8 +897,8 @@ export function runRetentionCleanup(): void {
     if (result.changes > 0) {
       console.log(`[retention] password_reset_tokens: deleted ${result.changes} rows older than ${tokenDays} days`);
     }
-  } catch (err: any) {
-    console.error('[retention] password_reset_tokens cleanup failed:', err.message);
+  } catch {
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'TOKEN_RETENTION_CLEANUP_FAILED' });
   }
 
   // Email verification tokens: purge expired tokens.
@@ -824,7 +911,7 @@ export function runRetentionCleanup(): void {
     if (result.changes > 0) {
       console.log(`[retention] email_verification_tokens: deleted ${result.changes} rows older than ${evtDays} days`);
     }
-  } catch (err: any) {
-    console.error('[retention] email_verification_tokens cleanup failed:', err.message);
+  } catch {
+    logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'EMAIL_VERIFICATION_RETENTION_CLEANUP_FAILED' });
   }
 }

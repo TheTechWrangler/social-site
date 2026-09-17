@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import { api } from '../api/client';
+import { canonicalTelemetryRoute } from '../../shared/telemetry';
 
 const ROUTE_FEATURE_MAP: Record<string, string> = {
   '/': 'feed',
@@ -28,7 +29,7 @@ export function usePageTracking() {
   useEffect(() => {
     // Debounce: don't fire on transient renders
     const timer = setTimeout(() => {
-      const route = location.pathname.replace(/\/\d+/g, '/:id'); // anonymize numeric IDs
+      const route = canonicalTelemetryRoute(location.pathname);
       api.trackPageView(route, getFeatureArea(location.pathname)).catch(() => {});
     }, 500);
     return () => clearTimeout(timer);

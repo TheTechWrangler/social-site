@@ -5,6 +5,7 @@ import { getDb } from './database.js';
 import { generateToken, getUserById, type AuthUser } from './auth.js';
 import { logAuthEvent, getClientIp } from './authEvents.js';
 import { resolveProviderAccount } from './providerAccounts.js';
+import { logSafeDiagnostic } from './safeDiagnostics.js';
 
 const BASE_URL = process.env.APP_BASE_URL || 'http://localhost:3003';
 const DEFAULT_PROD_WEB_URL = 'https://refugecloud.com';
@@ -200,7 +201,7 @@ export function handleOAuthCallback(req: any, res: any): void {
     res.redirect(`${WEB_URL}/login?error=oauth_failed`);
     return;
   }
-  logAuthEvent({ eventType: 'oauth_success', userId: canonicalUser.id, ip: getClientIp(req), userAgent: req.headers?.['user-agent'], meta: { username: canonicalUser.username } });
+  logAuthEvent({ eventType: 'oauth_success', userId: canonicalUser.id, ip: getClientIp(req), userAgent: req.headers?.['user-agent'] });
   const token = generateToken(canonicalUser);
 
   // Store the JWT in the server-side session for one-time retrieval by the frontend.
@@ -211,7 +212,7 @@ export function handleOAuthCallback(req: any, res: any): void {
   req.session.oauthHandoffUsername = canonicalUser.username;
   req.session.save((err: any) => {
     if (err) {
-      console.error('[auth] Failed to save OAuth handoff session:', err.message);
+      logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_OAUTH_HANDOFF_FAILED' });
       res.redirect(`${WEB_URL}/login?error=oauth_failed`);
       return;
     }

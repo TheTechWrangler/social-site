@@ -8,6 +8,7 @@ import { getWorldFeed, getWorldFeedPage, fetchSource } from '../rssService.js';
 import { logUsage } from '../usageEvents.js';
 import { notMutedByViewerSql, postAuthorVisibilitySql } from '../visibility.js';
 import { pageInteger } from '../pagination.js';
+import { logSafeDiagnostic } from '../safeDiagnostics.js';
 
 const router = Router();
 
@@ -116,7 +117,7 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
       pagination: { limit, offset, hasMore, nextOffset: hasMore ? offset + posts.length : null } });
   } catch (err: any) {
     if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
-    console.error('[feed] Load feed error:', err.message);
+    logSafeDiagnostic({ subsystem: 'feed', severity: 'error', code: 'FEED_LOAD_FAILED' });
     res.status(500).json({ error: 'Could not load feed.' });
   }
 });
@@ -177,16 +178,21 @@ router.post('/replenish', requireAuth, requireVerified, (req: AuthRequest, res) 
           if (r.error) errors.push(`Source ${r.sourceId}: ${r.error}`);
           }
         }
-        if (errors.length) console.warn('[feed] Replenish errors:', errors.join('; '));
-        console.log(`[feed] Replenish (user ${userId}): ${sources.length} sources, ${totalNew} new items`);
-      } catch (err: any) {
-        console.error('[feed] Replenish async error:', err.message);
+        if (errors.length) {
+          logSafeDiagnostic({
+            subsystem: 'feed', severity: 'warn', code: 'RSS_BATCH_COMPLETED_WITH_ERRORS',
+            context: { errorCount: errors.length, itemsInserted: totalNew, sourcesChecked: sources.length },
+          });
+        }
+        console.log(`[feed] Replenish: ${sources.length} sources, ${totalNew} new items`);
+      } catch {
+        logSafeDiagnostic({ subsystem: 'feed', severity: 'error', code: 'FEED_REPLENISH_FAILED' });
       } finally {
         replenishInFlight.delete(userId);
       }
     });
-  } catch (err: any) {
-    console.error('[feed] Replenish error:', err.message);
+  } catch {
+    logSafeDiagnostic({ subsystem: 'feed', severity: 'error', code: 'FEED_REPLENISH_FAILED' });
     res.status(500).json({ error: 'Could not replenish feed.' });
   }
 });
