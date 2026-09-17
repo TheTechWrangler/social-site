@@ -141,15 +141,18 @@ router.post('/replenish', requireAuth, requireVerified, (req: AuthRequest, res) 
     const sources: any[] = isAdmin
       ? db.prepare(`
           SELECT id FROM external_sources
-          WHERE provider = 'rss' AND source_kind = 'rss'
-            AND is_active = 1 AND tombstoned_at IS NULL
+          WHERE is_active = 1 AND tombstoned_at IS NULL AND (
+            (provider='rss' AND source_kind='rss') OR
+            (provider='youtube' AND source_kind='youtube_channel')
+          )
           ORDER BY last_fetch_attempt_at ASC NULLS FIRST, id LIMIT 20
         `).all() as any[]
       : db.prepare(`
           SELECT s.id FROM external_sources s
           JOIN user_external_source_subscriptions sub ON sub.source_id = s.id
-          WHERE sub.user_id = ? AND s.provider = 'rss' AND s.source_kind = 'rss'
-            AND s.is_active = 1 AND s.tombstoned_at IS NULL
+          WHERE sub.user_id = ? AND s.is_active = 1 AND s.tombstoned_at IS NULL
+            AND ((s.provider='rss' AND s.source_kind='rss') OR
+                 (s.provider='youtube' AND s.source_kind='youtube_channel'))
             AND NOT EXISTS (
               SELECT 1 FROM user_external_source_blocks block
               WHERE block.user_id = ? AND block.source_id = s.id

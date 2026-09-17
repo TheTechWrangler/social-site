@@ -4,6 +4,8 @@ import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { RouteRequestGate } from '../routeLoadState';
 import type { PublicExternalSourceDto } from '../../shared/externalContent';
+import { ExternalVideoMedia } from '../components/WorldCard';
+import { useMediaCapabilities } from '../hooks/useMediaCapabilities';
 
 export default function WorldPage({ user }: { user?: any }) {
   const [items, setItems] = useState<any[]>([]);
@@ -23,11 +25,18 @@ export default function WorldPage({ user }: { user?: any }) {
   const [showBlockedPanel, setShowBlockedPanel] = useState(false);
   const [mutationError, setMutationError] = useState('');
   const [pendingMutation, setPendingMutation] = useState<string | null>(null);
+  const [showSubmissionForm, setShowSubmissionForm] = useState(false);
+  const [submissionForm, setSubmissionForm] = useState({ sourceKind: 'rss', locator: '', name: '', category: 'general', note: '' });
+  const [submissions, setSubmissions] = useState<any[]>([]);
+  const [submissionError, setSubmissionError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const PAGE_SIZE = 30;
   const feedGate = useRef(new RouteRequestGate());
   const sourceGate = useRef(new RouteRequestGate());
   const blockedGate = useRef(new RouteRequestGate());
   const mutationGate = useRef(new RouteRequestGate());
+  const submissionLoadGate = useRef(new RouteRequestGate());
+  const submissionMutationGate = useRef(new RouteRequestGate());
   const mutationLock = useRef<symbol | null>(null);
   const currentAccountId = useRef(user?.id ?? null);
   currentAccountId.current = user?.id ?? null;
@@ -35,10 +44,15 @@ export default function WorldPage({ user }: { user?: any }) {
   const [discussions, setDiscussions] = useState<Record<number, { open: boolean; comments: any[]; loading: boolean; body: string; nextCursor?: number | null }>>({});
 
   const { confirmAction, actionDialog } = useActionDialog(user?.id);
+  const { capabilities, state: capabilityState, retry: retryCapabilities } = useMediaCapabilities();
 
   useEffect(() => {
     setItems([]);
     setBlockedSources([]);
+    setSubmissions([]);
+    setSubmissionError('');
+    setShowSubmissionForm(false);
+    setSubmitting(false);
     setSelectedCategory('');
     setSelectedSource('');
     setSelectedItemType('');
@@ -48,16 +62,20 @@ export default function WorldPage({ user }: { user?: any }) {
     void loadSources();
     void loadFeed();
     if (user) void loadBlockedSources();
+    if (user && (user.is_verified === 1 || user.isVerified === true)) void loadSubmissions();
     return () => {
       feedGate.current.invalidate();
       sourceGate.current.invalidate();
       blockedGate.current.invalidate();
       mutationGate.current.invalidate();
+      submissionLoadGate.current.invalidate();
+      submissionMutationGate.current.invalidate();
       mutationLock.current = null;
     };
-  }, [user?.id]);
+  }, [user?.id, user?.is_verified, user?.isVerified]);
 
   const isLoggedIn = !!user;
+  const isVerified = user?.is_verified === 1 || user?.isVerified === true;
 
   async function loadSources() {
     const requestedAccountId = user?.id ?? null;
@@ -192,6 +210,37 @@ export default function WorldPage({ user }: { user?: any }) {
     }
   }
 
+  async function loadSubmissions() {
+    const requestedAccountId = user?.id ?? null;
+    const isCurrent = submissionLoadGate.current.begin();
+    try {
+      const response = await api.get<any>('/world-feed/source-submissions');
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setSubmissions(response.submissions || []);
+    } catch {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setSubmissionError('Could not load your feed suggestions.');
+    }
+  }
+
+  async function submitFeedSuggestion(event: React.FormEvent) {
+    event.preventDefault();
+    if (submitting) return;
+    const requestedAccountId = user?.id ?? null;
+    const isCurrent = submissionMutationGate.current.begin();
+    setSubmitting(true);
+    setSubmissionError('');
+    try {
+      await api.post('/world-feed/source-submissions', submissionForm);
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
+      setSubmissionForm({ sourceKind: 'rss', locator: '', name: '', category: 'general', note: '' });
+      setShowSubmissionForm(false);
+      await loadSubmissions();
+    } catch (error: any) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setSubmissionError(error.message || 'Could not submit this feed suggestion.');
+    } finally {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setSubmitting(false);
+    }
+  }
+
   async function toggleDiscussion(itemId: number) {
     const d = discussions[itemId];
     if (d?.open) { setDiscussions(prev => ({ ...prev, [itemId]: { ...prev[itemId], open: false } })); return; }
@@ -247,7 +296,8 @@ export default function WorldPage({ user }: { user?: any }) {
     <div className="world-page">
       {actionDialog}
       <h2>🌍 World Feed</h2>
-      <p className="muted">Articles and podcasts from approved external sources. Sorted by published date, newest first.</p>
+      <p className="muted">Articles, podcasts, and videos from approved external sources. Sorted by published date, newest first.</p>
+      {capabilityState === 'error' && <p className="error-msg" role="alert">Embedded playback availability could not be confirmed. Videos remain available as safe external links. <button className="btn btn-sm" onClick={() => void retryCapabilities()}>Retry capability check</button></p>}
       {feedError && <p className="error-msg" role="alert">{feedError} <button className="btn btn-sm" onClick={() => void loadFeed(selectedCategory, selectedSource, 0, selectedItemType || undefined)}>Retry</button></p>}
       {sourcesError && <p className="error-msg" role="alert">{sourcesError} <button className="btn btn-sm" onClick={() => void loadSources()}>Retry filters</button></p>}
       {blockedError && isLoggedIn && <p className="error-msg" role="alert">{blockedError} <button className="btn btn-sm" onClick={() => void loadBlockedSources()}>Retry preferences</button></p>}
@@ -286,6 +336,31 @@ export default function WorldPage({ user }: { user?: any }) {
         </section>
       )}
 
+      {isVerified && (
+        <section className="blocked-sources-panel" aria-labelledby="submit-feed-heading">
+          <h3 id="submit-feed-heading">Submit a feed</h3>
+          <p className="muted">Suggest an RSS/Atom feed or YouTube channel for admin review. Submitting only records your suggestion; RefugeCloud does not fetch it until an admin reviews it.</p>
+          <button className="btn btn-sm" type="button" onClick={() => setShowSubmissionForm(value => !value)}>
+            {showSubmissionForm ? 'Cancel' : 'Submit a feed'}
+          </button>
+          {showSubmissionForm && <form className="rss-add-form" onSubmit={submitFeedSuggestion}>
+            <select className="input" value={submissionForm.sourceKind} onChange={event => setSubmissionForm({ ...submissionForm, sourceKind: event.target.value })}>
+              <option value="rss">RSS / website feed</option>
+              <option value="youtube_channel">YouTube channel</option>
+            </select>
+            <input className="input" required maxLength={2048} placeholder={submissionForm.sourceKind === 'youtube_channel' ? 'Channel ID or youtube.com/channel URL' : 'Feed URL'} value={submissionForm.locator} onChange={event => setSubmissionForm({ ...submissionForm, locator: event.target.value })} />
+            <input className="input" maxLength={120} placeholder="Suggested display name (optional)" value={submissionForm.name} onChange={event => setSubmissionForm({ ...submissionForm, name: event.target.value })} />
+            <input className="input" maxLength={80} placeholder="Category (optional)" value={submissionForm.category} onChange={event => setSubmissionForm({ ...submissionForm, category: event.target.value })} />
+            <textarea className="input" maxLength={500} placeholder="Short note (optional)" value={submissionForm.note} onChange={event => setSubmissionForm({ ...submissionForm, note: event.target.value })} />
+            <button className="btn btn-primary" disabled={submitting}>{submitting ? 'Submitting...' : 'Submit for review'}</button>
+          </form>}
+          {submissionError && <p className="error-msg" role="alert">{submissionError} <button className="btn btn-sm" type="button" onClick={() => void loadSubmissions()}>Retry</button></p>}
+          {submissions.length > 0 && <ul>{submissions.map(submission => <li key={submission.id}>
+            {submission.name || (submission.sourceKind === 'youtube_channel' ? 'YouTube channel' : 'RSS feed')} - {submission.status}
+          </li>)}</ul>}
+        </section>
+      )}
+
       {blockedSources.length > 0 && (
         <div className="blocked-sources-panel">
           <button className="btn btn-sm btn-ghost" onClick={() => setShowBlockedPanel(!showBlockedPanel)}>
@@ -308,6 +383,7 @@ export default function WorldPage({ user }: { user?: any }) {
         <div className="filter-bar">
           <button className={`btn ${!selectedCategory && !selectedSource && !selectedItemType ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleFilter('', '')}>All</button>
           <button className={`btn ${selectedItemType === 'podcast' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleFilter('', '', 'podcast')}>🎙 Podcasts</button>
+          <button className={`btn ${selectedItemType === 'video' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleFilter('', '', 'video')}>Videos</button>
           {categories.map(c => (
             <button key={c} className={`btn ${selectedCategory === c ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleFilter(c)}>{c}</button>
           ))}
@@ -326,6 +402,7 @@ export default function WorldPage({ user }: { user?: any }) {
                 <div className="world-card-source">
                   <span className="world-source-badge">🌐 {item.sourceName}</span>
                   {item.itemType === 'podcast' && <span className="world-source-badge" style={{ background: 'rgba(139,92,246,0.15)', color: 'var(--purple-soft)', border: '1px solid rgba(139,92,246,0.25)' }}>🎙 Podcast</span>}
+                  {item.itemType === 'video' && <span className="world-source-badge">Video</span>}
                   {item.sourceCategory && <span className="world-category">{item.sourceCategory}</span>}
                   {item.author && <span className="world-author">by {item.author}</span>}
                 </div>
@@ -337,6 +414,7 @@ export default function WorldPage({ user }: { user?: any }) {
                   </audio>
                 )}
                 {item.episodeImageUrl && <img src={item.episodeImageUrl} alt="" className="world-episode-img" loading="lazy" />}
+                <ExternalVideoMedia item={item} capabilities={capabilities} capabilityState={capabilityState} />
                 <div className="world-card-footer">
                   <div className="world-card-actions">
                     <time>{new Date(item.publishedAt).toLocaleDateString()}</time>

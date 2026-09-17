@@ -373,7 +373,9 @@ test('World itemType reaches the query and rejects malformed values', async () =
   assert.ok(podcasts.body.items.length > 0);
   assert.ok(podcasts.body.items.every((item: any) => item.itemType === 'podcast'));
   assert.ok(podcasts.body.items.some((item: any) => item.title === 'Podcast item'));
-  assert.equal((await request('/api/world-feed?itemType=video')).response.status, 400);
+  const videos = await request('/api/world-feed?itemType=video');
+  assert.equal(videos.response.status, 200);
+  assert.ok(videos.body.items.every((item: any) => item.itemType === 'video'));
   assert.equal((await request('/api/world-feed?itemType=article&itemType=podcast')).response.status, 400);
 });
 

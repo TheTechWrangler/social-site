@@ -1,7 +1,7 @@
 import { validateRssUrl } from '../rssNetwork.js';
 import { Router } from 'express';
 import { requireAuth, requireAdmin, optionalAuth, requireVerified } from '../middleware.js';
-import { getWorldFeedPage, getSources, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
+import { getWorldFeedPage, getSources, getAdminExternalSources, updateExternalSourceActive, blockSource, unblockSource, addSource, updateSource, fetchSource, fetchAllSources } from '../rssService.js';
 import {
   getBlockedSources,
   getPublicSourceCatalog,
@@ -32,7 +32,7 @@ const RSS_URL_MAX = 2048;
 const RSS_CATEGORY_MAX = 80;
 const RSS_SOURCE_CREATE_FIELDS = ['name', 'url', 'homepageUrl', 'category'] as const;
 const RSS_SOURCE_UPDATE_FIELDS = ['name', 'url', 'homepageUrl', 'category', 'isActive'] as const;
-const WORLD_ITEM_TYPES = ['article', 'podcast'] as const;
+const WORLD_ITEM_TYPES = ['article', 'podcast', 'video'] as const;
 
 function httpUrlField(body: Record<string, unknown>, key: string, options: { required?: boolean; allowEmpty?: boolean } = {}): string | undefined {
   const value = stringField(body, key, { required: options.required, maxLength: RSS_URL_MAX, allowEmpty: options.allowEmpty });
@@ -121,20 +121,20 @@ function logRssError(_context: string, _err: unknown): void {
   logSafeDiagnostic({ subsystem: 'rss', severity: 'error', code: 'RSS_REFRESH_FAILED' });
 }
 
-function adminSourceDto(source: ReturnType<typeof getSources>[number]) {
+function adminSourceDto(source: any) {
   const failureCode = source.last_failure_code;
   return {
     id: source.id,
     name: source.name,
     category: source.category,
     homepageUrl: source.homepage_url,
-    sourceKind: 'rss',
+    sourceKind: source.source_kind ?? 'rss',
     isActive: !!source.is_active,
     isTombstoned: !!source.tombstoned_at,
     lastFetchedAt: source.last_fetched_at,
     lastFetchAttemptAt: source.last_fetch_attempt_at,
     lastFailureCode: failureCode,
-    lastFailureMessage: failureCode ? 'The most recent RSS refresh failed.' : null,
+    lastFailureMessage: failureCode ? 'The most recent source refresh failed.' : null,
   };
 }
 
@@ -151,10 +151,11 @@ publicRouter.get('/', optionalAuth, (req, res) => {
     const offset = pageInteger(req.query.offset, 0, 0, 100000);
     const rawItemType = req.query.itemType;
     if (rawItemType !== undefined && (typeof rawItemType !== 'string' || !WORLD_ITEM_TYPES.includes(rawItemType as typeof WORLD_ITEM_TYPES[number]))) {
-      res.status(400).json({ error: 'itemType must be article or podcast.' }); return;
+      res.status(400).json({ error: 'itemType must be article, podcast, or video.' }); return;
     }
     const itemType = rawItemType as typeof WORLD_ITEM_TYPES[number] | undefined;
     const userId = (req as any).user?.id;
+    if (userId) res.setHeader('Cache-Control', 'private, no-store');
     res.json(getWorldFeedPage({ sourceId, category, itemType, limit, offset, userId }));
   } catch (err: any) {
     if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
@@ -170,7 +171,7 @@ publicRouter.get('/sources', optionalAuth, (req, res) => {
     res.json(getPublicSourceCatalog(userId));
   } catch (err: any) {
     logRssError('Load sources error', err);
-    res.status(500).json({ error: 'Could not load RSS sources.' });
+    res.status(500).json({ error: 'Could not load external sources.' });
   }
 });
 
@@ -268,10 +269,10 @@ publicRouter.delete('/sources/:sourceId/block', requireAuth, requireVerified, (r
 
 adminRouter.get('/sources', requireAuth, requireAdmin, (_req, res) => {
   try {
-    res.json({ sources: getSources().map(adminSourceDto) });
+    res.json({ sources: getAdminExternalSources().map(adminSourceDto) });
   } catch (err: any) {
     logRssError('Admin load sources error', err);
-    res.status(500).json({ error: 'Could not load RSS sources.' });
+    res.status(500).json({ error: 'Could not load external sources.' });
   }
 });
 
@@ -294,7 +295,11 @@ adminRouter.patch('/sources/:id', requireAuth, requireAdmin, (req, res) => {
   try {
     const sourceId = positiveIntegerParam(req.params.id, 'sourceId');
     const updates = validateRssSourceUpdate(req.body);
-    const source = updateSource(sourceId, updates);
+    const existing = getAdminExternalSources().find(item => item.id === sourceId);
+    const source = existing?.source_kind === 'youtube_channel'
+      ? (updates.isActive !== undefined && Object.keys(updates).length === 1
+          ? updateExternalSourceActive(sourceId, updates.isActive) : null)
+      : updateSource(sourceId, updates);
     if (!source) { res.status(404).json({ error: 'Source not found.' }); return; }
     const adminId = (req as any).user.id;
     logAuthEvent({ eventType: 'admin_rss_source_update', userId: adminId, adminActorId: adminId, meta: { sourceId: source.id } });
@@ -317,7 +322,7 @@ adminRouter.post('/sources/:id/fetch', requireAuth, requireAdmin, async (req, re
   } catch (err: any) {
     if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
     logRssError('Admin fetch source error', err);
-    res.status(500).json({ error: 'Could not fetch RSS source.' });
+    res.status(500).json({ error: 'Could not fetch external source.' });
   }
 });
 

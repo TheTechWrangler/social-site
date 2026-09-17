@@ -24,6 +24,7 @@ import groupRoutes from './routes/groups.js';
 import notificationRoutes from './routes/notifications.js';
 import adminRoutes from './routes/admin.js';
 import { publicRouter as rssPublicRouter, adminRouter as rssAdminRouter } from './routes/rss.js';
+import { submissionPublicRouter, submissionAdminRouter } from './routes/sourceSubmissions.js';
 import worldCommentsRoutes from './routes/worldComments.js';
 import uploadRoutes, { uploadsFileRouter } from './routes/uploads.js';
 import gamesRoutes from './routes/games.js';
@@ -373,11 +374,13 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/reports', reportsRoutes);              // User-submitted moderation reports
 app.use('/api/admin', adminRoutes);
 app.use('/api/world-feed', rssPublicRouter);
+app.use('/api/world-feed', submissionPublicRouter);
 app.use('/api/world-feed', worldCommentsRoutes);  // Comments on RSS items
 app.use('/api/uploads', uploadRoutes);               // Media uploads
 app.use('/api/games', gamesRoutes);                   // Games & LFG
 app.use('/api/messages', messagesRoutes);             // Direct messages
 app.use('/api/admin/rss', rssAdminRouter);
+app.use('/api/admin/rss', submissionAdminRouter);
 app.use('/api/usage', usageRoutes);
 
 app.get('/api/health', (_req, res) => {

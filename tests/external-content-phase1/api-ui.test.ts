@@ -122,6 +122,9 @@ test('public catalog allowlists fields and personalized responses are private an
   assert.deepEqual(personalized.body.sources.map((source: any) => [source.id, source.availability, source.viewer.subscribed]), [
     [10, 'active', false], [20, 'disabled', true],
   ]);
+
+  const personalizedFeed = await request('/api/world-feed', {}, 2);
+  assert.equal(personalizedFeed.response.headers.get('cache-control'), 'private, no-store');
 });
 
 test('subscription endpoints require verified auth, validate numeric IDs, remain idempotent, and preserve independent blocks', async () => {
@@ -225,8 +228,9 @@ test('World subscription UI serializes writes, reconciles confirmation, and igno
   }
 });
 
-test('Phase 1 World UI has article/podcast controls but introduces no video-source UI', () => {
+test('World UI retains Phase 1 article/podcast controls while Phase 2 adds channels without playlists', () => {
   const source = fs.readFileSync(path.join(PROJECT_ROOT, 'src/pages/WorldPage.tsx'), 'utf8');
   assert.match(source, /Podcasts/);
-  assert.doesNotMatch(source, /youtube_channel|youtube_playlist|YouTube channel|video source/i);
+  assert.match(source, /youtube_channel|YouTube channel/);
+  assert.doesNotMatch(source, /youtube_playlist|YouTube playlist/i);
 });

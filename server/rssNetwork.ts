@@ -40,6 +40,7 @@ export interface RssNetworkDependencies {
   resolve?: (hostname: string) => Promise<Address[]>;
   request?: typeof https.request;
   limits?: Partial<typeof RSS_LIMITS>;
+  validateDestination?: (url: URL) => void;
 }
 
 export async function downloadFeed(value: string, dependencies: RssNetworkDependencies = {}): Promise<string> {
@@ -51,6 +52,7 @@ export async function downloadFeed(value: string, dependencies: RssNetworkDepend
   const resolve = dependencies.resolve ?? (host => lookup(host, { all: true, verbatim: true }));
   try {
     let url = validateRssUrl(value);
+    dependencies.validateDestination?.(url);
     for (let hop = 0; ; hop++) {
       if (controller.signal.aborted) throw timeout;
       if (visited.has(url.href)) throw new RssFetchError('Feed redirect loop.');
@@ -89,7 +91,7 @@ export async function downloadFeed(value: string, dependencies: RssNetworkDepend
             ? callback(null, [selected]) : callback(null, selected.address, selected.family)) as any,
           servername: isIP(hostname) ? undefined : hostname, rejectUnauthorized: true,
           maxHeaderSize: 16384,
-          headers: { 'User-Agent': 'RefugeCloud/0.1 Feed Reader', 'Accept-Encoding': 'identity', Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain' },
+          headers: { 'User-Agent': 'RefugeCloud Feed Reader', 'Accept-Encoding': 'identity', Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/plain' },
         }, response => {
           clearTimeout(headersTimer); clearTimeout(connectTimer);
           if ([301, 302, 303, 307, 308].includes(response.statusCode ?? 0)) {
@@ -126,6 +128,7 @@ export async function downloadFeed(value: string, dependencies: RssNetworkDepend
         if (hop >= limits.redirects) throw new RssFetchError('Feed redirect limit exceeded.');
         try { url = validateRssUrl(new URL(result.location, url).href); }
         catch (error) { throw error instanceof RssFetchError ? error : new RssFetchError('Invalid feed redirect.'); }
+        dependencies.validateDestination?.(url);
       } else return result.body!;
     }
   } finally { clearTimeout(overall); }

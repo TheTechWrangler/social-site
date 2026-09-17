@@ -1,10 +1,51 @@
-export default function WorldCard({ item }: { item: any }) {
+import type { CapabilityLoadState, MediaCapabilities } from '../hooks/useMediaCapabilities';
+import { isYouTubeVideoId, youtubeEmbedUrl } from '../../shared/youtube';
+
+export function ExternalVideoMedia({ item, capabilities, capabilityState }: {
+  item: any;
+  capabilities?: MediaCapabilities | null;
+  capabilityState?: CapabilityLoadState;
+}) {
+  if (item.itemType !== 'video') return null;
+  const valid = item.mediaProvider === 'youtube' && isYouTubeVideoId(item.videoId);
+  const canEmbed = valid && capabilityState === 'loaded' && !!capabilities?.externalVideoEmbeds.enabled;
+  return (
+    <div className="world-video-media">
+      {canEmbed ? (
+        <iframe
+          src={youtubeEmbedUrl(item.videoId)}
+          title={item.title || 'YouTube video'}
+          loading="lazy"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowFullScreen
+        />
+      ) : item.imageUrl ? (
+        <img src={item.imageUrl} alt="" className="world-episode-img" loading="lazy" />
+      ) : null}
+      {!canEmbed && (
+        <p className="muted" role="status">
+          {capabilityState === 'error'
+            ? 'Embedded playback availability could not be confirmed. Open the video on YouTube.'
+            : capabilities?.externalVideoEmbeds.reason || 'Embedded playback is unavailable. Open the video on YouTube.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
+export default function WorldCard({ item, capabilities, capabilityState }: {
+  item: any;
+  capabilities?: MediaCapabilities | null;
+  capabilityState?: CapabilityLoadState;
+}) {
   const isPodcast = item.itemType === 'podcast';
+  const isVideo = item.itemType === 'video';
   return (
     <article className="world-card">
       <div className="world-card-source">
-        <span className="world-source-badge">🌐 {item.sourceName}</span>
-        {isPodcast && <span className="world-source-badge" style={{ background: 'rgba(139,92,246,0.15)', color: 'var(--purple-soft)', border: '1px solid rgba(139,92,246,0.25)' }}>🎙 Podcast</span>}
+        <span className="world-source-badge">External: {item.sourceName}</span>
+        {isPodcast && <span className="world-source-badge">Podcast</span>}
+        {isVideo && <span className="world-source-badge">Video</span>}
         {item.sourceCategory && <span className="world-category">{item.sourceCategory}</span>}
         {item.author && <span className="world-author">by {item.author}</span>}
       </div>
@@ -14,9 +55,10 @@ export default function WorldCard({ item }: { item: any }) {
         <audio controls className="world-audio-player" preload="none"><source src={item.enclosureUrl} type={item.enclosureType} /></audio>
       )}
       {item.episodeImageUrl && <img src={item.episodeImageUrl} alt="" className="world-episode-img" loading="lazy" />}
+      <ExternalVideoMedia item={item} capabilities={capabilities} capabilityState={capabilityState} />
       <div className="world-card-footer">
         <time>{item.publishedAt ? new Date(item.publishedAt).toLocaleDateString() : ''}</time>
-        <a href={item.linkUrl} target="_blank" rel="noopener noreferrer" className="world-link">Open original →</a>
+        <a href={item.linkUrl} target="_blank" rel="noopener noreferrer" className="world-link">Open original</a>
       </div>
     </article>
   );

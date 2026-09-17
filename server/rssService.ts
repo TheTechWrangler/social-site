@@ -1,6 +1,7 @@
 import { downloadFeed, parseFeedXml, validateRssUrl, RssFetchError } from './rssNetwork.js';
 import { createRefreshCoordinator, RefreshBusyError } from './rssRefresh.js';
 import { getDb } from './database.js';
+import { fetchYouTubeSourceNow } from './youtubeService.js';
 export {
   blockSource,
   getBlockedSourceIds,
@@ -27,6 +28,12 @@ export interface FetchResult {
   itemsInserted: number;
   duplicatesSkipped: number;
   error: string | null;
+}
+
+export interface AdminExternalSource extends RssSource {
+  provider: string;
+  source_kind: string;
+  provider_source_id: string | null;
 }
 
 // ─── Sanitize ───
@@ -76,6 +83,31 @@ export function getSources(): RssSource[] {
   `).all() as RssSource[];
 }
 
+export function getAdminExternalSources(): AdminExternalSource[] {
+  return getDb().prepare(`
+    SELECT id, provider, source_kind, provider_source_id, name, fetch_url AS url,
+      homepage_url, category, is_active, tombstoned_at, last_fetched_at,
+      last_fetch_attempt_at, last_failure_detail AS last_fetch_error,
+      last_failure_code, updated_at
+    FROM external_sources
+    WHERE (provider='rss' AND source_kind='rss')
+       OR (provider='youtube' AND source_kind='youtube_channel')
+    ORDER BY name, id
+  `).all() as AdminExternalSource[];
+}
+
+export function updateExternalSourceActive(id: number, isActive: boolean): AdminExternalSource | null {
+  const result = getDb().prepare(`
+    UPDATE external_sources SET is_active=?, updated_at=datetime('now')
+    WHERE id=? AND tombstoned_at IS NULL AND (
+      (provider='rss' AND source_kind='rss') OR
+      (provider='youtube' AND source_kind='youtube_channel')
+    )
+  `).run(isActive ? 1 : 0, id);
+  if (result.changes !== 1) return null;
+  return getAdminExternalSources().find(source => source.id === id) ?? null;
+}
+
 export function addSource(name: string, url: string, homepageUrl: string, category: string): RssSource {
   const r = getDb().prepare(`
     INSERT INTO external_sources
@@ -119,12 +151,20 @@ export function updateSource(id: number, updates: RssSourceUpdate): RssSource | 
 
 export async function fetchSource(sourceId: number): Promise<FetchResult> {
   const source = getDb().prepare(`
-    SELECT fetch_url AS url FROM external_sources
-    WHERE id = ? AND provider = 'rss' AND source_kind = 'rss' AND tombstoned_at IS NULL
-  `).get(sourceId) as { url: string } | undefined;
+    SELECT provider, source_kind, fetch_url AS url FROM external_sources
+    WHERE id = ? AND tombstoned_at IS NULL AND (
+      (provider='rss' AND source_kind='rss') OR
+      (provider='youtube' AND source_kind='youtube_channel')
+    )
+  `).get(sourceId) as { provider: string; source_kind: string; url: string } | undefined;
   if (!source) return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0, error: 'Source not found' };
   // A corrected URL must not reuse a previous destination's cached outcome.
-  try { return await refresh(`${sourceId}:${source.url}`, () => fetchSourceNow(sourceId)); }
+  try {
+    return await refresh(`${source.provider}:${source.source_kind}:${sourceId}:${source.url}`, () =>
+      source.provider === 'youtube'
+        ? fetchYouTubeSourceNow(getDb(), sourceId)
+        : fetchRssSourceNow(sourceId));
+  }
   catch (error) {
     return { sourceId, sourceName: '', category: '', itemsFound: 0, itemsInserted: 0, duplicatesSkipped: 0,
       error: error instanceof RefreshBusyError ? error.message : 'Feed refresh failed.' };
@@ -209,7 +249,7 @@ export function persistFetchedFeed(db: ReturnType<typeof getDb>, source: RssSour
   }).immediate();
 }
 
-async function fetchSourceNow(sourceId: number): Promise<FetchResult> {
+async function fetchRssSourceNow(sourceId: number): Promise<FetchResult> {
   const db = getDb();
   const source = db.prepare(`
     SELECT id, name, fetch_url AS url, homepage_url, category, is_active,
@@ -251,8 +291,10 @@ export function fetchAllSources(): Promise<FetchResult[]> {
   allInFlight = (async () => {
     const sources = getDb().prepare(`
       SELECT id FROM external_sources
-      WHERE provider = 'rss' AND source_kind = 'rss'
-        AND is_active = 1 AND tombstoned_at IS NULL
+      WHERE is_active = 1 AND tombstoned_at IS NULL AND (
+        (provider='rss' AND source_kind='rss') OR
+        (provider='youtube' AND source_kind='youtube_channel')
+      )
       ORDER BY last_fetch_attempt_at ASC NULLS FIRST, id LIMIT 20
     `).all() as { id: number }[];
     const results: FetchResult[] = new Array(sources.length);

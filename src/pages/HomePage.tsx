@@ -470,7 +470,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
                     <p className="muted">Try again later or <Link to="/world">review your approved source choices</Link>.</p>
                   </>}
                 </div>
-              : <div className="world-feed-list">{worldItems.map(item => <WorldCard key={item.id} item={item} />)}</div>
+              : <div className="world-feed-list">{worldItems.map(item => <WorldCard key={item.id} item={item} capabilities={capabilities} capabilityState={capabilityState} />)}</div>
             }
           </div>
         ) : feedItems.length === 0 ? (
@@ -485,7 +485,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
         ) : (
           <div className="feed-list">
             {feedItems.map(item => item.type === 'world_item'
-              ? <WorldCard key={`world-${item.id}`} item={item} />
+              ? <WorldCard key={`world-${item.id}`} item={item} capabilities={capabilities} capabilityState={capabilityState} />
               : <PostCard key={`post-${item.id}`} post={item} currentUser={user} onMutation={handlePostMutation} />
             )}
           </div>
@@ -495,7 +495,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       {!loading && level !== 'world' && worldItems.length > 0 && (
         <section aria-label="External source items"><h3>From your external sources</h3>
           <p className="muted">Subscribed source items are kept separate from your paginated posts.</p>
-          {worldItems.map(item => <WorldCard key={item.id} item={item} />)}
+          {worldItems.map(item => <WorldCard key={item.id} item={item} capabilities={capabilities} capabilityState={capabilityState} />)}
         </section>
       )}
     </div>

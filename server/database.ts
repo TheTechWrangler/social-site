@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { ensureDatabaseDirectory, getStorageConfig } from './config.js';
 import { logSafeDiagnostic } from './safeDiagnostics.js';
 import { migrateExternalContentFoundation } from './externalContentMigration.js';
+import { migrateExternalContentPhase2 } from './externalContentPhase2Migration.js';
 
 const storageConfig = getStorageConfig();
 ensureDatabaseDirectory(storageConfig);
@@ -744,6 +745,7 @@ export function initializeDatabase(database: Database.Database = db): void {
   if ((db.pragma('foreign_key_check') as unknown[]).length) throw new Error('Migration refused foreign-key violations.');
   applyMigration(db, '015-atomic-baseline', () => {});
   migrateExternalContentFoundation(db);
+  migrateExternalContentPhase2(db);
   }).immediate();
 }
 

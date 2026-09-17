@@ -257,6 +257,8 @@ export function getExternalFeed(params: ExternalFeedParams) {
     linkUrl: item.canonical_url,
     author: item.author_name,
     imageUrl: item.image_url,
+    mediaProvider: item.media_provider,
+    videoId: item.video_id,
     publishedAt: item.published_at,
   }));
 }

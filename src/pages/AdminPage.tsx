@@ -91,6 +91,9 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   // RSS state
   const [rssSources, setRssSources] = useState<any[]>([]);
+  const [sourceKind, setSourceKind] = useState<'rss' | 'youtube_channel'>('rss');
+  const [sourceSubmissions, setSourceSubmissions] = useState<any[]>([]);
+  const [reviewingSubmission, setReviewingSubmission] = useState<number | null>(null);
   const [rssName, setRssName] = useState('');
   const [rssUrl, setRssUrl] = useState('');
   const [rssHomepage, setRssHomepage] = useState('');
@@ -224,20 +227,45 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
 
   async function loadRss() {
     try {
-      const r = await api.get<any>('/admin/rss/sources');
-      setRssSources(r.sources);
+      const [sourcesResponse, submissionsResponse] = await Promise.all([
+        api.get<any>('/admin/rss/sources'),
+        api.get<any>('/admin/rss/source-submissions'),
+      ]);
+      setRssSources(sourcesResponse.sources);
+      setSourceSubmissions(submissionsResponse.submissions);
       clearTabError('rss');
-    } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not load RSS sources.')); }
+    } catch (e: any) { console.error(e); setLoadError('rss', errorMessage(e, 'Could not load external sources.')); }
   }
 
   async function addRssSource(e: React.FormEvent) {
     e.preventDefault();
     if (!rssName || !rssUrl) return;
     try {
-      await api.post('/admin/rss/sources', { name: rssName, url: rssUrl, homepageUrl: rssHomepage, category: rssCategory });
+      if (sourceKind === 'youtube_channel') {
+        await api.post('/admin/rss/youtube-sources', { name: rssName, locator: rssUrl, category: rssCategory });
+      } else {
+        await api.post('/admin/rss/sources', { name: rssName, url: rssUrl, homepageUrl: rssHomepage, category: rssCategory });
+      }
       setRssName(''); setRssUrl(''); setRssHomepage(''); setRssCategory('general');
       loadRss();
     } catch (err: any) { console.error(err); setLoadError('rss', errorMessage(err, 'Could not add RSS source.')); }
+  }
+
+  async function reviewSourceSubmission(id: number, approve: boolean) {
+    if (reviewingSubmission !== null) return;
+    setReviewingSubmission(id);
+    try {
+      await api.post(approve
+        ? `/admin/rss/source-submissions/${id}/approve`
+        : `/admin/rss/source-submissions/${id}/reject`, {});
+      await loadRss();
+    } catch (error: any) {
+      setLoadError('rss', errorMessage(error, approve
+        ? 'Source validation failed. The suggestion remains pending.'
+        : 'Could not reject this suggestion.'));
+    } finally {
+      setReviewingSubmission(null);
+    }
   }
 
   async function toggleSource(id: number, active: boolean) {
@@ -540,7 +568,7 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
         <button className={`btn ${tab === 'users' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('users'); setRssFetchResult(null); }}>Users</button>
         <button className={`btn ${tab === 'posts' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('posts'); setRssFetchResult(null); }}>Posts</button>
         <button className={`btn ${tab === 'reports' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('reports'); setRssFetchResult(null); }}>Reports</button>
-        <button className={`btn ${tab === 'rss' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('rss')}>RSS Sources</button>
+        <button className={`btn ${tab === 'rss' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('rss')}>External Sources</button>
         <button className={`btn ${tab === 'servers' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { setTab('servers'); loadServers(); }}>Game Servers</button>
         <button className={`btn ${tab === 'auth-logs' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('auth-logs')}>Auth Logs</button>
         <button className={`btn ${tab === 'health' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('health')}>System Health</button>
@@ -747,11 +775,15 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       {/* RSS Sources tab */}
       {tab === 'rss' && (
         <div className="rss-admin">
-          <h3>Add RSS Source</h3>
+          <h3>Add approved external source</h3>
           <form className="rss-add-form" onSubmit={addRssSource}>
+            <select className="input" value={sourceKind} onChange={e => setSourceKind(e.target.value as 'rss' | 'youtube_channel')}>
+              <option value="rss">RSS / Atom</option>
+              <option value="youtube_channel">YouTube channel</option>
+            </select>
             <input className="input" placeholder="Source Name" value={rssName} onChange={e => setRssName(e.target.value)} required />
-            <input className="input" placeholder="RSS Feed URL" value={rssUrl} onChange={e => setRssUrl(e.target.value)} required />
-            <input className="input" placeholder="Homepage URL (optional)" value={rssHomepage} onChange={e => setRssHomepage(e.target.value)} />
+            <input className="input" placeholder={sourceKind === 'youtube_channel' ? 'Channel ID or canonical /channel/ URL' : 'RSS Feed URL'} value={rssUrl} onChange={e => setRssUrl(e.target.value)} required />
+            {sourceKind === 'rss' && <input className="input" placeholder="Homepage URL (optional)" value={rssHomepage} onChange={e => setRssHomepage(e.target.value)} />}
             <input className="input" placeholder="Category (e.g. tech, news)" value={rssCategory} onChange={e => setRssCategory(e.target.value)} />
             <button className="btn btn-primary">Add Source</button>
           </form>
@@ -806,6 +838,24 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
             </div>
           )}
 
+          <h3>Submitted feeds</h3>
+          {sourceSubmissions.length === 0 ? <p className="muted">No source suggestions.</p> : (
+            <div className="admin-table-wrap"><table className="admin-table">
+              <thead><tr><th>ID</th><th>Type</th><th>Suggestion</th><th>Submitted by</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody>{sourceSubmissions.map(submission => <tr key={submission.id}>
+                <td>#{submission.id}</td>
+                <td>{submission.sourceKind === 'youtube_channel' ? 'YouTube channel' : 'RSS'}</td>
+                <td><strong>{submission.name || submission.locator}</strong><br /><span className="muted">{submission.locator}</span>{submission.note && <p>{submission.note}</p>}</td>
+                <td>{submission.submittedBy ? `#${submission.submittedBy.id} @${submission.submittedBy.username}` : 'Deleted account'}</td>
+                <td>{submission.status}</td>
+                <td>{submission.status === 'pending' && <>
+                  <button className="btn btn-sm" disabled={reviewingSubmission !== null} onClick={() => void reviewSourceSubmission(submission.id, true)}>Approve</button>
+                  <button className="btn btn-sm btn-ghost" disabled={reviewingSubmission !== null} onClick={() => void reviewSourceSubmission(submission.id, false)}>Reject</button>
+                </>}</td>
+              </tr>)}</tbody>
+            </table></div>
+          )}
+
           <h3>Sources ({rssSources.length})</h3>
           {/* Category filter */}
           {(() => {
@@ -824,10 +874,11 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
             );
           })()}
           <div className="admin-table-wrap"><table className="admin-table">
-            <thead><tr><th>Name</th><th>Homepage</th><th>Category</th><th>Active</th><th>Last Fetched</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Name</th><th>Type</th><th>Homepage</th><th>Category</th><th>Active</th><th>Last Fetched</th><th>Actions</th></tr></thead>
             <tbody>{rssSources.filter(s => !rssCatFilter || s.category === rssCatFilter).map(s => (
               <tr key={s.id}>
                 <td><strong>{s.name}</strong></td>
+                <td>{s.sourceKind === 'youtube_channel' ? 'YouTube channel' : 'RSS'}</td>
                 <td className="muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.homepageUrl || '—'}</td>
                 <td>{s.category}</td>
                 <td>{s.isActive ? '✅' : '❌'}</td>
