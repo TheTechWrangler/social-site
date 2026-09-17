@@ -18,6 +18,13 @@ async function action() {
   if (state.pending) await new Promise<void>(resolve => { state.release = resolve; });
   if (state.fail) throw new Error('Controlled request failure');
 }
+api.get = async (url: string) => {
+  if (url === '/uploads/capabilities') return {
+    imageUploads: { enabled: true }, avatarUploads: { enabled: true },
+    externalVideoEmbeds: { enabled: true }, directVideoUploads: { enabled: false, reason: 'Direct video upload is unavailable.' },
+  } as any;
+  throw new Error('Unhandled fixture GET: ' + url);
+};
 const user = { id: 3, username: 'author', display_name: 'Author', is_verified: 1, role: 'user' };
 const initial = { id: 7, userId: 3, username: 'author', displayName: 'Author', avatarUrl: '/fixture.png', content: 'Original text',
   editVersion: 0, editedAt: null, canEdit: true, createdAt: '2026-09-11 10:00:00', commentCount: 0 };

@@ -46,10 +46,12 @@ function UserDetailPanel({ act, resetLink, generatingReset, onGenerateReset, onD
                 <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={onCopyLink}>Copy Link</button>
                 <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={onDismissReset}>Dismiss</button>
               </div>
-            ) : (
+            ) : act.user.can_generate_password_reset ? (
               <button className="btn btn-sm" disabled={generatingReset} onClick={onGenerateReset}>
                 {generatingReset ? 'Generating…' : '🔑 Generate Password Reset Link'}
               </button>
+            ) : (
+              <p className="muted">Password reset links are unavailable because this account has no local password. Use its connected sign-in provider instead.</p>
             )}
           </div>
           <div style={{ fontSize: '0.82rem' }}>
@@ -928,9 +930,9 @@ export default function AdminPage({ user: currentUser }: { user: any }) {
       {/* System Health tab */}
       {tab === 'health' && (
         <div style={{ maxWidth: 600 }}>
-          {!systemHealth ? (
+          {!systemHealth ? (currentTabError ? null : (
             <p className="muted">Loading…</p>
-          ) : (
+          )) : (
             <>
               <div style={{ display: 'grid', gap: 10, marginBottom: 24 }}>
                 {([

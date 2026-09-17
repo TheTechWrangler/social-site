@@ -14,6 +14,7 @@
     "seed:with-rss": "npm run seed && npm run rss:fetch",
     "rss:fetch": "NODE_ENV=development tsx server/rssFetch.ts",
     "rss:status": "NODE_ENV=development tsx server/rssStatus.ts",
+    "test:batch16b": "tsx --test --test-concurrency=1 tests/batch16b/*.test.ts",
     "preview": "vite preview",
     "recovery": "tsx server/recoveryCli.ts",
     "test:batch15": "tsx --test --test-concurrency=1 tests/batch15/*.test.ts",

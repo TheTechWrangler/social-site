@@ -1,10 +1,11 @@
 import { Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from './api/client';
 import { usePageTracking } from './hooks/usePageTracking';
 import { RouteRequestGate } from './routeLoadState';
 import { canonicalTelemetryRoute } from '../shared/telemetry';
 import HomePage from './pages/HomePage';
+import { sessionFailureOutcome, sessionUserFromResponse } from './sessionState';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import ProfilePage from './pages/ProfilePage';
@@ -28,6 +29,7 @@ import VerifyEmailPage from './pages/VerifyEmailPage';
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [initializing, setInitializing] = useState(true);
+  const [sessionError, setSessionError] = useState('');
   const [unread, setUnread] = useState(0);
   const [dmUnread, setDmUnread] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -36,6 +38,27 @@ export default function App() {
   const location = useLocation();
   usePageTracking();
   const isAdminPage = location.pathname === '/admin';
+  const sessionGate = useRef(new RouteRequestGate());
+
+  async function loadSession() {
+    const isCurrent = sessionGate.current.begin();
+    setInitializing(true);
+    setSessionError('');
+    try {
+      const response = await api.me();
+      const sessionUser = sessionUserFromResponse(response);
+      if (isCurrent()) setUser(sessionUser);
+    } catch (error) {
+      if (!isCurrent()) return;
+      if (sessionFailureOutcome(error) === 'anonymous') {
+        setUser(null);
+      } else {
+        setSessionError('RefugeCloud could not confirm your session. Your account has not been signed out.');
+      }
+    } finally {
+      if (isCurrent()) setInitializing(false);
+    }
+  }
 
   // On mount: check whether the auth cookie is still valid by calling /me.
   // This is the single source of truth for login state — no localStorage token.
@@ -44,10 +67,8 @@ export default function App() {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
 
-    api.me()
-      .then(r => { setUser(r.user); })
-      .catch(() => { /* Not logged in or cookie expired — render as logged out */ })
-      .finally(() => { setInitializing(false); });
+    void loadSession();
+    return () => sessionGate.current.invalidate();
   }, []);
 
   useEffect(() => {
@@ -115,8 +136,18 @@ export default function App() {
     }
   }
 
+  function updateCurrentSettingsUser(nextUser: any) {
+    setUser((currentUser: any) => currentUser?.id === nextUser?.id ? nextUser : currentUser);
+  }
+
   // Show a brief loading screen while we wait for the /me check on startup.
   if (initializing) return <div className="loading">Loading...</div>;
+  if (sessionError) return (
+    <div className="loading" role="alert">
+      <p>{sessionError}</p>
+      <button className="btn btn-primary" onClick={() => void loadSession()}>Retry</button>
+    </div>
+  );
 
   return (
     <div className={`app-layout ${isAdminPage ? 'admin-layout' : ''}`}>
@@ -186,7 +217,7 @@ export default function App() {
           <Route path="/friends" element={user ? <FriendsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage user={user} />} />
-          <Route path="/settings" element={user ? <SettingsPage user={user} onUserChange={setUser} /> : <Navigate to="/login" />} />
+          <Route path="/settings" element={user ? <SettingsPage user={user} onUserChange={updateCurrentSettingsUser} /> : <Navigate to="/login" />} />
           <Route path="/messages" element={user ? <MessagesPage user={user} onUnreadChange={setDmUnread} /> : <Navigate to="/login" />} />
           <Route path="/messages/:conversationId" element={user ? <MessagesPage user={user} onUnreadChange={setDmUnread} /> : <Navigate to="/login" />} />
           <Route path="/posts/:id" element={user ? <PostDetailPage user={user} /> : <Navigate to="/login" />} />

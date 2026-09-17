@@ -186,6 +186,32 @@ function validateUploadedImageBytes(req: Request, res: Response, next: NextFunct
 
 const router = Router();
 
+// Public, non-sensitive capability discovery. Enforcement remains on each
+// mutation route so a flag change after discovery still fails safely.
+router.get('/capabilities', (_req, res) => {
+  const imagesEnabled = isEnabled('ENABLE_IMAGE_UPLOADS', 'true');
+  const embedsEnabled = isEnabled('ENABLE_EXTERNAL_VIDEO_EMBEDS', 'true');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({
+    imageUploads: {
+      enabled: imagesEnabled,
+      ...(imagesEnabled ? {} : { reason: 'Image uploads are currently unavailable.' }),
+    },
+    avatarUploads: {
+      enabled: imagesEnabled,
+      ...(imagesEnabled ? {} : { reason: 'Avatar uploads are currently unavailable.' }),
+    },
+    externalVideoEmbeds: {
+      enabled: embedsEnabled,
+      ...(embedsEnabled ? {} : { reason: 'YouTube embeds are currently unavailable.' }),
+    },
+    directVideoUploads: {
+      enabled: false,
+      reason: 'Direct video upload is unavailable.',
+    },
+  });
+});
+
 // POST /api/uploads/avatar — create and atomically assign an owned avatar.
 // Avatar ownership is established by the authenticated upload itself; existing
 // local URLs can never be adopted through client-supplied profile data.

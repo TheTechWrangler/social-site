@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 
 const API_BASE = '';
 
@@ -42,8 +42,8 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
   async function handleResend() {
     setResendLoading(true); setResendMsg('');
     try {
-      await api.resendVerification();
-      setResendMsg('Verification email sent! Check your inbox.');
+      const response = await api.resendVerification();
+      setResendMsg(response.message);
     } catch {
       setResendMsg('Could not send email. Please try again later.');
     }
@@ -53,8 +53,8 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
   const displayError = error
     || (oauthError === 'google_failed' ? 'Google login failed. Please try again.'
     : oauthError === 'steam_failed' ? 'Steam login failed. Please try again.'
-    : oauthError === 'google_not_configured' ? 'Google login is not configured yet. Add GOOGLE_CLIENT_ID to .env'
-    : oauthError === 'steam_not_configured' ? 'Steam login is not configured yet. Add STEAM_RETURN_URL to .env'
+    : oauthError === 'google_not_configured' ? 'Google login is currently unavailable. Use another sign-in method or try again later.'
+    : oauthError === 'steam_not_configured' ? 'Steam login is currently unavailable. Use another sign-in method or try again later.'
     : oauthError === 'oauth_failed' ? 'Social login failed. Please try again.' : '');
 
   // ─── Forgot-password inline form state ───
@@ -67,11 +67,12 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
     e.preventDefault();
     setForgotLoading(true);
     try {
-      await api.forgotPassword(forgotInput.trim());
-      setForgotMsg('If an account with a local password matches, a password reset email has been sent.');
-    } catch {
-      // Always show generic message — never reveal whether account exists.
-      setForgotMsg('If an account with a local password matches, a password reset email has been sent.');
+      const response = await api.forgotPassword(forgotInput.trim());
+      setForgotMsg(response.message);
+    } catch (error) {
+      setForgotMsg(error instanceof ApiError && error.status === 429
+        ? 'Too many password reset requests. Please wait and try again.'
+        : 'The password reset request could not be submitted. Please try again.');
     }
     setForgotLoading(false);
   }
@@ -114,7 +115,7 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
           </a>
         ) : (
           <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>
-            Google login is not configured.
+            Google login is currently unavailable.
           </p>
         )}
         {providers?.steam ? (
@@ -123,7 +124,7 @@ export default function LoginPage({ onLogin }: { onLogin: (u: any) => void }) {
           </a>
         ) : (
           <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>
-            Steam login is not configured.
+            Steam login is currently unavailable.
           </p>
         )}
       </div>

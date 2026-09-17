@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { RouteRequestGate } from '../routeLoadState';
 
 type Tab = 'friends' | 'following' | 'followers' | 'requests';
 
@@ -11,14 +12,26 @@ export default function FriendsPage({ user }: { user: any }) {
   const [following, setFollowing] = useState<any[]>([]);
   const [followers, setFollowers] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const gate = useRef(new RouteRequestGate());
+  const accountId = useRef(user?.id);
   const [loading, setLoading] = useState(true);
   const [actionError, setActionError] = useState('');
   const [pendingUserId, setPendingUserId] = useState<number | null>(null);
 
-  useEffect(() => { loadConnections(); }, []);
+  accountId.current = user?.id;
+  useEffect(() => {
+    setLoaded(false);
+    void loadConnections();
+    return () => gate.current.invalidate();
+  }, [user?.id]);
 
   async function loadConnections() {
     setLoading(true);
+    const requestedAccountId = user?.id;
+    const isCurrent = gate.current.begin();
+    setLoadError('');
     try {
       const [fr, fg, fl, rq] = await Promise.all([
         api.getFriends(),
@@ -26,12 +39,17 @@ export default function FriendsPage({ user }: { user: any }) {
         api.getFollowers(),
         api.getFollowRequests(),
       ]);
+      if (!isCurrent() || accountId.current !== requestedAccountId) return;
       setFriends(fr.users || []);
       setFollowing(fg.users || []);
       setFollowers(fl.users || []);
       setRequests(rq.requests || []);
-    } catch (e) { console.error(e); }
-    setLoading(false);
+      setLoaded(true);
+    } catch {
+      if (isCurrent() && accountId.current === requestedAccountId) setLoadError(loaded ? 'Could not refresh connections. Previously loaded information may be stale.' : 'Could not load connections.');
+    } finally {
+      if (isCurrent() && accountId.current === requestedAccountId) setLoading(false);
+    }
   }
 
   async function toggleFollow(userId: number, relationshipStatus: 'none' | 'pending' | 'accepted') {
@@ -94,20 +112,22 @@ export default function FriendsPage({ user }: { user: any }) {
       {actionError && <p className="error-msg" role="alert">{actionError}</p>}
       <div className="admin-tabs">
         <button className={`btn ${tab === 'friends' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('friends')}>
-          Friends ({friends.length})
+          Friends{loaded ? ` (${friends.length})` : ''}
         </button>
         <button className={`btn ${tab === 'following' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('following')}>
-          Following ({following.length})
+          Following{loaded ? ` (${following.length})` : ''}
         </button>
         <button className={`btn ${tab === 'followers' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('followers')}>
-          Followers ({followers.length})
+          Followers{loaded ? ` (${followers.length})` : ''}
         </button>
         <button className={`btn ${tab === 'requests' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('requests')}>
-          Requests ({requests.length})
+          Requests{loaded ? ` (${requests.length})` : ''}
         </button>
       </div>
+      {loading && loaded && <p className="muted" role="status">Refreshing connections…</p>}
 
-      {loading ? <p className="muted">Loading...</p> : displayList.length === 0 ? (
+      {loadError && <div className="error-msg" role="alert">{loadError}{' '}<button className="btn btn-sm" onClick={() => void loadConnections()}>Retry</button></div>}
+      {loading && !loaded ? <p className="muted">Loading...</p> : !loaded ? null : displayList.length === 0 ? (
         <p className="muted">{emptyText}</p>
       ) : (
         <div className="discover-results">

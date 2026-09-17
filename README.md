@@ -245,8 +245,8 @@ Before pointing a real domain at this app, complete all of the following.
 
 | Feature | Status |
 |---------|--------|
-| Direct video uploads | Disabled (`ENABLE_VIDEO_UPLOADS=false`). Requires storage/bandwidth planning before enabling. |
-| Email verification / password reset | Not implemented. Parked until real domain + email provider are configured. |
+| Direct video uploads | Unavailable and not implemented. The legacy environment flag does not enable uploads. |
+| Email verification / password reset | Implemented; delivery requires a configured Resend provider and real public URLs. |
 | OAuth (Google / Steam) | Works but requires real callback URLs registered with each provider. |
 
 ### Never do these
@@ -462,8 +462,7 @@ The seed script includes 6 gaming RSS sources covering PC gaming, console news, 
 
 **Intentionally disabled:**
 - SVG uploads are disabled for safety. Use JPG, PNG, GIF, or WebP.
-- Direct video uploads (`ENABLE_VIDEO_UPLOADS=false`)
-- Can be enabled later with `ENABLE_VIDEO_UPLOADS=true`
+- Direct video uploads are not implemented; `ENABLE_VIDEO_UPLOADS` is a reserved legacy flag and does not make them available.
 - Future video hosting requires serious storage/bandwidth planning
 
 **Feature flags (.env):**
@@ -472,12 +471,12 @@ The seed script includes 6 gaming RSS sources covering PC gaming, console news, 
 |----------|---------|
 | `ENABLE_IMAGE_UPLOADS` | `true` |
 | `ENABLE_EXTERNAL_VIDEO_EMBEDS` | `true` |
-| `ENABLE_VIDEO_UPLOADS` | `false` |
+| `ENABLE_VIDEO_UPLOADS` | `false` (reserved; direct upload remains unavailable) |
 | `MAX_IMAGE_UPLOAD_MB` | `5` |
 | `MAX_AVATAR_UPLOAD_MB` | `2` |
 | `MAX_VIDEO_UPLOAD_MB` | `250` |
 
-**Future video support:** The `post_media` table already supports `media_type='video'` with columns for `duration_seconds`, `thumbnail_url`, `processing_status`. When video uploads are enabled, no schema changes needed.
+**Future video support:** The `post_media` table has reserved video fields, but upload, validation, processing, storage, and delivery are not implemented.
 
 **Production notes:**
 - Development media is stored in `uploads-dev/` by default (gitignored)

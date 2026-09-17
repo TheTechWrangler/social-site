@@ -9,6 +9,9 @@ export default function WorldPage({ user }: { user?: any }) {
   const [sources, setSources] = useState<any[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [feedLoaded, setFeedLoaded] = useState(false);
+  const [sourcesError, setSourcesError] = useState('');
+  const [blockedError, setBlockedError] = useState('');
   const [selectedSource, setSelectedSource] = useState('');
   const [selectedItemType, setSelectedItemType] = useState('');
   const [loading, setLoading] = useState(true);
@@ -36,6 +39,7 @@ export default function WorldPage({ user }: { user?: any }) {
     setSelectedSource('');
     setSelectedItemType('');
     setDiscussions({});
+    setFeedLoaded(false);
     setPage(0);
     void loadSources();
     void loadFeed();
@@ -46,7 +50,14 @@ export default function WorldPage({ user }: { user?: any }) {
   const isLoggedIn = !!user;
 
   async function loadSources() {
-    try { const r = await api.get<any>('/world-feed/sources'); setSources(r.sources); setCategories(r.categories); } catch (e) {}
+    setSourcesError('');
+    try {
+      const r = await api.get<any>('/world-feed/sources');
+      setSources(r.sources);
+      setCategories(r.categories);
+    } catch {
+      setSourcesError('World filters are unavailable.');
+    }
   }
 
   async function loadFeed(cat?: string, srcId?: string, p = 0, itemType?: string) {
@@ -65,7 +76,8 @@ export default function WorldPage({ user }: { user?: any }) {
       setHasMore(response.pagination?.hasMore ?? response.items.length === PAGE_SIZE);
       if (p === 0) setItems(response.items);
       else setItems(previous => [...previous, ...response.items.filter((item: any) => !previous.some(known => known.id === item.id))]);
-    } catch (e) { if (isCurrent()) setFeedError('Could not load World items. Please retry.'); }
+      setFeedLoaded(true);
+    } catch (e) { if (isCurrent()) setFeedError(feedLoaded ? 'Refresh failed. Previously loaded World items may be stale.' : 'Could not load World items. Please retry.'); }
     finally {
       if (isCurrent() && currentAccountId.current === requestedAccountId) setLoading(false);
     }
@@ -74,10 +86,13 @@ export default function WorldPage({ user }: { user?: any }) {
   async function loadBlockedSources() {
     const requestedAccountId = user?.id ?? null;
     const isCurrent = blockedGate.current.begin();
+    setBlockedError('');
     try {
       const response = await api.get<any>('/world-feed/blocked-sources');
       if (isCurrent() && currentAccountId.current === requestedAccountId) setBlockedSources(response.blocked);
-    } catch (e) { /* unavailable for signed-out viewers */ }
+    } catch (e) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) setBlockedError('Source preferences are temporarily unavailable.');
+    }
   }
 
   function handleFilter(cat: string, srcId = '', itemType = '') { setSelectedCategory(cat); setSelectedSource(srcId); setSelectedItemType(itemType); setPage(0); loadFeed(cat, srcId, 0, itemType || undefined); }
@@ -174,7 +189,9 @@ export default function WorldPage({ user }: { user?: any }) {
       {actionDialog}
       <h2>🌍 World Feed</h2>
       <p className="muted">External content from RSS sources. Sorted by published date, newest first.</p>
-      {feedError && <p className="error-msg" role="alert">{feedError}</p>}
+      {feedError && <p className="error-msg" role="alert">{feedError} <button className="btn btn-sm" onClick={() => void loadFeed(selectedCategory, selectedSource, 0, selectedItemType || undefined)}>Retry</button></p>}
+      {sourcesError && <p className="error-msg" role="alert">{sourcesError} <button className="btn btn-sm" onClick={() => void loadSources()}>Retry filters</button></p>}
+      {blockedError && isLoggedIn && <p className="error-msg" role="alert">{blockedError} <button className="btn btn-sm" onClick={() => void loadBlockedSources()}>Retry preferences</button></p>}
       {mutationError && <p className="error-msg" role="alert">{mutationError}</p>}
 
       {blockedSources.length > 0 && (
@@ -205,7 +222,8 @@ export default function WorldPage({ user }: { user?: any }) {
         </div>
       )}
 
-      {loading && items.length === 0 ? <p className="muted">Loading...</p> : items.length === 0 ? (
+      {loading && feedLoaded && <p className="muted" role="status">Refreshing World items…</p>}
+      {loading && !feedLoaded ? <p className="muted">Loading...</p> : !feedLoaded ? null : items.length === 0 ? (
         <div className="empty-state"><p>No world feed items yet.</p><p className="muted">Admins can add RSS sources in the Admin panel.</p></div>
       ) : (
         <div className="world-feed-list">

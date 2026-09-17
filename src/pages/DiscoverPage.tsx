@@ -7,6 +7,10 @@ export default function DiscoverPage({ user }: { user?: any }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
+  const [suggestionsLoaded, setSuggestionsLoaded] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState('');
+  const [searchError, setSearchError] = useState('');
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -29,6 +33,9 @@ export default function DiscoverPage({ user }: { user?: any }) {
     setResults([]);
     setSearched(false);
     setPendingUserId(null);
+    setSuggestionsLoading(true);
+    setSuggestionsLoaded(false);
+    setSuggestionsError('');
     setActionError('');
     api.get<{ users: any[] }>('/users?q=&limit=20')
       .then(response => {
@@ -38,8 +45,13 @@ export default function DiscoverPage({ user }: { user?: any }) {
             .filter((candidate: any) => candidate.profile_visibility === 'public' && candidate.id !== requestedAccountId)
             .slice(0, 12)
         );
+        setSuggestionsLoaded(true);
+        setSuggestionsLoading(false);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
+        setSuggestionsError('Could not load discover suggestions.'); setSuggestionsLoading(false);
+      });
     return () => {
       suggestionGate.current.invalidate();
       searchGate.current.invalidate();
@@ -54,12 +66,15 @@ export default function DiscoverPage({ user }: { user?: any }) {
     const requestedAccountId = user?.id;
     const isCurrent = searchGate.current.begin();
     setLoading(true); setSearched(true);
+    setSearchError('');
     try {
       const response = await api.get<any>(`/users?q=${encodeURIComponent(q)}&limit=30`);
       if (!isCurrent() || currentAccountId.current !== requestedAccountId || currentQuery.current.trim() !== q) return;
       setResults(response.users || []);
-    } catch (e) {
-      if (isCurrent() && currentAccountId.current === requestedAccountId && currentQuery.current.trim() === q) setResults([]);
+    } catch {
+      if (isCurrent() && currentAccountId.current === requestedAccountId && currentQuery.current.trim() === q) {
+        setSearchError('Search could not be completed. Please retry.');
+      }
     } finally {
       if (isCurrent() && currentAccountId.current === requestedAccountId && currentQuery.current.trim() === q) setLoading(false);
     }
@@ -153,16 +168,18 @@ export default function DiscoverPage({ user }: { user?: any }) {
             setResults([]);
             setSearched(false);
             setLoading(false);
+            setSearchError('');
           }} autoFocus />
         <button className="btn btn-primary" disabled={query.trim().length < 2 || loading}>Search</button>
       </form>
 
       {loading && <p className="muted">Searching...</p>}
 
-      {searched && !loading && results.length === 0 && (
+      {searched && !loading && !searchError && results.length === 0 && (
         <p className="muted" style={{ marginTop: 16 }}>No users found matching "{query}".</p>
       )}
 
+      {searchError && <p className="error-msg" role="alert">{searchError}</p>}
       {searched && results.length > 0 && (
         <div className="discover-results">
           {results.map(u => renderCard(u))}
@@ -180,7 +197,13 @@ export default function DiscoverPage({ user }: { user?: any }) {
         </>
       )}
 
-      {!searched && suggestions.length === 0 && (
+      {!searched && suggestionsError && <p className="error-msg" role="alert">
+        {suggestionsError}{' '}
+        <button className="btn btn-sm" onClick={() => window.location.reload()}>Retry</button>
+      </p>}
+      {!searched && suggestionsLoading && <p className="muted">Loading people…</p>}
+
+      {!searched && suggestionsLoaded && suggestions.length === 0 && (
         <p className="muted" style={{ marginTop: 16 }}>Search for people by name or username.</p>
       )}
     </div>

@@ -6,6 +6,7 @@ import PostCard from '../components/PostCard';
 import { RouteRequestGate, routeFailureState, routeStateForKey, type RouteLoadState } from '../routeLoadState';
 import { applyPostEntityMutation, type PostEntityMutation } from '../postEntityState';
 import type { CanonicalProfileDto } from '../../shared/profile';
+import { useMediaCapabilities } from '../hooks/useMediaCapabilities';
 
 const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
 const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
@@ -116,6 +117,7 @@ export default function ProfilePage({
     currentUser?.gameDiscoveryEnabled === true;
 
   const { confirmAction, actionDialog } = useActionDialog(routeKey);
+  const { capabilities, state: capabilityState, retry: retryCapabilities } = useMediaCapabilities();
 
   useEffect(() => {
     void loadProfile();
@@ -285,6 +287,10 @@ export default function ProfilePage({
 
   async function handleAvatarUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    if (!capabilities?.avatarUploads.enabled) {
+      setActionError(capabilities?.avatarUploads.reason || 'Avatar availability could not be confirmed. Retry the capability check.');
+      return;
+    }
     if (!file) return;
     const ext = file.name.split('.').pop()?.toLowerCase();
     if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { setActionError(IMAGE_UPLOAD_ERROR); if (avatarInputRef.current) avatarInputRef.current.value = ''; return; }
@@ -442,19 +448,24 @@ export default function ProfilePage({
             <div className="avatar-placeholder xlarge">{profile.displayName?.[0] || '?'}</div>
           )}
           {isOwn && !editing && (
-            <label className="avatar-change-btn" title="Change avatar">
+            <label className="avatar-change-btn" title={capabilities?.avatarUploads.enabled ? 'Change avatar' : 'Avatar upload unavailable'}>
               📷
               <input
                 type="file"
                 ref={avatarInputRef}
                 accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp"
                 onChange={handleAvatarUpload}
+                disabled={!capabilities?.avatarUploads.enabled}
                 style={{ display: 'none' }}
               />
             </label>
           )}
           {avatarUploading && <span className="avatar-uploading">Uploading…</span>}
         </div>
+          {isOwn && capabilityState === 'error' && <span className="error-msg">Avatar availability could not be checked. <button className="btn-link" onClick={() => void retryCapabilities()}>Retry</button></span>}
+          {isOwn && capabilityState === 'loaded' && !capabilities?.avatarUploads.enabled && (
+            <span className="muted">{capabilities?.avatarUploads.reason}</span>
+          )}
 
         <div className="profile-header-info">
           <div className="profile-name-row">

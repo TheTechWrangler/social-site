@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { attachComposerMedia, createClientOperationKey, SubmissionLock, submitComposerPost } from '../postComposerSubmission';
 import ImageDescription from './ImageDescription';
+import { useMediaCapabilities } from '../hooks/useMediaCapabilities';
 
 export default function GroupPostComposer({ groupId, onCreated }: { groupId: number; onCreated: () => Promise<unknown> }) {
   const [content, setContent] = useState('');
@@ -15,6 +16,7 @@ export default function GroupPostComposer({ groupId, onCreated }: { groupId: num
   const key = useRef(createClientOperationKey());
   const lock = useRef(new SubmissionLock());
   const mounted = useRef(true);
+  const { capabilities, state: capabilityState, retry: retryCapabilities } = useMediaCapabilities();
   const fileInput = useRef<HTMLInputElement>(null);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -50,13 +52,18 @@ export default function GroupPostComposer({ groupId, onCreated }: { groupId: num
     }
   }
   return <form className="post-composer" onSubmit={event => { event.preventDefault(); void submit(); }}>
+    {capabilityState === 'error' && <p className="error-msg">Image availability could not be checked. <button type="button" className="btn-link" onClick={() => void retryCapabilities()}>Retry</button></p>}
+    {capabilityState === 'loaded' && !capabilities?.imageUploads.enabled && <p className="muted">{capabilities?.imageUploads.reason}</p>}
     <p className="muted">Public group — posts here may be visible to people who cannot view your private profile.</p>
     <label>Post text<textarea className="input" value={content} disabled={pending || postId !== null} rows={3}
       onChange={event => { setContent(event.target.value); key.current = createClientOperationKey(); }} /></label>
-    <label>Attach image<input ref={fileInput} type="file" accept="image/jpeg,image/png,image/gif,image/webp" disabled={pending || postId !== null}
+    <label>Attach image<input ref={fileInput} type="file" accept="image/jpeg,image/png,image/gif,image/webp" disabled={pending || postId !== null || !capabilities?.imageUploads.enabled}
       onChange={event => {
         const file = event.target.files?.[0];
         if (!file) return;
+        if (!capabilities?.imageUploads.enabled) {
+          setError(capabilities?.imageUploads.reason || 'Image availability could not be confirmed.'); event.target.value = ''; return;
+        }
         if (!['jpg','jpeg','png','gif','webp'].includes(file.name.split('.').pop()?.toLowerCase() || '') || file.size > 5 * 1024 * 1024) {
           setError('Choose a JPG, PNG, GIF, or WebP image under 5MB.'); event.target.value = ''; return;
         }

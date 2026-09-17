@@ -228,7 +228,7 @@ router.post('/change-password', requireAuth, async (req: AuthRequest, res) => {
 // Rate-limited in index.ts (5 req / 15 min — tighter than general authLimiter).
 router.post('/forgot-password', async (req, res) => {
   // Generic message used for ALL responses — success, not-found, banned, OAuth-only.
-  const GENERIC_MSG = 'If an account matches, a password reset email has been sent.';
+  const GENERIC_MSG = 'If an eligible account matches and email delivery is available, password reset instructions will arrive.';
 
   const rawInput = (req.body?.emailOrUsername || '').toString().trim();
   const input = rawInput.toLowerCase();
@@ -443,7 +443,7 @@ router.post('/resend-verification', requireAuth, async (req: AuthRequest, res) =
 
     // If already verified, return success silently — no token generated.
     if (user.is_verified) {
-      res.json({ ok: true, message: 'If verification is needed, a new email has been sent.' });
+      res.json({ ok: true, message: 'If verification is still needed and email delivery is available, check your inbox for a new link.' });
       return;
     }
 
@@ -459,11 +459,11 @@ router.post('/resend-verification', requireAuth, async (req: AuthRequest, res) =
       meta: { email_configured: isEmailConfigured() },
     });
 
-    res.json({ ok: true, message: 'If verification is needed, a new email has been sent.' });
+    res.json({ ok: true, message: 'If verification is still needed and email delivery is available, check your inbox for a new link.' });
   } catch (err: any) {
     logSafeDiagnostic({ subsystem: 'auth', severity: 'error', code: 'AUTH_EMAIL_VERIFICATION_FAILED' });
     // Return generic success even on error to prevent enumeration.
-    res.json({ ok: true, message: 'If verification is needed, a new email has been sent.' });
+    res.json({ ok: true, message: 'If verification is still needed and email delivery is available, check your inbox for a new link.' });
   }
 });
 

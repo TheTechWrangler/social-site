@@ -42,8 +42,8 @@ export default function RegisterPage({ onLogin }: { onLogin: (u: any) => void })
   async function handleResend() {
     setResendLoading(true); setResendMsg('');
     try {
-      await api.resendVerification();
-      setResendMsg('Verification email sent! Check your inbox.');
+      const response = await api.resendVerification();
+      setResendMsg(response.message);
     } catch {
       setResendMsg('Could not send email. Please try again later.');
     }
@@ -54,10 +54,10 @@ export default function RegisterPage({ onLogin }: { onLogin: (u: any) => void })
   if (registeredUser) {
     return (
       <div className="auth-page">
-        <h2>Check your email</h2>
+        <h2>Verify your email</h2>
         <p>
-          We sent a verification link to <strong>{form.email}</strong>.
-          Click it to unlock full access. You can continue exploring the site in the meantime —
+          Your account was created. If email delivery is available, check <strong>{form.email}</strong> for a verification link.
+          You can continue exploring the site in the meantime —
           some features require verification.
         </p>
         {resendMsg && <p className="muted" style={{ marginBottom: '8px' }}>{resendMsg}</p>}
@@ -88,7 +88,7 @@ export default function RegisterPage({ onLogin }: { onLogin: (u: any) => void })
           </a>
         ) : (
           <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>
-            Google login is not configured.
+            Google login is currently unavailable.
           </p>
         )}
         {providers?.steam ? (
@@ -97,7 +97,7 @@ export default function RegisterPage({ onLogin }: { onLogin: (u: any) => void })
           </a>
         ) : (
           <p className="muted" style={{ textAlign: 'center', fontSize: '0.85rem' }}>
-            Steam login is not configured.
+            Steam login is currently unavailable.
           </p>
         )}
       </div>

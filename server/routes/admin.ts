@@ -73,7 +73,8 @@ router.get('/users', requireAuth, requireAdmin, (req, res) => {
   const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
   const total = (db.prepare(`SELECT COUNT(*) as c FROM users ${whereSql}`).get(...params) as any).c as number;
   const users = db.prepare(`
-    SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, created_at
+    SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, created_at,
+      CASE WHEN password_hash IS NOT NULL AND length(password_hash) > 0 THEN 1 ELSE 0 END AS can_generate_password_reset
     FROM users
     ${whereSql}
     ORDER BY id
@@ -485,7 +486,8 @@ router.get('/users/:id/activity', requireAuth, requireAdmin, (req, res) => {
   const userId = Number(req.params.id);
   const db = getDb();
   const user = db.prepare(
-    'SELECT id, username, display_name, email, role, banned, is_verified, created_at, last_login_at FROM users WHERE id = ?'
+    `SELECT id, username, display_name, email, role, banned, is_verified, created_at, last_login_at,
+      CASE WHEN password_hash IS NOT NULL AND length(password_hash) > 0 THEN 1 ELSE 0 END AS can_generate_password_reset FROM users WHERE id = ?`
   ).get(userId) as any;
   if (!user) { res.status(404).json({ error: 'User not found.' }); return; }
 

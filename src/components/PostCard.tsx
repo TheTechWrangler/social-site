@@ -27,6 +27,8 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
   const [commentText, setCommentText] = useState('');
   const media: any[] = post.media || [];
   const [descriptionDraft, setDescriptionDraft] = useState<{ id: number; value: string } | null>(null);
+  const [mediaLoading, setMediaLoading] = useState(!Array.isArray(post.media));
+  const [mediaError, setMediaError] = useState('');
   const [descriptionPending, setDescriptionPending] = useState(false);
   const descriptionLock = useRef(false);
   const [showReactions, setShowReactions] = useState(false);
@@ -78,6 +80,8 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
     setPendingAction(null);
     setCommentSubmitting(false);
     setReportSubmitting(false);
+    setMediaLoading(!Array.isArray(post.media));
+    setMediaError('');
     reportSubmission.current = false;
     setReposting(false);
     repostSubmission.current = false;
@@ -100,10 +104,16 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
 
   async function loadMedia(postId: number) {
     const isCurrent = mediaGate.current.begin();
+    setMediaLoading(true);
+    setMediaError('');
     try {
       const r = await api.getPostMedia(postId);
       if (isCurrent() && entityId.current === postId) onMutation({ type: 'media-loaded', postId, media: r.media || [] });
-    } catch (e) { /* no media */ }
+    } catch {
+      if (isCurrent() && entityId.current === postId) setMediaError('Attached media is temporarily unavailable.');
+    } finally {
+      if (isCurrent() && entityId.current === postId) setMediaLoading(false);
+    }
   }
 
   async function handleReaction(type: string) {
@@ -454,6 +464,10 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
               <iframe src={vid.url} allowFullScreen loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" className="post-video-embed" title="YouTube video" />
             </div>
           ))}
+          {mediaLoading && <p className="muted">Loading attached media…</p>}
+          {mediaError && <p className="error-msg" role="alert">{mediaError}{' '}
+            <button className="btn btn-sm" onClick={() => void loadMedia(post.id)}>Retry</button>
+          </p>}
         </>
       )}
 

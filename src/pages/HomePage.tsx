@@ -5,6 +5,7 @@ import PostCard from '../components/PostCard';
 import WorldCard from '../components/WorldCard';
 import { attachComposerMedia, createClientOperationKey, SubmissionLock, submitComposerPost, type AttachmentResult } from '../postComposerSubmission';
 import { applyPostEntityMutation, type PostEntityMutation } from '../postEntityState';
+import { useMediaCapabilities } from '../hooks/useMediaCapabilities';
 import { RouteRequestGate } from '../routeLoadState';
 
 const LEVELS = [
@@ -34,6 +35,9 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   const [repopulateMsg, setRepopulateMsg] = useState('');
   const [replenishing, setReplenishing] = useState(false);
   const [replenishMsg, setReplenishMsg] = useState('');
+  const [feedError, setFeedError] = useState('');
+  const [feedLoaded, setFeedLoaded] = useState(false);
+  const { capabilities, state: capabilityState, retry: retryCapabilities } = useMediaCapabilities();
   const [replenishCooldown, setReplenishCooldown] = useState<string | null>(null);
   // Default to 'everyone' (Community) so new users see the full public feed immediately.
   // Existing users who previously picked a level keep that stored preference.
@@ -68,6 +72,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     setWorldItems([]);
     setFeedItems([]);
     void loadFeed(nextLevel);
+    setFeedLoaded(false);
     return () => {
       feedGate.current.invalidate();
       preferenceGate.current.invalidate();
@@ -80,6 +85,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     const isCurrent = feedGate.current.begin();
     setLoading(true);
     setLoadingMore(false);
+    setFeedError('');
     try {
       const response = await api.feed({ limit: 50, offset: 0, level: requestedLevel } as any);
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return false;
@@ -91,10 +97,11 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       setPosts(nativePosts);
       setWorldItems(Array.isArray(response.worldItems) ? response.worldItems : []);
       setFeedItems(normalizedItems);
+      setFeedLoaded(true);
       return true;
     } catch (error) {
       if (isCurrent() && currentAccountId.current === requestedAccountId) {
-        console.error(error);
+        setFeedError('Could not load this feed.');
         if (failureMessage) setPreferenceError(failureMessage);
       }
       return false;
@@ -163,6 +170,10 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!capabilities?.imageUploads.enabled) {
+      setComposerError(capabilities?.imageUploads.reason || 'Image availability could not be confirmed. Retry the capability check.');
+      return;
+    }
     const ext = file.name.split('.').pop()?.toLowerCase();
     if (['mp4', 'mov', 'webm', 'avi', 'mkv'].includes(ext || '')) { setComposerError('Direct video uploads are currently disabled.'); return; }
     if (!SUPPORTED_IMAGE_EXTENSIONS.includes(ext || '')) { setComposerError(IMAGE_UPLOAD_ERROR); if (fileInputRef.current) fileInputRef.current.value = ''; return; }
@@ -196,6 +207,10 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
 
   async function handlePost(e: React.FormEvent) {
     e.preventDefault();
+    if (youtubeUrl.trim() && !capabilities?.externalVideoEmbeds.enabled) {
+      setComposerError(capabilities?.externalVideoEmbeds.reason || 'YouTube embed availability could not be confirmed.');
+      return;
+    }
     if (partialPostId !== null) {
       await retryAttachments();
       return;
@@ -379,13 +394,20 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
         <form className="post-composer" onSubmit={handlePost}>
           <textarea className="input" aria-label="Post text" placeholder="What's on your mind?" value={content} onChange={e => { setContent(e.target.value); if (partialPostId === null) setSubmissionKey(null); }} rows={3} disabled={posting || partialPostId !== null} />
           {imagePreview && (<div className="image-preview-wrap"><img src={imagePreview} alt={imageAltText} className="image-preview" /><ImageDescription value={imageAltText} onChange={setImageAltText} disabled={posting} /><button type="button" className="btn btn-sm" disabled={posting} onClick={removeImage}>✕ Remove</button></div>)}
+          {capabilityState === 'error' && <p className="error-msg" role="alert">
+            Media availability could not be checked. Uploads and embeds remain unavailable until it succeeds.{' '}
+            <button type="button" className="btn-link" onClick={() => void retryCapabilities()}>Retry</button>
+          </p>}
+          {capabilityState === 'loaded' && !capabilities?.imageUploads.enabled && <p className="muted">{capabilities?.imageUploads.reason}</p>}
+          {capabilityState === 'loaded' && !capabilities?.externalVideoEmbeds.enabled && <p className="muted">{capabilities?.externalVideoEmbeds.reason}</p>}
           <div className="composer-actions">
-            <label className="composer-upload-btn">🖼 Image<input type="file" ref={fileInputRef} disabled={posting} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleFileSelect} style={{ width: 180, maxWidth: '100%' }} /></label>
-            <input className="input" aria-label="YouTube link (optional)" disabled={posting} placeholder="YouTube link (optional)" value={youtubeUrl} onChange={e => { setYoutubeUrl(e.target.value); setVideoAttachmentKey(null); if (partialPostId === null) setSubmissionKey(null); }} style={{ flex: 1 }} />
+            <label className="composer-upload-btn">🖼 Image<input type="file" ref={fileInputRef} disabled={posting || !capabilities?.imageUploads.enabled} accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" onChange={handleFileSelect} style={{ width: 180, maxWidth: '100%' }} /></label>
+            <input className="input" aria-label="YouTube link (optional)" disabled={posting || !capabilities?.externalVideoEmbeds.enabled} placeholder="YouTube link (optional)" value={youtubeUrl} onChange={e => { setYoutubeUrl(e.target.value); setVideoAttachmentKey(null); if (partialPostId === null) setSubmissionKey(null); }} style={{ flex: 1 }} />
             <button className="btn btn-primary" disabled={posting || (partialPostId === null && !content.trim() && !imageFile)}>
               {posting ? 'Working...' : partialPostId !== null ? 'Retry attachment' : 'Post'}
             </button>
           </div>
+          {youtubeUrl.trim() && !content.trim() && !imageFile && <p className="muted">Add post text or an image before attaching a YouTube link.</p>}
           {composerError && <p className="error-msg" role="alert">{composerError}</p>}
           {partialPostId !== null && (
             <button type="button" className="btn btn-sm btn-ghost" onClick={dismissFailedAttachments} disabled={posting}>
@@ -397,8 +419,13 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
         </form>
       )}
 
-      {loading ? <p className="muted">Loading...</p> :
-        level === 'world' ? (
+      {feedError && <div className="error-msg" role="alert">
+        {feedLoaded ? 'Refresh failed. Previously loaded items may be stale.' : feedError}{' '}
+        <button className="btn btn-sm" onClick={() => void loadFeed()}>Retry</button>
+      </div>}
+      {loading && feedLoaded && <p className="muted" role="status">Refreshing feed…</p>}
+      {loading && !feedLoaded ? <p className="muted">Loading...</p> :
+        !feedLoaded ? null : level === 'world' ? (
           <div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
               <button className="btn btn-ghost btn-sm" onClick={() => loadFeed()}>↻ Refresh Feed</button>

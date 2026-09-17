@@ -10,6 +10,9 @@ export default function GroupsPage({ user }: { user: any }) {
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
   const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [createError, setCreateError] = useState('');
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchGate = useRef(new RouteRequestGate());
@@ -20,6 +23,7 @@ export default function GroupsPage({ user }: { user: any }) {
 
   useEffect(() => {
     setGroups([]);
+    setLoaded(false);
     setSearch('');
     void loadGroups('');
     return () => {
@@ -37,11 +41,20 @@ export default function GroupsPage({ user }: { user: any }) {
   async function loadGroups(q = '') {
     const requestedAccountId = user?.id;
     const isCurrent = searchGate.current.begin();
+    setLoading(true);
+    setLoadError('');
     try {
       const response = await api.getGroups(q || undefined);
-      if (isCurrent() && currentAccountId.current === requestedAccountId) setGroups(response.groups);
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setGroups(response.groups);
+        setLoaded(true);
+        setLoading(false);
+      }
     } catch (e) {
-      if (isCurrent() && currentAccountId.current === requestedAccountId) console.error(e);
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setLoadError(loaded ? 'Could not refresh groups. Previously loaded results may be stale.' : 'Could not load groups.');
+        setLoading(false);
+      }
     }
   }
 
@@ -88,7 +101,11 @@ export default function GroupsPage({ user }: { user: any }) {
         onChange={e => handleSearchChange(e.target.value)}
       />
 
-      {groups.length === 0 ? (
+      {loadError && <div className="error-msg" role="alert">{loadError}{' '}<button className="btn btn-sm" onClick={() => void loadGroups(search)}>Retry</button></div>}
+      {loading && loaded && <p className="muted" role="status">Updating groups…</p>}
+      {loading && !loaded ? (
+        <p className="muted">Loading groups…</p>
+      ) : !loaded ? null : groups.length === 0 ? (
         <p className="muted groups-empty">{search ? `No groups matching "${search}".` : 'No groups yet. Be the first to create one!'}</p>
       ) : (
         <div className="groups-list">

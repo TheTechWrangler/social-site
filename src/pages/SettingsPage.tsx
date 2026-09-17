@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
+import { RouteRequestGate } from '../routeLoadState';
 
 const WORLD_HOME_OPTIONS = [
   { key: 'world_home_off', label: 'Off' },
@@ -28,13 +29,28 @@ export default function SettingsPage({
   const [blocked, setBlocked] = useState<any[]>([]);
   const [muted, setMuted] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [gameDiscovery, setGameDiscovery] = useState(gameDiscoveryValue(user));
   const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
   const [dmPrivacy, setDmPrivacy] = useState(user?.dm_privacy || 'friends_of_friends');
+  const [preferencePending, setPreferencePending] = useState<string | null>(null);
+  const [preferenceError, setPreferenceError] = useState('');
+  const preferenceLock = useRef(false);
+  const preferenceGate = useRef(new RouteRequestGate());
+  const currentAccountId = useRef(user?.id);
   const [relationshipError, setRelationshipError] = useState('');
   const [pendingRelationship, setPendingRelationship] = useState<string | null>(null);
+  currentAccountId.current = user?.id;
 
   useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    preferenceGate.current.invalidate();
+    preferenceLock.current = false;
+    setPreferencePending(null);
+    setPreferenceError('');
+    return () => preferenceGate.current.invalidate();
+  }, [user?.id]);
   useEffect(() => {
     setGameDiscovery(gameDiscoveryValue(user));
     setWorldHomeInjection(user?.world_home_injection || 'world_home_few');
@@ -42,6 +58,8 @@ export default function SettingsPage({
   }, [user]);
 
   async function loadData() {
+    setLoading(true);
+    setLoadError('');
     try {
       const [br, mr] = await Promise.all([
         api.get<any>('/users/blocked/list'),
@@ -49,8 +67,12 @@ export default function SettingsPage({
       ]);
       setBlocked(br.blocked || []);
       setMuted(mr.muted || []);
-    } catch (e) { console.error(e); }
-    setLoading(false);
+      setDataLoaded(true);
+    } catch {
+      setLoadError(dataLoaded ? 'Could not refresh blocked and muted lists. Previously loaded information may be stale.' : 'Could not load blocked and muted lists.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function unblock(id: number) {
@@ -84,51 +106,93 @@ export default function SettingsPage({
   }
 
   async function toggleGameDiscovery() {
+    if (preferenceLock.current) return;
     const newVal = !gameDiscovery;
-    setGameDiscovery(newVal);
+    const requestedAccountId = user?.id;
+    const isCurrent = preferenceGate.current.begin();
+    preferenceLock.current = true;
+    setPreferencePending('gameDiscovery');
+    setPreferenceError('');
     try {
       const r = await api.updateProfile({ gameDiscoveryEnabled: newVal });
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       onUserChange(r.authUser);
       setGameDiscovery(gameDiscoveryValue(r.authUser));
-    } catch (e) {
-      console.error(e);
-      setGameDiscovery(!newVal);
+      setWorldHomeInjection(r.authUser.world_home_injection || worldHomeInjection);
+      setDmPrivacy(r.authUser.dm_privacy || dmPrivacy);
+    } catch (e: any) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setPreferenceError('Could not save Game Discovery. The previous server-confirmed setting remains active.');
+      }
+    } finally {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        preferenceLock.current = false;
+        setPreferencePending(null);
+      }
     }
   }
 
   async function updateWorldHomeInjection(value: string) {
-    const previous = worldHomeInjection;
-    setWorldHomeInjection(value);
+    if (preferenceLock.current || value === worldHomeInjection) return;
+    const requestedAccountId = user?.id;
+    const isCurrent = preferenceGate.current.begin();
+    preferenceLock.current = true;
+    setPreferencePending('worldHomeInjection');
+    setPreferenceError('');
     try {
       const r = await api.updateProfile({ worldHomeInjection: value });
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       onUserChange(r.authUser);
       setWorldHomeInjection(r.authUser.world_home_injection);
-    } catch (e) {
-      console.error(e);
-      setWorldHomeInjection(previous);
+      setGameDiscovery(gameDiscoveryValue(r.authUser));
+      setDmPrivacy(r.authUser.dm_privacy || dmPrivacy);
+    } catch (e: any) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setPreferenceError('Could not save the World preference. The previous server-confirmed setting remains active.');
+      }
+    } finally {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        preferenceLock.current = false;
+        setPreferencePending(null);
+      }
     }
   }
 
   async function updateDmPrivacy(value: string) {
-    const previous = dmPrivacy;
-    setDmPrivacy(value);
+    if (preferenceLock.current || value === dmPrivacy) return;
+    const requestedAccountId = user?.id;
+    const isCurrent = preferenceGate.current.begin();
+    preferenceLock.current = true;
+    setPreferencePending('dmPrivacy');
+    setPreferenceError('');
     try {
       const r = await api.updateProfile({ dmPrivacy: value });
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       onUserChange(r.authUser);
       setDmPrivacy(r.authUser.dm_privacy);
-    } catch (e) {
-      console.error(e);
-      setDmPrivacy(previous);
+      setGameDiscovery(gameDiscoveryValue(r.authUser));
+      setWorldHomeInjection(r.authUser.world_home_injection || worldHomeInjection);
+    } catch (e: any) {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setPreferenceError('Could not save message privacy. The previous server-confirmed setting remains active.');
+      }
+    } finally {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        preferenceLock.current = false;
+        setPreferencePending(null);
+      }
     }
   }
-
-  if (loading) return <div className="loading">Loading...</div>;
 
   return (
     <div className="settings-page">
       <h2>⚙ Settings</h2>
       {relationshipError && <p className="error-msg" role="alert">{relationshipError}</p>}
 
+      {preferenceError && <p className="error-msg" role="alert">{preferenceError}</p>}
+      {preferencePending && <p className="muted" role="status">Saving privacy preference…</p>}
+      {loadError && <div className="error-msg" role="alert">{loadError}{' '}<button className="btn btn-sm" onClick={() => void loadData()}>Retry</button></div>}
+      {loading && dataLoaded && <p className="muted" role="status">Refreshing relationship settings…</p>}
       <div className="settings-section">
         <h3>Account</h3>
         <div className="settings-card">
@@ -146,7 +210,7 @@ export default function SettingsPage({
             <span>Mix approved RSS/podcast items into normal Home feeds</span>
             <div className="feed-exposure">
               {WORLD_HOME_OPTIONS.map(opt => (
-                <button key={opt.key} className={`btn btn-sm ${worldHomeInjection === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => updateWorldHomeInjection(opt.key)}>
+                <button key={opt.key} disabled={preferencePending !== null} className={`btn btn-sm ${worldHomeInjection === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => updateWorldHomeInjection(opt.key)}>
                   {opt.label}
                 </button>
               ))}
@@ -163,7 +227,7 @@ export default function SettingsPage({
             <span>Who can message me?</span>
             <div className="feed-exposure">
               {DM_PRIVACY_OPTIONS.map(opt => (
-                <button key={opt.key} className={`btn btn-sm ${dmPrivacy === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => updateDmPrivacy(opt.key)}>
+                <button key={opt.key} disabled={preferencePending !== null} className={`btn btn-sm ${dmPrivacy === opt.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => updateDmPrivacy(opt.key)}>
                   {opt.label}
                 </button>
               ))}
@@ -178,7 +242,7 @@ export default function SettingsPage({
         <div className="settings-card">
           <div className="settings-row">
             <span>Let people who play the same games find me</span>
-            <button className={`btn btn-sm ${gameDiscovery ? 'btn-primary' : 'btn-ghost'}`} onClick={toggleGameDiscovery}>
+            <button disabled={preferencePending !== null} className={`btn btn-sm ${gameDiscovery ? 'btn-primary' : 'btn-ghost'}`} onClick={toggleGameDiscovery}>
               {gameDiscovery ? 'ON' : 'OFF'}
             </button>
           </div>
@@ -187,42 +251,50 @@ export default function SettingsPage({
       </div>
 
       <div className="settings-section">
-        <h3>Blocked Users ({blocked.length})</h3>
-        {blocked.length === 0 ? (
-          <p className="muted">You have not blocked anyone.</p>
-        ) : (
-          <div className="settings-list">
-            {blocked.map((u: any) => (
-              <div key={u.id} className="settings-row-card">
-                <span className="avatar-placeholder" style={{ width: 32, height: 32, fontSize: '0.9rem' }}>{u.display_name?.[0] || '?'}</span>
-                <div className="settings-row-info">
-                  <strong>{u.display_name}</strong>
-                  <span className="muted">@{u.username}</span>
-                </div>
-                <button className="btn btn-sm" onClick={() => unblock(u.id)} disabled={pendingRelationship === `block:${u.id}`}>Unblock</button>
+        <h3>Blocked Users{dataLoaded ? ` (${blocked.length})` : ''}</h3>
+        {loading && !dataLoaded ? <p className="muted">Loading blocked users…</p> : !dataLoaded ? null : (
+          <>
+            {blocked.length === 0 ? (
+              <p className="muted">You have not blocked anyone.</p>
+            ) : (
+              <div className="settings-list">
+                {blocked.map((u: any) => (
+                  <div key={u.id} className="settings-row-card">
+                    <span className="avatar-placeholder" style={{ width: 32, height: 32, fontSize: '0.9rem' }}>{u.display_name?.[0] || '?'}</span>
+                    <div className="settings-row-info">
+                      <strong>{u.display_name}</strong>
+                      <span className="muted">@{u.username}</span>
+                    </div>
+                    <button className="btn btn-sm" onClick={() => unblock(u.id)} disabled={pendingRelationship === `block:${u.id}`}>Unblock</button>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )}
+          </>
         )}
       </div>
 
       <div className="settings-section">
-        <h3>Muted Users ({muted.length})</h3>
-        {muted.length === 0 ? (
-          <p className="muted">You have not muted anyone.</p>
-        ) : (
-          <div className="settings-list">
-            {muted.map((u: any) => (
-              <div key={u.id} className="settings-row-card">
-                <span className="avatar-placeholder" style={{ width: 32, height: 32, fontSize: '0.9rem' }}>{u.display_name?.[0] || '?'}</span>
-                <div className="settings-row-info">
-                  <strong>{u.display_name}</strong>
-                  <span className="muted">@{u.username}</span>
-                </div>
-                <button className="btn btn-sm" onClick={() => unmute(u.id)} disabled={pendingRelationship === `mute:${u.id}`}>Unmute</button>
+        <h3>Muted Users{dataLoaded ? ` (${muted.length})` : ''}</h3>
+        {loading && !dataLoaded ? <p className="muted">Loading muted users…</p> : !dataLoaded ? null : (
+          <>
+            {muted.length === 0 ? (
+              <p className="muted">You have not muted anyone.</p>
+            ) : (
+              <div className="settings-list">
+                {muted.map((u: any) => (
+                  <div key={u.id} className="settings-row-card">
+                    <span className="avatar-placeholder" style={{ width: 32, height: 32, fontSize: '0.9rem' }}>{u.display_name?.[0] || '?'}</span>
+                    <div className="settings-row-info">
+                      <strong>{u.display_name}</strong>
+                      <span className="muted">@{u.username}</span>
+                    </div>
+                    <button className="btn btn-sm" onClick={() => unmute(u.id)} disabled={pendingRelationship === `mute:${u.id}`}>Unmute</button>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            )}
+          </>
         )}
       </div>
     </div>

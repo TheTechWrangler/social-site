@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { api, type NotificationDto } from '../api/client';
+import { RouteRequestGate } from '../routeLoadState';
 
 interface Props {
   onMarkAllRead: () => void;
@@ -35,17 +36,34 @@ function notifDest(n: NotificationDto): string {
 }
 
 export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Props) {
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const gate = useRef(new RouteRequestGate());
   const [notifs, setNotifs] = useState<NotificationDto[]>([]);
   const [marking, setMarking] = useState(false);
   const [markError, setMarkError] = useState('');
 
   const [cursor, setCursor] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  async function loadNotifications() {
+    const isCurrent = gate.current.begin();
+    setLoading(true);
+    setLoadError('');
+    try {
+      const result = await api.getNotifications();
+      if (!isCurrent()) return;
+      setNotifs(result.notifications);
+      setCursor(result.nextCursor ?? null);
+      setLoaded(true);
+    } catch {
+      if (isCurrent()) setLoadError(loaded ? 'Could not refresh notifications. Previously loaded notifications may be stale.' : 'Could not load notifications.');
+    } finally {
+      if (isCurrent()) setLoading(false);
+    }
+  }
   useEffect(() => {
-    let current = true;
-    api.getNotifications().then(r => { if (current) { setNotifs(r.notifications); setCursor(r.nextCursor ?? null); } })
-      .catch(() => { if (current) setMarkError('Could not load notifications.'); });
-    return () => { current = false; };
+    void loadNotifications();
+    return () => gate.current.invalidate();
   }, []);
   async function loadMore() {
     if (!cursor || loading || marking) return;
@@ -53,6 +71,7 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
     try {
       const result = await api.getNotifications(cursor);
       setNotifs(previous => [...previous, ...result.notifications.filter(n => !previous.some(known => known.id === n.id))]);
+    setMarkError('');
       setCursor(result.nextCursor ?? null);
     } catch { setMarkError('Could not load notifications.'); }
     finally { setLoading(false); }
@@ -95,11 +114,13 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
           </button>
         )}
       </div>
-      {cursor && <button className="btn btn-ghost" disabled={loading || marking} onClick={() => void loadMore()}>Load more notifications</button>}
+      {cursor && <button className="btn btn-ghost" disabled={loading || marking} onClick={() => void loadMore()}>{loading ? 'Loading more notifications…' : 'Load more notifications'}</button>}
       {markError && <p className="error-msg" role="alert">{markError}</p>}
-      {notifs.length === 0 ? (
+      {loadError && <div className="error-msg" role="alert">{loadError}{' '}<button className="btn btn-sm" onClick={() => void loadNotifications()}>Retry</button></div>}
+      {loading && !loaded && <p className="muted">Loading notifications…</p>}
+      {loaded && notifs.length === 0 ? (
         <p className="muted">No notifications yet.</p>
-      ) : (
+      ) : loaded ? (
         notifs.map(n => (
           <Link
             key={n.id}
@@ -112,7 +133,7 @@ export default function NotificationsPage({ onMarkAllRead, onMarkOneRead }: Prop
             <span className="muted time">{new Date(n.created_at + 'Z').toLocaleString()}</span>
           </Link>
         ))
-      )}
+      ) : null}
     </div>
   );
 }
