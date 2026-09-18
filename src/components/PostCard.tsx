@@ -5,6 +5,7 @@ import ImageDescription from './ImageDescription';
 import { api } from '../api/client';
 import { RouteRequestGate } from '../routeLoadState';
 import type { PostEntityMutation } from '../postEntityState';
+import { parseYouTubeVideoLocator, youtubeEmbedUrl, youtubeWatchUrl } from '../../shared/youtube';
 import {
   EMPTY_POST_EDIT,
   beginPostEdit,
@@ -459,11 +460,16 @@ export default function PostCard({ post, currentUser, onMutation }: { post: any;
                 onClick={() => setDescriptionDraft({ id: img.id, value: img.alt_text ?? '' })}>Edit image description</button>}
             </div>
           ))}
-          {videos.map((vid: any) => (
-            <div key={vid.id} className="post-media-wrap post-video-wrap">
-              <iframe src={vid.url} allowFullScreen loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" className="post-video-embed" title="YouTube video" />
-            </div>
-          ))}
+          {videos.map((vid: any) => {
+            const videoId = parseYouTubeVideoLocator(vid.url);
+            if (!videoId) return null;
+            return <div key={vid.id} className="post-media-wrap">
+              <div className="post-video-wrap">
+                <iframe src={youtubeEmbedUrl(videoId)} referrerPolicy="strict-origin-when-cross-origin" allowFullScreen loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" className="post-video-embed" title="YouTube video" />
+              </div>
+              <a href={youtubeWatchUrl(videoId)} target="_blank" rel="noopener noreferrer" className="world-link">Watch on YouTube</a>
+            </div>;
+          })}
           {mediaLoading && <p className="muted">Loading attached media…</p>}
           {mediaError && <p className="error-msg" role="alert">{mediaError}{' '}
             <button className="btn btn-sm" onClick={() => void loadMedia(post.id)}>Retry</button>

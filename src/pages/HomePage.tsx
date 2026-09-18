@@ -9,6 +9,7 @@ import { useMediaCapabilities } from '../hooks/useMediaCapabilities';
 import { RouteRequestGate } from '../routeLoadState';
 import { Link } from 'react-router-dom';
 import type { PersonalExternalFeedStatus } from '../../shared/externalContent';
+import { parseYouTubeVideoLocator, youtubeEmbedUrl } from '../../shared/youtube';
 
 const LEVELS = [
   { key: 'everyone', label: 'Community', help: 'All public posts from verified members. Mute, block, or follow to shape what you see.' },
@@ -231,15 +232,8 @@ export default function HomePage({ user, onUserChange, refreshToken = 0 }: { use
   }
 
   function parseYoutubeUrl(input: string): string | null {
-    const t = input.trim();
-    const patterns = [
-      /(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
-      /(?:https?:\/\/)?(?:www\.)?youtu\.be\/([a-zA-Z0-9_-]{11})/,
-      /(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
-      /(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
-    ];
-    for (const p of patterns) { const m = t.match(p); if (m) return `https://www.youtube.com/embed/${m[1]}`; }
-    return null;
+    const videoId = parseYouTubeVideoLocator(input);
+    return videoId ? youtubeEmbedUrl(videoId) : null;
   }
   const youtubePreview = youtubeUrl.trim() ? parseYoutubeUrl(youtubeUrl) : null;
   const isYoutubeInvalid = youtubeUrl.trim() && !youtubePreview;
@@ -469,7 +463,7 @@ export default function HomePage({ user, onUserChange, refreshToken = 0 }: { use
             </button>
           )}
           {isYoutubeInvalid && <p className="muted" style={{ fontSize: '0.8rem', marginTop: 4 }}>Paste a valid YouTube link to preview it.</p>}
-          {youtubePreview && (<div className="youtube-preview"><div className="youtube-preview-header"><span>🎬 YouTube preview</span><button type="button" className="btn btn-sm btn-ghost" onClick={() => { setYoutubeUrl(''); setVideoAttachmentKey(null); if (partialPostId === null) setSubmissionKey(null); }}>✕ Remove</button></div><div className="post-video-wrap" style={{ maxWidth: 400 }}><iframe src={youtubePreview} allowFullScreen loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" className="post-video-embed" title="YouTube preview" /></div></div>)}
+          {youtubePreview && (<div className="youtube-preview"><div className="youtube-preview-header"><span>🎬 YouTube preview</span><button type="button" className="btn btn-sm btn-ghost" onClick={() => { setYoutubeUrl(''); setVideoAttachmentKey(null); if (partialPostId === null) setSubmissionKey(null); }}>✕ Remove</button></div><div className="post-video-wrap" style={{ maxWidth: 400 }}><iframe src={youtubePreview} referrerPolicy="strict-origin-when-cross-origin" allowFullScreen loading="lazy" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" className="post-video-embed" title="YouTube preview" /></div></div>)}
         </form>
       )}
 

@@ -112,6 +112,9 @@ if (trustProxy) app.set('trust proxy', trustProxy);
 //   - Protected /uploads files (served same-origin)
 //   - Inline styles (React renders style={} as style attributes — requires unsafe-inline)
 app.use(helmet({
+  // YouTube requires origin-level client identification for embedded playback.
+  // This sends only the application origin cross-site, never a page path/query.
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],

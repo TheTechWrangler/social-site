@@ -9,6 +9,24 @@ export function isYouTubeVideoId(value: unknown): boolean {
   return typeof value === 'string' && YOUTUBE_VIDEO_ID_PATTERN.test(value);
 }
 
+/** Extracts identity only; callers must construct the canonical embed/watch URL. */
+export function parseYouTubeVideoLocator(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length > 2048) return null;
+  let url: URL;
+  try { url = new URL(value.trim()); } catch { return null; }
+  const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
+
+  let candidate: string | null = null;
+  if (host === 'youtu.be') {
+    candidate = url.pathname.match(/^\/([A-Za-z0-9_-]{11})\/?$/)?.[1] ?? null;
+  } else if (['youtube.com', 'www.youtube.com', 'www.youtube-nocookie.com'].includes(host)) {
+    if (url.pathname === '/watch') candidate = url.searchParams.get('v');
+    else candidate = url.pathname.match(/^\/(?:shorts|embed)\/([A-Za-z0-9_-]{11})\/?$/)?.[1] ?? null;
+  }
+  return isYouTubeVideoId(candidate) ? candidate : null;
+}
+
 export function parseYouTubeChannelLocator(value: string): string | null {
   const locator = value.trim();
   if (isYouTubeChannelId(locator)) return locator;
