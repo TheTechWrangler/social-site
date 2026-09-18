@@ -36,14 +36,28 @@ const CHANNEL = `UC${'a'.repeat(22)}`;
 const SECOND_CHANNEL = `UC${'b'.repeat(22)}`;
 const VIDEO = 'abcDEF_1234';
 
-function atom(channel = CHANNEL, video = VIDEO): string {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-    <feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/">
-      <id>yt:channel:${channel}</id><yt:channelId>${channel}</yt:channelId><title>Safe Channel</title>
-      <entry><id>yt:video:${video}</id><yt:videoId>${video}</yt:videoId><yt:channelId>${channel}</yt:channelId>
+function atom(
+  channel = CHANNEL,
+  video = VIDEO,
+  options: {
+    feedChannelId?: string | null;
+    itemChannelId?: string;
+    includeEntry?: boolean;
+  } = {},
+): string {
+  const feedChannelId = options.feedChannelId === undefined ? channel : options.feedChannelId;
+  const itemChannelId = options.itemChannelId ?? channel;
+  const entry = options.includeEntry === false ? '' : `
+      <entry><id>yt:video:${video}</id><yt:videoId>${video}</yt:videoId><yt:channelId>${itemChannelId}</yt:channelId>
         <title>Safe Video</title><published>2026-09-16T12:00:00Z</published><updated>2026-09-16T13:00:00Z</updated>
         <media:group><media:description>Safe &amp; useful &lt;b&gt;description&lt;/b&gt;</media:description></media:group>
-      </entry>
+      </entry>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015" xmlns:media="http://search.yahoo.com/mrss/">
+      <link rel="self" href="http://www.youtube.com/feeds/videos.xml?channel_id=${channel}"/>
+      <id>yt:channel:${channel.slice(2)}</id>${feedChannelId === null ? '' : `<yt:channelId>${feedChannelId}</yt:channelId>`}<title>Safe Channel</title>
+      <link rel="alternate" href="https://www.youtube.com/channel/${channel}"/>
+      <author><name>Safe Channel</name><uri>https://www.youtube.com/channel/${channel}</uri></author>${entry}
     </feed>`;
 }
 
@@ -107,7 +121,7 @@ test('YouTube destination policy is exact and remains stricter than the general 
   ]) assert.throws(() => validateYouTubeFeedDestination(new URL(value), CHANNEL), /not approved/);
 });
 
-test('Atom parsing validates channel and video identity, rejects malformed/mismatched feeds, and bounds workload', async () => {
+test('Atom parsing preserves a full feed channel ID and validates normalized entries', async () => {
   const parsed = await parseYouTubeAtom(atom(), CHANNEL);
   assert.deepEqual(parsed, {
     channelId: CHANNEL,
@@ -117,7 +131,40 @@ test('Atom parsing validates channel and video identity, rejects malformed/misma
       publishedAt: '2026-09-16T12:00:00.000Z', providerUpdatedAt: '2026-09-16T13:00:00.000Z',
     }],
   });
+});
+
+test('Atom parsing accepts YouTube current feed-level suffix only when its canonical channel link corroborates the full ID', async () => {
+  const parsed = await parseYouTubeAtom(atom(CHANNEL, VIDEO, { feedChannelId: CHANNEL.slice(2) }), CHANNEL);
+  assert.equal(parsed.channelId, CHANNEL);
+  await assert.rejects(
+    parseYouTubeAtom(atom(SECOND_CHANNEL, VIDEO, { feedChannelId: CHANNEL.slice(2) }), SECOND_CHANNEL),
+    /identity/,
+  );
+});
+
+test('Atom parsing rejects mismatched, missing, and malformed feed-level channel identity', async () => {
   await assert.rejects(parseYouTubeAtom(atom(SECOND_CHANNEL), CHANNEL), /identity/);
+  await assert.rejects(parseYouTubeAtom(atom(CHANNEL, VIDEO, { feedChannelId: null }), CHANNEL), /identity/);
+  await assert.rejects(parseYouTubeAtom(atom(CHANNEL, VIDEO, { feedChannelId: 'not-a-channel' }), CHANNEL), /identity/);
+});
+
+test('Atom parsing validates an empty feed without relying on an entry identity', async () => {
+  assert.deepEqual(await parseYouTubeAtom(atom(CHANNEL, VIDEO, {
+    feedChannelId: CHANNEL.slice(2),
+    includeEntry: false,
+  }), CHANNEL), {
+    channelId: CHANNEL,
+    channelName: 'Safe Channel',
+    entries: [],
+  });
+});
+
+test('Atom parsing independently rejects item channel mismatch and invalid video identity', async () => {
+  await assert.rejects(parseYouTubeAtom(atom(CHANNEL, VIDEO, { itemChannelId: SECOND_CHANNEL }), CHANNEL), /entry identity/);
+  await assert.rejects(parseYouTubeAtom(atom(CHANNEL, 'invalid'), CHANNEL), /entry identity/);
+});
+
+test('Atom parsing rejects malformed XML, unsafe declarations, and excessive entry counts', async () => {
   await assert.rejects(parseYouTubeAtom('<feed>', CHANNEL), /valid Atom/);
   await assert.rejects(parseYouTubeAtom('<!DOCTYPE feed><feed/>', CHANNEL), /limits/);
   const tooMany = atom().replace('</feed>', Array.from({ length: 500 }, (_, index) => `<entry><yt:videoId>${String(index).padStart(11, '0')}</yt:videoId><yt:channelId>${CHANNEL}</yt:channelId><title>x</title><published>2026-01-01</published></entry>`).join('') + '</feed>');

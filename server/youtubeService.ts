@@ -84,6 +84,21 @@ function normalizedTimestamp(value: unknown, required: boolean): string | null {
   return new Date(time).toISOString();
 }
 
+function feedChannelId(feed: any): string | null {
+  const declared = feed?.youtubeChannelId;
+  if (isYouTubeChannelId(declared)) return declared;
+
+  // YouTube currently emits the 22-character channel suffix in the feed-level
+  // yt:channelId while retaining the full stable ID in its canonical channel
+  // link. Never manufacture the missing prefix: recover a separately validated
+  // full ID from that link, then require the declared suffix to corroborate it.
+  const canonical = typeof feed?.link === 'string'
+    ? parseYouTubeChannelLocator(feed.link)
+    : null;
+  if (!canonical || typeof declared !== 'string' || declared !== canonical.slice(2)) return null;
+  return canonical;
+}
+
 export function validateYouTubeFeedDestination(url: URL, expectedChannelId: string): void {
   const host = url.hostname.toLowerCase().replace(/\.$/, '');
   if (!isYouTubeChannelId(expectedChannelId)
@@ -118,7 +133,8 @@ export async function parseYouTubeAtom(body: string, expectedChannelId: string):
     throw new RssFetchError('YouTube response is not valid Atom XML.');
   }
 
-  if (!isYouTubeChannelId(expectedChannelId) || feed.youtubeChannelId !== expectedChannelId) {
+  const channelId = feedChannelId(feed);
+  if (!isYouTubeChannelId(expectedChannelId) || channelId !== expectedChannelId) {
     throw new RssFetchError('YouTube feed identity does not match the configured channel.');
   }
   if (!Array.isArray(feed.items) || feed.items.length > 500) {
@@ -139,7 +155,7 @@ export async function parseYouTubeAtom(body: string, expectedChannelId: string):
       providerUpdatedAt: normalizedTimestamp(item.providerUpdatedAt, false),
     };
   });
-  return { channelId: expectedChannelId, channelName, entries };
+  return { channelId, channelName, entries };
 }
 
 export async function downloadYouTubeChannelFeed(
