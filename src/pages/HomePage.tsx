@@ -14,7 +14,7 @@ const LEVELS = [
   { key: 'everyone', label: 'Community', help: 'All public posts from verified members. Mute, block, or follow to shape what you see.' },
   { key: 'extended', label: 'Friends of Friends', help: 'Your circle plus your extended circle. No random public posts.' },
   { key: 'friends', label: 'Just Friends', help: 'Only your posts and people you follow.' },
-  { key: 'world', label: 'My External Sources', help: 'Articles and podcasts from approved sources you choose. External content stays clearly labeled.' },
+  { key: 'world', label: 'My External Sources', help: 'Articles, podcasts, and videos from approved sources you choose. External content stays clearly labeled.' },
 ];
 const WORLD_HOME_OPTIONS = [
   { key: 'world_home_off', label: 'Off', help: 'Only native posts appear in this feed.' },
@@ -23,12 +23,19 @@ const WORLD_HOME_OPTIONS = [
 ];
 const IMAGE_UPLOAD_ERROR = 'SVG uploads are not supported. Please use JPG, PNG, GIF, or WebP.';
 const SUPPORTED_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+const ITEM_TYPES = [
+  { key: 'all', label: 'All' },
+  { key: 'article', label: 'Articles' },
+  { key: 'podcast', label: 'Podcasts' },
+  { key: 'video', label: 'Videos' },
+] as const;
+type ItemType = typeof ITEM_TYPES[number]['key'];
 
-export default function HomePage({ user, onUserChange }: { user: any; onUserChange: (user: any) => void }) {
+export default function HomePage({ user, onUserChange, refreshToken = 0 }: { user: any; onUserChange: (user: any) => void; refreshToken?: number }) {
   const [posts, setPosts] = useState<any[]>([]);
   const [worldItems, setWorldItems] = useState<any[]>([]);
   const [feedItems, setFeedItems] = useState<any[]>([]);
-  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
@@ -46,6 +53,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   // Existing users who previously picked a level keep that stored preference.
   const initialLevel = ['everyone', 'extended', 'friends', 'world'].includes(user?.feed_exposure) ? user.feed_exposure : 'everyone';
   const [level, setLevel] = useState(initialLevel);
+  const [itemType, setItemType] = useState<ItemType>('all');
   const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
   const [imageAltText, setImageAltText] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -62,6 +70,9 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
   const feedGate = useRef(new RouteRequestGate());
   const preferenceGate = useRef(new RouteRequestGate());
   const currentAccountId = useRef(user?.id);
+  const feedRequestInFlight = useRef(false);
+  const loadMoreInFlight = useRef(false);
+  const lastRefreshToken = useRef(refreshToken);
   currentAccountId.current = user?.id;
   const isVerified = user?.isVerified ?? user?.is_verified;
 
@@ -74,7 +85,8 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     setPosts([]);
     setWorldItems([]);
     setFeedItems([]);
-    void loadFeed(nextLevel);
+    setItemType('all');
+    void loadFeed(nextLevel, undefined, 'all');
     setFeedLoaded(false);
     return () => {
       feedGate.current.invalidate();
@@ -82,21 +94,30 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
     };
   }, [user?.id]);
 
-  async function loadFeed(lv?: string, failureMessage?: string): Promise<boolean> {
+  useEffect(() => {
+    if (refreshToken === lastRefreshToken.current) return;
+    lastRefreshToken.current = refreshToken;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (!feedRequestInFlight.current) void loadFeed(level, undefined, itemType);
+  }, [refreshToken]);
+
+  async function loadFeed(lv?: string, failureMessage?: string, type?: ItemType): Promise<boolean> {
     const requestedAccountId = user?.id;
     const requestedLevel = lv || level;
+    const requestedType = requestedLevel === 'world' ? (type || itemType) : 'all';
     const isCurrent = feedGate.current.begin();
+    feedRequestInFlight.current = true;
     setLoading(true);
     setLoadingMore(false);
     setFeedError('');
     try {
-      const response = await api.feed({ limit: 50, offset: 0, level: requestedLevel } as any);
+      const response = await api.feed({ limit: 50, level: requestedLevel, itemType: requestedType });
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return false;
       const nativePosts = Array.isArray(response.posts) ? response.posts : [];
       const normalizedItems = Array.isArray(response.items)
         ? response.items
         : nativePosts.map((post: any) => ({ ...post, type: post.type || 'post' }));
-      setNextOffset(response.pagination?.nextOffset ?? null);
+      setNextCursor(response.pagination?.nextCursor ?? null);
       setPosts(nativePosts);
       setWorldItems(Array.isArray(response.worldItems) ? response.worldItems : []);
       setPersonalExternalFeedStatus(response.personalExternalFeedStatus ?? 'ready');
@@ -110,23 +131,36 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       }
       return false;
     } finally {
-      if (isCurrent() && currentAccountId.current === requestedAccountId) setLoading(false);
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setLoading(false);
+        feedRequestInFlight.current = false;
+      }
     }
   }
 
   async function loadMoreFeed() {
-    if (nextOffset === null || loadingMore) return;
+    if (nextCursor === null || loadMoreInFlight.current) return;
     const isCurrent = feedGate.current.capture();
+    loadMoreInFlight.current = true;
     setLoadingMore(true);
     try {
-      const response = await api.feed({ limit: 50, offset: nextOffset, level });
+      const response = await api.feed({ limit: 50, cursor: nextCursor, level, itemType: level === 'world' ? itemType : 'all' });
       if (!isCurrent()) return;
       setPosts(previous => [...previous, ...response.posts.filter(post => !previous.some(p => p.id === post.id))]);
       setFeedItems(previous => [...previous, ...(response.items || response.posts).filter(post => !previous.some(p => p.id === post.id))]);
       if (level === 'world') setWorldItems(previous => [...previous, ...(response.worldItems || []).filter(item => !previous.some(p => p.id === item.id))]);
-      setNextOffset(response.pagination?.nextOffset ?? null);
+      setNextCursor(response.pagination?.nextCursor ?? null);
     } catch { if (isCurrent()) setPreferenceError('Could not load the next feed page.'); }
-    finally { if (isCurrent()) setLoadingMore(false); }
+    finally {
+      loadMoreInFlight.current = false;
+      if (isCurrent()) setLoadingMore(false);
+    }
+  }
+
+  function handleItemTypeChange(type: ItemType) {
+    if (type === itemType || loading) return;
+    setItemType(type);
+    void loadFeed('world', undefined, type);
   }
 
   async function handleLevelChange(lv: string) {
@@ -140,7 +174,8 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
       const updated = await api.updateProfile({ feedExposure: lv });
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       onUserChange(updated.authUser);
-      await loadFeed(lv, 'Feed preference was saved, but the feed could not be refreshed.');
+      if (lv !== 'world') setItemType('all');
+      await loadFeed(lv, 'Feed preference was saved, but the feed could not be refreshed.', lv === 'world' ? itemType : 'all');
     } catch (error: any) {
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       console.error(error);
@@ -390,6 +425,14 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
           ))}
         </div>
         <p className="muted" style={{ fontSize: '0.78rem', marginTop: 4 }}>{currentLevel.help}</p>
+        {level === 'world' && <div className="world-type-control" aria-label="External feed type">
+          <div className="feed-exposure">
+            {ITEM_TYPES.map(type => <button key={type.key} aria-pressed={itemType === type.key} className={`btn btn-sm ${itemType === type.key ? 'btn-primary' : 'btn-ghost'}`} onClick={() => handleItemTypeChange(type.key)} disabled={loading}>{type.label}</button>)}
+          </div>
+          <p className="muted" style={{ fontSize: '0.78rem', marginTop: 4 }}>
+            {itemType === 'video' ? 'Videos shows subscribed video sources even when Show videos in feed is off.' : 'This filter is temporary and does not change your subscriptions.'}
+          </p>
+        </div>}
         <div className="world-home-control">
           <span className="world-home-label">World Feed on Home</span>
           <div className="feed-exposure">
@@ -491,7 +534,7 @@ export default function HomePage({ user, onUserChange }: { user: any; onUserChan
           </div>
         )
       }
-      {!loading && nextOffset !== null && <button className="btn btn-ghost" disabled={loadingMore} onClick={() => void loadMoreFeed()}>{level === 'world' ? 'Load more World items' : 'Load more posts'}</button>}
+      {!loading && nextCursor !== null && <button className="btn btn-ghost" disabled={loadingMore} onClick={() => void loadMoreFeed()}>{loadingMore ? 'Loading…' : 'Load more'}</button>}
       {!loading && level !== 'world' && worldItems.length > 0 && (
         <section aria-label="External source items"><h3>From your external sources</h3>
           <p className="muted">Subscribed source items are kept separate from your paginated posts.</p>

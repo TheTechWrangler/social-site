@@ -1,6 +1,7 @@
-import { feedTimeSql } from './feedTime.js';
+import { feedTimeSql, normalizedFeedTime } from './feedTime.js';
 import { getDb } from './database.js';
 import { boundedInteger } from './pagination.js';
+import type { FeedCursorKey } from './feedCursor.js';
 import { notMutedByViewerSql, userVisibilitySql } from './visibility.js';
 import type {
   ExternalSourceCatalogDto,
@@ -144,6 +145,8 @@ export interface ExternalFeedParams {
   itemType?: string;
   limit?: number;
   offset?: number;
+  cursor?: FeedCursorKey;
+  excludeVideos?: boolean;
   userId?: number;
 }
 
@@ -167,6 +170,8 @@ export function getExternalFeed(params: ExternalFeedParams) {
   if (params.category) { where += ' AND es.category = ?'; whereValues.push(params.category); }
   if (params.itemType && ['article', 'podcast', 'video'].includes(params.itemType)) {
     where += ' AND ei.item_kind = ?'; whereValues.push(params.itemType);
+  } else if (params.excludeVideos) {
+    where += " AND ei.item_kind <> 'video'";
   }
   if (params.userId) {
     where += ` AND NOT EXISTS (
@@ -186,6 +191,10 @@ export function getExternalFeed(params: ExternalFeedParams) {
   let sql: string;
   const values = [...whereValues];
   if (applyPerSourceCap) {
+    const cursorWhere = params.cursor ? `AND (
+      ${feedTimeSql('published_at')} < ?
+      OR (${feedTimeSql('published_at')} = ? AND id < ?)
+    )` : '';
     sql = `
       WITH ranked AS (
         SELECT ei.*, esi.source_id, es.name AS source_name,
@@ -200,14 +209,20 @@ export function getExternalFeed(params: ExternalFeedParams) {
         JOIN external_sources es ON es.id = esi.source_id
         ${where}
       ), page AS (
-        SELECT * FROM ranked WHERE rn <= ?
+        SELECT * FROM ranked WHERE rn <= ? ${cursorWhere}
         ORDER BY ${feedTimeSql('published_at')} DESC, id DESC LIMIT ? OFFSET ?
       )
       SELECT ei.*, ${commentCount} AS comment_count FROM page ei
       ORDER BY ${feedTimeSql('ei.published_at')} DESC, ei.id DESC
     `;
-    values.push(8, limit, offset, ...author.params, ...notMuted.params);
+    values.push(8);
+    if (params.cursor) values.push(params.cursor.time, params.cursor.time, params.cursor.id);
+    values.push(limit, offset, ...author.params, ...notMuted.params);
   } else {
+    const cursorWhere = params.cursor ? `AND (
+      ${feedTimeSql('ei.published_at')} < ?
+      OR (${feedTimeSql('ei.published_at')} = ? AND ei.id < ?)
+    )` : '';
     sql = `
       WITH page AS (
         SELECT ei.*, esi.source_id, es.name AS source_name,
@@ -216,12 +231,13 @@ export function getExternalFeed(params: ExternalFeedParams) {
         FROM external_items ei
         JOIN external_source_items esi ON esi.item_id = ei.id
         JOIN external_sources es ON es.id = esi.source_id
-        ${where}
+        ${where} ${cursorWhere}
         ORDER BY ${feedTimeSql('ei.published_at')} DESC, ei.id DESC LIMIT ? OFFSET ?
       )
       SELECT ei.*, ${commentCount} AS comment_count FROM page ei
       ORDER BY ${feedTimeSql('ei.published_at')} DESC, ei.id DESC
     `;
+    if (params.cursor) values.push(params.cursor.time, params.cursor.time, params.cursor.id);
     values.push(limit, offset, ...author.params, ...notMuted.params);
   }
 
@@ -270,4 +286,14 @@ export function getExternalFeedPage(params: ExternalFeedParams) {
   const hasMore = items.length === limit && offset + limit <= 100000
     && getExternalFeed({ ...params, limit: 1, offset: offset + limit }).length > 0;
   return { items, pagination: { limit, offset, hasMore, nextOffset: hasMore ? offset + limit : null } };
+}
+
+export function getExternalFeedCursorPage(params: ExternalFeedParams) {
+  const limit = boundedInteger(params.limit, 50, 1, 100);
+  const items = getExternalFeed({ ...params, limit, offset: 0 });
+  const last = items.at(-1);
+  const nextKey = last ? { time: normalizedFeedTime(getDb(), last.publishedAt), id: last.id } : null;
+  const hasMore = items.length === limit && !!nextKey
+    && getExternalFeed({ ...params, limit: 1, offset: 0, cursor: nextKey }).length > 0;
+  return { items, pagination: { limit, hasMore, nextKey: hasMore ? nextKey : null } };
 }

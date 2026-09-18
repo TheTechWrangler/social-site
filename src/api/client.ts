@@ -138,9 +138,9 @@ export const api = {
     request<{ ok: boolean; message: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ emailOrUsername }) }),
 
   // Feed
-  feed: (params?: { mode?: string; limit?: number; offset?: number; level?: string; exposure?: string }) => {
+  feed: (params?: { mode?: string; limit?: number; offset?: number; cursor?: string; level?: string; exposure?: string; itemType?: 'all' | 'article' | 'podcast' | 'video' }) => {
     const qs = new URLSearchParams(params as any).toString();
-    return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string; personalExternalFeedStatus?: PersonalExternalFeedStatus; pagination?: { hasMore: boolean; nextOffset: number | null } }>(`/feed?${qs}`);
+    return request<{ posts: any[]; worldItems?: any[]; items?: any[]; level?: string; itemType?: string; showVideosInFeed?: boolean; personalExternalFeedStatus?: PersonalExternalFeedStatus; pagination?: { hasMore: boolean; nextCursor?: string | null; nextOffset?: number | null } }>(`/feed?${qs}`);
   },
   replenishFeed: () =>
     request<{ ok: boolean; started?: boolean; sourcesChecked: number; newItems?: number; nextAvailableAt?: string; personalExternalFeedStatus?: PersonalExternalFeedStatus }>('/feed/replenish', { method: 'POST' }),
@@ -161,7 +161,7 @@ export const api = {
   getUserPosts: (username: string) => request<{ posts: any[] }>(`/users/${username}/posts`),
   updateProfile: (data: {
     displayName?: string; bio?: string | null; profileVisibility?: string;
-    feedExposure?: string; worldHomeInjection?: string; gameDiscoveryEnabled?: boolean;
+    feedExposure?: string; worldHomeInjection?: string; showVideosInFeed?: boolean; gameDiscoveryEnabled?: boolean;
     avatar_url?: ''; dmPrivacy?: string;
     profileData?: {
       techInterests?: string; platforms?: string; lookingFor?: string;

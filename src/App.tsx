@@ -25,6 +25,7 @@ import PostDetailPage from './pages/PostDetailPage';
 import MessagesPage from './pages/MessagesPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
+import HomeNavigationLink from './components/HomeNavigationLink';
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
@@ -34,6 +35,7 @@ export default function App() {
   const [dmUnread, setDmUnread] = useState(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [logoutError, setLogoutError] = useState('');
+  const [homeRefreshToken, setHomeRefreshToken] = useState(0);
   const navigate = useNavigate();
   const location = useLocation();
   usePageTracking();
@@ -140,6 +142,11 @@ export default function App() {
     setUser((currentUser: any) => currentUser?.id === nextUser?.id ? nextUser : currentUser);
   }
 
+  function refreshHome() {
+    setMobileNavOpen(false);
+    setHomeRefreshToken(value => value + 1);
+  }
+
   // Show a brief loading screen while we wait for the /me check on startup.
   if (initializing) return <div className="loading">Loading...</div>;
   if (sessionError) return (
@@ -154,13 +161,13 @@ export default function App() {
       {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
       <nav className={`sidebar-left ${mobileNavOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
-          <Link to="/">☁ Refuge Cloud</Link>
+          <HomeNavigationLink onRefresh={refreshHome}>☁ Refuge Cloud</HomeNavigationLink>
           <button className="mobile-menu-btn" onClick={() => setMobileNavOpen(!mobileNavOpen)} aria-expanded={mobileNavOpen} aria-label="Toggle navigation">☰</button>
         </div>
         <div className="sidebar-links">
           <div className="nav-group">
             <span className="nav-group-label">Social</span>
-            <Link to="/">🏠 Home</Link>
+            <HomeNavigationLink onRefresh={refreshHome}>🏠 Home</HomeNavigationLink>
             {user && <Link to={`/profile/${user.username}`}>👤 Profile</Link>}
             {user && <Link to="/discover">🔍 Discover</Link>}
             {user && <Link to="/friends">👥 Friends</Link>}
@@ -206,7 +213,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={!user ? <LoginPage onLogin={setUser} /> : <Navigate to="/" />} />
           <Route path="/register" element={!user ? <RegisterPage onLogin={setUser} /> : <Navigate to="/" />} />
-          <Route path="/" element={user ? <HomePage user={user} onUserChange={setUser} /> : <LandingPage />} />
+          <Route path="/" element={user ? <HomePage user={user} onUserChange={setUser} refreshToken={homeRefreshToken} /> : <LandingPage />} />
           <Route path="/profile/:username" element={user ? <ProfilePage user={user} onUserChange={setUser} /> : <Navigate to="/login" />} />
           <Route path="/groups" element={user ? <GroupsPage user={user} /> : <Navigate to="/login" />} />
           <Route path="/groups/:id" element={user ? <GroupPage user={user} /> : <Navigate to="/login" />} />

@@ -6,6 +6,7 @@ import { ensureDatabaseDirectory, getStorageConfig } from './config.js';
 import { logSafeDiagnostic } from './safeDiagnostics.js';
 import { migrateExternalContentFoundation } from './externalContentMigration.js';
 import { migrateExternalContentPhase2 } from './externalContentPhase2Migration.js';
+import { migrateFeedUxPreferences } from './feedUxMigration.js';
 
 const storageConfig = getStorageConfig();
 ensureDatabaseDirectory(storageConfig);
@@ -39,6 +40,7 @@ export function initializeDatabase(database: Database.Database = db): void {
       profile_visibility TEXT DEFAULT 'public' CHECK(profile_visibility IN ('public','private')),
       feed_exposure TEXT DEFAULT 'extended' CHECK(feed_exposure IN ('friends_only','mixed','everyone','friends','extended','world')),
       world_home_injection TEXT DEFAULT 'world_home_few' CHECK(world_home_injection IN ('world_home_off','world_home_few','world_home_balanced')),
+      show_videos_in_feed INTEGER NOT NULL DEFAULT 1 CHECK(show_videos_in_feed IN (0, 1)),
       game_discovery_enabled INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -746,6 +748,7 @@ export function initializeDatabase(database: Database.Database = db): void {
   applyMigration(db, '015-atomic-baseline', () => {});
   migrateExternalContentFoundation(db);
   migrateExternalContentPhase2(db);
+  migrateFeedUxPreferences(db);
   }).immediate();
 }
 

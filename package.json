@@ -32,7 +32,8 @@
     "test:batch13": "tsx --test --test-concurrency=1 tests/batch13/*.test.ts",
     "test:batch14": "tsx --test --test-concurrency=1 tests/batch14/*.test.ts",
     "test:external-content-phase1": "tsx --test --test-concurrency=1 tests/external-content-phase1/*.test.ts",
-    "test:external-content-phase2": "tsx --test --test-concurrency=1 tests/external-content-phase2/*.test.ts"
+    "test:external-content-phase2": "tsx --test --test-concurrency=1 tests/external-content-phase2/*.test.ts",
+    "test:feed-ux": "tsx --test --test-concurrency=1 tests/feed-ux/*.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

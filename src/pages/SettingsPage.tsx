@@ -19,6 +19,10 @@ function gameDiscoveryValue(user: any): boolean {
   return Boolean(user?.game_discovery_enabled ?? user?.gameDiscoveryEnabled ?? 0);
 }
 
+function showVideosValue(user: any): boolean {
+  return Boolean(user?.show_videos_in_feed ?? user?.showVideosInFeed ?? 1);
+}
+
 export default function SettingsPage({
   user,
   onUserChange,
@@ -33,6 +37,7 @@ export default function SettingsPage({
   const [loadError, setLoadError] = useState('');
   const [gameDiscovery, setGameDiscovery] = useState(gameDiscoveryValue(user));
   const [worldHomeInjection, setWorldHomeInjection] = useState(user?.world_home_injection || 'world_home_few');
+  const [showVideos, setShowVideos] = useState(showVideosValue(user));
   const [dmPrivacy, setDmPrivacy] = useState(user?.dm_privacy || 'friends_of_friends');
   const [preferencePending, setPreferencePending] = useState<string | null>(null);
   const [preferenceError, setPreferenceError] = useState('');
@@ -54,6 +59,7 @@ export default function SettingsPage({
   useEffect(() => {
     setGameDiscovery(gameDiscoveryValue(user));
     setWorldHomeInjection(user?.world_home_injection || 'world_home_few');
+    setShowVideos(showVideosValue(user));
     setDmPrivacy(user?.dm_privacy || 'friends_of_friends');
   }, [user]);
 
@@ -119,6 +125,7 @@ export default function SettingsPage({
       onUserChange(r.authUser);
       setGameDiscovery(gameDiscoveryValue(r.authUser));
       setWorldHomeInjection(r.authUser.world_home_injection || worldHomeInjection);
+      setShowVideos(showVideosValue(r.authUser));
       setDmPrivacy(r.authUser.dm_privacy || dmPrivacy);
     } catch (e: any) {
       if (isCurrent() && currentAccountId.current === requestedAccountId) {
@@ -144,11 +151,39 @@ export default function SettingsPage({
       if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
       onUserChange(r.authUser);
       setWorldHomeInjection(r.authUser.world_home_injection);
+      setShowVideos(showVideosValue(r.authUser));
       setGameDiscovery(gameDiscoveryValue(r.authUser));
       setDmPrivacy(r.authUser.dm_privacy || dmPrivacy);
     } catch (e: any) {
       if (isCurrent() && currentAccountId.current === requestedAccountId) {
         setPreferenceError('Could not save the World preference. The previous server-confirmed setting remains active.');
+      }
+    } finally {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        preferenceLock.current = false;
+        setPreferencePending(null);
+      }
+    }
+  }
+
+  async function toggleShowVideos() {
+    if (preferenceLock.current) return;
+    const requestedAccountId = user?.id;
+    const isCurrent = preferenceGate.current.begin();
+    preferenceLock.current = true;
+    setPreferencePending('showVideos');
+    setPreferenceError('');
+    try {
+      const r = await api.updateProfile({ showVideosInFeed: !showVideos });
+      if (!isCurrent() || currentAccountId.current !== requestedAccountId) return;
+      onUserChange(r.authUser);
+      setShowVideos(showVideosValue(r.authUser));
+      setWorldHomeInjection(r.authUser.world_home_injection || worldHomeInjection);
+      setGameDiscovery(gameDiscoveryValue(r.authUser));
+      setDmPrivacy(r.authUser.dm_privacy || dmPrivacy);
+    } catch {
+      if (isCurrent() && currentAccountId.current === requestedAccountId) {
+        setPreferenceError('Could not save the video feed preference. The previous server-confirmed setting remains active.');
       }
     } finally {
       if (isCurrent() && currentAccountId.current === requestedAccountId) {
@@ -217,6 +252,13 @@ export default function SettingsPage({
             </div>
           </div>
           <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>External items stay labeled and source blocking still applies.</p>
+          <div className="settings-row">
+            <span>Show videos in feed</span>
+            <button disabled={preferencePending !== null} className={`btn btn-sm ${showVideos ? 'btn-primary' : 'btn-ghost'}`} onClick={toggleShowVideos}>
+              {showVideos ? 'On' : 'Off'}
+            </button>
+          </div>
+          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 8 }}>Turning this off hides videos from normal personal feeds without changing your source subscriptions. The explicit Videos view remains available.</p>
         </div>
       </div>
 

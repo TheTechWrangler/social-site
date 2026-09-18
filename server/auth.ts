@@ -21,6 +21,7 @@ export interface AuthUser {
   profile_visibility: string;
   feed_exposure: string;
   world_home_injection: string;
+  show_videos_in_feed: number;
   game_discovery_enabled: number;
   dm_privacy: string;
   auth_version: number;
@@ -151,7 +152,7 @@ export function revokeApplicationToken(token: string, nowMs = Date.now()): void 
 
 export function getUserById(id: number): AuthUser | null {
   const row = getDb().prepare(
-    'SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, world_home_injection, game_discovery_enabled, dm_privacy, auth_version, password_changed_at FROM users WHERE id = ?'
+    'SELECT id, username, display_name, email, role, banned, is_verified, profile_visibility, feed_exposure, world_home_injection, show_videos_in_feed, game_discovery_enabled, dm_privacy, auth_version, password_changed_at FROM users WHERE id = ?'
   ).get(id) as AuthUser | undefined;
   return row ?? null;
 }

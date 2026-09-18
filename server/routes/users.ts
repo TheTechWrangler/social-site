@@ -164,13 +164,17 @@ router.get('/:username', optionalAuth, (req: AuthRequest, res) => {
 
 // PUT /api/users/profile
 router.put('/profile', requireAuth, (req: AuthRequest, res) => {
-  const { displayName, bio, profileVisibility, feedExposure, worldHomeInjection, gameDiscoveryEnabled, avatar_url, dmPrivacy, profileData } = req.body;
+  const { displayName, bio, profileVisibility, feedExposure, worldHomeInjection, showVideosInFeed, gameDiscoveryEnabled, avatar_url, dmPrivacy, profileData } = req.body;
   if (displayName !== undefined && !String(displayName ?? '').trim()) {
     res.status(400).json({ error: 'Display name cannot be empty.' });
     return;
   }
   if (profileVisibility !== undefined && !['public', 'private'].includes(profileVisibility)) {
     res.status(400).json({ error: 'Invalid profile visibility.' });
+    return;
+  }
+  if (showVideosInFeed !== undefined && typeof showVideosInFeed !== 'boolean') {
+    res.status(400).json({ error: 'Show videos in feed must be true or false.' });
     return;
   }
   if (
@@ -202,6 +206,7 @@ router.put('/profile', requireAuth, (req: AuthRequest, res) => {
   if (profileVisibility !== undefined) { fields.push('profile_visibility = ?'); vals.push(vis); }
   if (feedExposure !== undefined) { fields.push('feed_exposure = ?'); vals.push(fex); }
   if (whi !== undefined) { fields.push('world_home_injection = ?'); vals.push(whi); }
+  if (showVideosInFeed !== undefined) { fields.push('show_videos_in_feed = ?'); vals.push(showVideosInFeed ? 1 : 0); }
   if (gameDiscoveryEnabled !== undefined) { fields.push('game_discovery_enabled = ?'); vals.push(gameDiscoveryEnabled ? 1 : 0); }
   if (dmp !== undefined) { fields.push('dm_privacy = ?'); vals.push(dmp); }
   // profileData: structured profile sections stored as JSON blob

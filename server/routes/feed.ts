@@ -1,15 +1,16 @@
-import { feedTimeSql } from '../feedTime.js';
+import { feedTimeSql, normalizedFeedTime } from '../feedTime.js';
 import { RequestValidationError } from '../requestValidation.js';
 import { Router } from 'express';
 import { getDb } from '../database.js';
 import { optionalAuth, requireAuth, requireVerified, type AuthRequest } from '../middleware.js';
 import { enrichPosts } from './posts.js';
 import { fetchSource } from '../rssService.js';
-import { getExternalFeed, getExternalFeedPage, getPersonalExternalFeedStatus } from '../externalContentService.js';
+import { getExternalFeed, getExternalFeedCursorPage, getExternalFeedPage, getPersonalExternalFeedStatus } from '../externalContentService.js';
 import { logUsage } from '../usageEvents.js';
 import { notMutedByViewerSql, postAuthorVisibilitySql } from '../visibility.js';
 import { pageInteger } from '../pagination.js';
 import { logSafeDiagnostic } from '../safeDiagnostics.js';
+import { decodeFeedCursor, encodeFeedCursor } from '../feedCursor.js';
 
 const router = Router();
 
@@ -28,12 +29,28 @@ function worldInjectionLimit(nativeCount: number, preference: string): number {
   return Math.min(10, Math.max(1, Math.ceil(nativeCount / 9)));
 }
 
+type ExternalItemType = 'all' | 'article' | 'podcast' | 'video';
 
-// GET /api/feed?level=everyone|extended|friends|world&limit=50&offset=0
+function externalItemType(value: unknown): ExternalItemType {
+  if (value === undefined || value === '') return 'all';
+  if (typeof value !== 'string' || !['all', 'article', 'podcast', 'video'].includes(value)) {
+    throw new RequestValidationError('itemType must be all, article, podcast, or video.');
+  }
+  return value as ExternalItemType;
+}
+
+
+// GET /api/feed?level=everyone|extended|friends|world&limit=50&cursor=...
+// Explicit offset remains supported for older clients.
 router.get('/', optionalAuth, (req: AuthRequest, res) => {
   try {
+    if (req.user) res.setHeader('Cache-Control', 'private, no-store');
     const limit = pageInteger(req.query.limit, 50, 1, 100);
     const offset = pageInteger(req.query.offset, 0, 0, 100000);
+    const cursorMode = req.query.cursor !== undefined || req.query.offset === undefined;
+    if (req.query.cursor !== undefined && req.query.offset !== undefined) {
+      throw new RequestValidationError('Use cursor or offset, not both.');
+    }
     const db = getDb();
     const postVisibility = postAuthorVisibilitySql(req.user as any, 'p', 'u');
     const notMuted = notMutedByViewerSql(req.user as any, 'u');
@@ -54,20 +71,52 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
         level = 'extended';
       }
     }
+    const itemType = externalItemType(req.query.itemType);
+    if (level !== 'world' && itemType !== 'all') {
+      throw new RequestValidationError('itemType filters are available for My External Sources.');
+    }
+    const preference = req.user ? db.prepare(`
+      SELECT world_home_injection, show_videos_in_feed FROM users WHERE id = ?
+    `).get(req.user.id) as { world_home_injection: string; show_videos_in_feed: number } | undefined : undefined;
 
     // ─── World Feed mode ───
     if (level === 'world') {
       const personalExternalFeedStatus = getPersonalExternalFeedStatus(req.user?.id);
+      const filter = itemType === 'all' ? undefined : itemType;
+      const excludeVideos = itemType === 'all' && preference?.show_videos_in_feed === 0;
+      const context = `world:${itemType}`;
+      const cursor = cursorMode ? decodeFeedCursor(req.query.cursor, 'external', context) : null;
       const result = req.user
-        ? getExternalFeedPage({ scope: 'personal', limit, offset, userId: req.user.id })
-        : { items: [], pagination: { limit, offset, hasMore: false, nextOffset: null } };
+        ? cursorMode
+          ? getExternalFeedCursorPage({ scope: 'personal', limit, cursor: cursor ?? undefined,
+              itemType: filter, excludeVideos, userId: req.user.id })
+          : getExternalFeedPage({ scope: 'personal', limit, offset, itemType: filter, excludeVideos, userId: req.user.id })
+        : { items: [], pagination: cursorMode
+            ? { limit, hasMore: false, nextKey: null }
+            : { limit, offset, hasMore: false, nextOffset: null } };
+      const nextKey = 'nextKey' in result.pagination ? result.pagination.nextKey : null;
       res.json({ posts: [], worldItems: result.items, items: result.items, level,
-        pagination: result.pagination, personalExternalFeedStatus });
+        itemType, showVideosInFeed: preference?.show_videos_in_feed !== 0,
+        pagination: cursorMode ? {
+          limit, hasMore: result.pagination.hasMore,
+          nextCursor: nextKey ? encodeFeedCursor('external', context, nextKey) : null,
+          nextOffset: null,
+        } : result.pagination,
+        personalExternalFeedStatus });
       return;
     }
 
     // ─── Native post modes ───
     let rows: any[];
+    const context = `posts:${level}`;
+    const cursor = cursorMode ? decodeFeedCursor(req.query.cursor, 'posts', context) : null;
+    const cursorSql = cursor ? `AND (
+      ${feedTimeSql('p.created_at')} < ?
+      OR (${feedTimeSql('p.created_at')} = ? AND p.id < ?)
+    )` : '';
+    const cursorParams = cursor ? [cursor.time, cursor.time, cursor.id] : [];
+    const pageSql = cursorMode ? 'LIMIT ?' : 'LIMIT ? OFFSET ?';
+    const pageParams = cursorMode ? [limit + 1] : [limit + 1, offset];
 
     if ((level === 'friends' || level === 'extended') && req.user) {
       const extended = level === 'extended' ? `OR (u.is_verified = 1 AND p.user_id IN (
@@ -81,46 +130,54 @@ router.get('/', optionalAuth, (req: AuthRequest, res) => {
           AND (p.user_id = ? OR p.user_id IN (
             SELECT following_id FROM follows WHERE follower_id = ? AND status = 'accepted'
           ) ${extended})
-          AND ${postVisibility.sql} AND ${notMuted.sql}
-        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC LIMIT ? OFFSET ?
+          AND ${postVisibility.sql} AND ${notMuted.sql} ${cursorSql}
+        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC ${pageSql}
       `).all(req.user.id, req.user.id, ...(level === 'extended' ? [req.user.id] : []),
-        ...postVisibility.params, ...notMuted.params, limit + 1, offset);
+        ...postVisibility.params, ...notMuted.params, ...cursorParams, ...pageParams);
     } else if (level === 'everyone' && req.user) {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
         WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.is_verified = 1
           AND ${postVisibility.sql}
-          AND ${notMuted.sql}
-        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC LIMIT ? OFFSET ?
-      `).all(...postVisibility.params, ...notMuted.params, limit + 1, offset);
+          AND ${notMuted.sql} ${cursorSql}
+        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC ${pageSql}
+      `).all(...postVisibility.params, ...notMuted.params, ...cursorParams, ...pageParams);
     } else {
       rows = db.prepare(`
         SELECT p.*, u.username, u.display_name, u.avatar_url
         FROM posts p JOIN users u ON p.user_id = u.id
         WHERE p.parent_id IS NULL AND p.hidden = 0 AND u.is_verified = 1
-          AND ${postVisibility.sql}
-        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC LIMIT ? OFFSET ?
-      `).all(...postVisibility.params, limit + 1, offset);
+          AND ${postVisibility.sql} ${cursorSql}
+        ORDER BY ${feedTimeSql('p.created_at')} DESC, p.id DESC ${pageSql}
+      `).all(...postVisibility.params, ...cursorParams, ...pageParams);
     }
 
-    const hasMore = rows.length > limit && offset + limit <= 100000;
-    const posts = enrichPosts(rows.slice(0, limit), req.user as any).map(post => ({ ...post, type: 'post' }));
+    const hasMore = rows.length > limit && (cursorMode || offset + limit <= 100000);
+    const pageRows = rows.slice(0, limit);
+    const posts = enrichPosts(pageRows, req.user as any).map(post => ({ ...post, type: 'post' }));
+    const last = pageRows.at(-1);
+    const nextCursor = hasMore && last
+      ? encodeFeedCursor('posts', context, { time: normalizedFeedTime(db, last.created_at), id: last.id })
+      : null;
     let worldItems: any[] = [];
     const personalExternalFeedStatus = getPersonalExternalFeedStatus(req.user?.id);
 
-    if (req.user && offset === 0) {
-      const prefRow = db.prepare('SELECT world_home_injection FROM users WHERE id = ?').get(req.user.id) as any;
-      const preference = prefRow?.world_home_injection || 'world_home_few';
-      const worldLimit = worldInjectionLimit(posts.length, preference);
+    if (req.user && offset === 0 && !cursor) {
+      const worldPreference = preference?.world_home_injection || 'world_home_few';
+      const worldLimit = worldInjectionLimit(posts.length, worldPreference);
       if (worldLimit > 0 && personalExternalFeedStatus === 'ready') {
-        worldItems = getExternalFeed({ scope: 'personal', limit: worldLimit, offset: 0, userId: req.user.id });
+        worldItems = getExternalFeed({ scope: 'personal', limit: worldLimit, offset: 0,
+          excludeVideos: preference?.show_videos_in_feed === 0, userId: req.user.id });
       }
     }
 
     // World is a separate recommendation module, never part of native offsets.
     res.json({ posts, worldItems, items: posts, level, worldPlacement: 'separate', personalExternalFeedStatus,
-      pagination: { limit, offset, hasMore, nextOffset: hasMore ? offset + posts.length : null } });
+      showVideosInFeed: preference?.show_videos_in_feed !== 0,
+      pagination: cursorMode
+        ? { limit, hasMore, nextCursor, nextOffset: null }
+        : { limit, offset, hasMore, nextCursor, nextOffset: hasMore ? offset + posts.length : null } });
   } catch (err: any) {
     if (err instanceof RequestValidationError) { res.status(400).json({ error: err.message }); return; }
     logSafeDiagnostic({ subsystem: 'feed', severity: 'error', code: 'FEED_LOAD_FAILED' });
